@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/879501250/relationship-compass/schemas/source-registry.schema.json",
+  "title": "Relationship Compass Source Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "sources"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/source"}
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id", "title", "author", "source_type", "publication_year",
+        "edition", "language", "topics", "source_quality", "added_at",
+        "last_reviewed_at", "freshness", "status", "content_fingerprint"
+      ],
+      "properties": {
+        "source_id": {"type": "string", "pattern": "^src-[a-z0-9][a-z0-9-]{2,63}$"},
+        "title": {"type": "string", "minLength": 1},
+        "author": {"type": "string", "minLength": 1},
+        "source_type": {"enum": ["book", "paper", "course", "article", "note"]},
+        "publication_year": {"type": "integer", "minimum": 1000, "maximum": 3000},
+        "edition": {"type": ["string", "null"]},
+        "language": {"type": "string", "minLength": 1},
+        "topics": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["relationship-start", "conversation", "attraction", "intimacy", "boundaries", "conflict-and-repair", "personal-growth"]}},
+        "source_quality": {"enum": ["high", "medium", "low", "unknown"]},
+        "added_at": {"type": "string", "format": "date-time"},
+        "last_reviewed_at": {"type": "string", "format": "date-time"},
+        "review_after": {"type": "string", "format": "date-time"},
+        "freshness": {"enum": ["stable", "semi_dynamic", "dynamic"]},
+        "status": {"enum": ["candidate", "reviewed", "approved", "partially_approved", "rejected", "deprecated"]},
+        "content_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

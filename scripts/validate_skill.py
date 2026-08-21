@@ -56,6 +56,16 @@ REQUIRED_PERSONAL = (
     "复盘模式与实际发送学习闭环.md",
     "memory_lifecycle.md",
 )
+REQUIRED_CURATED = (
+    "INDEX.md",
+    "relationship-start.md",
+    "conversation.md",
+    "attraction.md",
+    "intimacy.md",
+    "boundaries.md",
+    "conflict-and-repair.md",
+    "personal-growth.md",
+)
 REQUIRED_EVALS = (
     "screenshot_cases.yaml",
     "reply_cases.yaml",
@@ -136,6 +146,8 @@ def validate_inventory(runtime_only: bool) -> None:
         require(f"references/practical/{filename}")
     for filename in REQUIRED_PERSONAL:
         require(f"references/personal/{filename}")
+    for filename in REQUIRED_CURATED:
+        require(f"references/curated/{filename}")
     if not runtime_only:
         require("README.md")
         require("NOTICE.md")
@@ -153,6 +165,19 @@ def validate_inventory(runtime_only: bool) -> None:
         require("model_evals/cases.yaml")
         require("model_evals/rubric.yaml")
         require("model_evals/README.md")
+        require("model_evals/results/V1_1_1_BASELINE.md")
+        require("knowledge-management/KNOWLEDGE_GOVERNANCE.md")
+        require("knowledge-management/SOURCE_REGISTRY.json")
+        require("knowledge-management/schemas/source-registry.schema.json")
+        require("knowledge-management/schemas/claim.schema.json")
+        require("knowledge-management/source-cards/TEMPLATE.md")
+        require("knowledge-management/proposals/README.md")
+        require("knowledge-management/review-decisions/README.md")
+        require("knowledge-management/merge-reports/README.md")
+        require("tests/unit/test_source_registry.py")
+        require("tests/unit/test_source_fingerprint.py")
+        require("tests/unit/test_claim_schema.py")
+        require("tests/unit/test_freshness.py")
         require("chatgpt-project/PROJECT_INSTRUCTIONS.md")
         require("chatgpt-project/README.md")
         require("chatgpt-project/knowledge/DAILY_REPLY_PLAYBOOK.md")
@@ -410,4 +435,4 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# Modified by AI on 2026-08-21 14:47:55
+# Modified by AI on 2026-08-21 16:38:32
