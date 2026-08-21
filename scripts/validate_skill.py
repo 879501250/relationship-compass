@@ -16,6 +16,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 from date_utils import normalize_iso8601
+from knowledge_intake import KnowledgeIntakeError, parse_proposal
+from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
 from run_contract_evals import main as run_contract_evals
 from run_model_evals import command_validate as validate_model_eval_command
 
@@ -139,6 +141,9 @@ def validate_inventory(runtime_only: bool) -> None:
     require("scripts/run_tests.py")
     require("scripts/run_contract_evals.py")
     require("scripts/run_model_evals.py")
+    require("scripts/knowledge_schema.py")
+    require("scripts/knowledge_intake.py")
+    require("scripts/knowledge_merge.py")
     require("LICENSE")
     for filename in REQUIRED_KNOWLEDGE:
         require(f"references/knowledge/{filename}")
@@ -168,6 +173,7 @@ def validate_inventory(runtime_only: bool) -> None:
         require("model_evals/results/V1_1_1_BASELINE.md")
         require("knowledge-management/KNOWLEDGE_GOVERNANCE.md")
         require("knowledge-management/SOURCE_REGISTRY.json")
+        require("knowledge-management/CURATED_CLAIMS.json")
         require("knowledge-management/schemas/source-registry.schema.json")
         require("knowledge-management/schemas/claim.schema.json")
         require("knowledge-management/source-cards/TEMPLATE.md")
@@ -178,6 +184,13 @@ def validate_inventory(runtime_only: bool) -> None:
         require("tests/unit/test_source_fingerprint.py")
         require("tests/unit/test_claim_schema.py")
         require("tests/unit/test_freshness.py")
+        require("tests/unit/test_claim_dedup.py")
+        require("tests/unit/test_claim_conflict.py")
+        require("tests/unit/test_knowledge_merge.py")
+        require("tests/integration/test_knowledge_register.py")
+        require("tests/integration/test_proposal_validation.py")
+        require("tests/integration/test_knowledge_approve_gate.py")
+        require("tests/integration/test_knowledge_merge.py")
         require("chatgpt-project/PROJECT_INSTRUCTIONS.md")
         require("chatgpt-project/README.md")
         require("chatgpt-project/knowledge/DAILY_REPLY_PLAYBOOK.md")
@@ -252,6 +265,110 @@ def validate_runtime_boundaries() -> None:
                 ERRORS.append(f"non-runtime content inside runtime allowlist: {path.relative_to(ROOT)}")
             if path.is_file() and path.suffix in {".pyc", ".pyo"}:
                 ERRORS.append(f"compiled artifact found: {path.relative_to(ROOT)}")
+
+
+def validate_curated_knowledge(runtime_only: bool) -> None:
+    runtime_claim_ids: set[str] = set()
+    claim_markers = (
+        "- Claim ID:",
+        "- Practical Meaning:",
+        "- Evidence:",
+        "- Applicable When:",
+        "- Limits:",
+        "- Risks:",
+        "- Sources:",
+    )
+    for filename in REQUIRED_CURATED[1:]:
+        path = ROOT / "references" / "curated" / filename
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for block in text.split("\n## Claim\n")[1:]:
+            for marker in claim_markers:
+                if marker not in block:
+                    ERRORS.append(f"curated claim in {filename} missing {marker}")
+            match = re.search(r"- Claim ID: `(claim-[0-9a-f]{16})`", block)
+            if not match:
+                ERRORS.append(f"curated claim in {filename} has invalid Claim ID")
+            elif match.group(1) in runtime_claim_ids:
+                ERRORS.append(f"duplicate curated claim block: {match.group(1)}")
+            else:
+                runtime_claim_ids.add(match.group(1))
+    index = ROOT / "references" / "curated" / "INDEX.md"
+    if index.is_file():
+        index_claim_ids = set(
+            re.findall(r"`(claim-[0-9a-f]{16})`", index.read_text(encoding="utf-8"))
+        )
+        if index_claim_ids != runtime_claim_ids:
+            ERRORS.append("curated INDEX claim IDs do not match topic files")
+    if runtime_only:
+        return
+
+    registry_path = ROOT / "knowledge-management" / "SOURCE_REGISTRY.json"
+    try:
+        registry = load_registry(registry_path)
+    except (KnowledgeSchemaError, OSError) as exc:
+        ERRORS.append(f"knowledge registry validation failed: {exc}")
+        return
+    sources = {item["source_id"]: item for item in registry["sources"]}
+    for source_id in sources:
+        if not (ROOT / "knowledge-management" / "source-cards" / f"{source_id}.md").is_file():
+            ERRORS.append(f"registered source is missing source card: {source_id}")
+    for proposal_path in sorted(
+        (ROOT / "knowledge-management" / "proposals").glob("*-proposal.md")
+    ):
+        try:
+            proposal = parse_proposal(proposal_path)
+        except KnowledgeIntakeError as exc:
+            ERRORS.append(f"proposal validation failed for {proposal_path.name}: {exc}")
+            continue
+        if proposal["source_id"] not in sources:
+            ERRORS.append(f"proposal references unregistered source: {proposal['source_id']}")
+
+    store_path = ROOT / "knowledge-management" / "CURATED_CLAIMS.json"
+    try:
+        store = json.loads(store_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        ERRORS.append(f"cannot load CURATED_CLAIMS.json: {exc}")
+        return
+    if set(store) != {"schema_version", "claims"} or store.get("schema_version") != 1:
+        ERRORS.append("CURATED_CLAIMS.json must use schema_version 1 and claims only")
+        return
+    if not isinstance(store.get("claims"), list):
+        ERRORS.append("CURATED_CLAIMS.json claims must be a list")
+        return
+    store_ids: set[str] = set()
+    required_fields = {
+        "claim_id",
+        "canonical_claim",
+        "practical_meaning",
+        "evidence",
+        "applicable_when",
+        "limits",
+        "risks",
+        "sources",
+        "destination",
+        "last_reviewed_at",
+        "review_after",
+    }
+    for claim in store["claims"]:
+        if not isinstance(claim, dict) or set(claim) != required_fields:
+            ERRORS.append("curated store claim has invalid fields")
+            continue
+        claim_id = claim["claim_id"]
+        if claim_id != stable_claim_id(claim["canonical_claim"]):
+            ERRORS.append(f"curated store claim has unstable ID: {claim_id}")
+        if claim_id in store_ids:
+            ERRORS.append(f"duplicate claim in curated store: {claim_id}")
+        store_ids.add(claim_id)
+        for provenance in claim["sources"]:
+            source_id = provenance.get("source_id") if isinstance(provenance, dict) else None
+            if source_id not in sources:
+                ERRORS.append(f"curated claim references unknown source: {source_id}")
+            elif sources[source_id]["status"] == "rejected":
+                ERRORS.append(f"rejected source appears in curated runtime: {source_id}")
+    if store_ids != runtime_claim_ids:
+        ERRORS.append("CURATED_CLAIMS.json does not match curated runtime claim IDs")
 
 
 def validate_markdown_links() -> None:
@@ -416,6 +533,7 @@ def main() -> int:
     validate_inventory(runtime_only)
     validate_routes_and_invariants()
     validate_runtime_boundaries()
+    validate_curated_knowledge(runtime_only)
     validate_markdown_links()
     validate_markers()
     validate_placeholders()
@@ -435,4 +553,4 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# Modified by AI on 2026-08-21 16:38:32
+# Modified by AI on 2026-08-21 17:03:53

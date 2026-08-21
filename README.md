@@ -86,6 +86,34 @@ python scripts/memory_store.py delete --scope object --subject-id obj-a --field 
 
 event 必须使用带时区的 ISO 8601 `occurred_at`，并标注 `landmark`、`normal` 或 `temporary`。hypothesis 的 TTL、状态和召回规则见 `references/personal/memory_lifecycle.md`。
 
+## 如何添加一本新书
+
+原始书籍留在本机私有位置，不复制到仓库。先登记元数据和 SHA-256 指纹：
+
+```text
+python scripts/knowledge_intake.py register <本机书籍路径> --source-id src-example-book --title "书名" --author "作者" --source-type book --publication-year 2024 --edition "1" --language zh-CN --topics conversation personal-growth --source-quality unknown --freshness stable
+python scripts/knowledge_intake.py validate
+python scripts/knowledge_intake.py status
+python scripts/knowledge_intake.py list
+```
+
+登记会生成 source card，但不会复制原文件，也不会直接改 curated。补完 source card 后，把符合 claim schema 的候选数组保存为本机 JSON，再生成 proposal：
+
+```text
+python scripts/knowledge_intake.py proposal --source-id src-example-book --claims <claims.json>
+```
+
+在 `knowledge-management/proposals/src-example-book-proposal.md` 中逐条勾选 approve、reject 或 revise。只有用户亲自审核后才能执行：
+
+```text
+python scripts/knowledge_merge.py review --proposal knowledge-management/proposals/src-example-book-proposal.md --confirm
+python scripts/knowledge_merge.py merge --proposal knowledge-management/proposals/src-example-book-proposal.md --confirm
+```
+
+冲突不能静默覆盖。`keep_existing`、`merge_with_conditions`、`keep_both`、`reject_new` 写在 proposal 的 Conflict Resolution；`replace_existing` 除审核和 merge 确认外，还要对每个旧 claim 增加 `--confirm-replace <claim-id>`。
+
+删除本机原始书籍不会删除审计记录。来源不再推荐时使用 `knowledge_intake.py deprecate --source-id <id> --confirm`；不物理删除已审核来源。新版/修订版用新的 source_id 和指纹重新登记，旧版再 deprecate。元数据笔误可在 registry/source card 修正后运行 validate；已进入 curated 的实质性纠错必须走新 proposal，不能手改覆盖。完整流程见 `knowledge-management/KNOWLEDGE_GOVERNANCE.md`。
+
 ## 数据备份方式
 
 先运行 `status` 获取真实路径。备份前暂停写入并确认没有 Memory 命令正在执行，然后复制整个 Memory 目录，而不是只复制主数据库：
@@ -164,4 +192,4 @@ TTL 只把它从 active 变为 stale，不删除历史。`context` 默认不召�
 
 没有应用层加密。它依赖本机账户、目录权限和磁盘安全；备份也应按敏感数据管理。
 
-<!-- Modified by AI on 2026-08-21 15:23:02 -->
+<!-- Modified by AI on 2026-08-21 17:01:55 -->
