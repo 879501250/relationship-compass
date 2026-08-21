@@ -1,0 +1,6 @@
+interface:
+  display_name: "关系罗盘"
+  short_description: "分析聊天节奏，训练自然表达并维护可撤销的长期关系记忆"
+  default_prompt: "使用 $goutoujunshi-personal 分析这段聊天，给我自然回复并按需帮助我训练表达。"
+
+# Modified by AI on 2026-08-21 14:47:55

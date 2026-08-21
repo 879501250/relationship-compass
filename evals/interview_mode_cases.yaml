@@ -1,0 +1,22 @@
+{
+  "suite": "interview_mode",
+  "cases": [
+    {
+      "id": "interview-three-naked-questions",
+      "input": {"recent_user_turns": ["question", "question", "question"], "user_content": "low"},
+      "expected": {"detect_interview_mode": true, "next_primary_action": "share", "allow_light_question_after_content": true}
+    },
+    {
+      "id": "interview-opinion-reset",
+      "input": {"recent_user_turns": ["question", "question", "question"], "topic_has_disagreement": true},
+      "expected": {"detect_interview_mode": true, "next_primary_action": "opinion", "respect_partner_view": true}
+    },
+    {
+      "id": "interview-story-reset",
+      "input": {"recent_user_turns": ["question", "question", "question"], "real_related_story": true},
+      "expected": {"detect_interview_mode": true, "next_primary_action": "micro_story", "invent_story": false}
+    }
+  ]
+}
+
+# Modified by AI on 2026-08-21 13:48:02

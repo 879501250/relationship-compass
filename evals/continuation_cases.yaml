@@ -1,0 +1,27 @@
+{
+  "suite": "continuation",
+  "cases": [
+    {
+      "id": "continuation-positive-play",
+      "input": {"partner_outcome": "positive_play", "candidate": "playful"},
+      "expected": {"test_first_line_and_followup": true, "user_can_continue_in_plain_language": true, "fallback": "lower_e_or_plain_share"}
+    },
+    {
+      "id": "continuation-counter-tease",
+      "input": {"partner_outcome": "counter_tease", "candidate": "light_tease"},
+      "expected": {"test_first_line_and_followup": true, "avoid_defensive_escalation": true, "fallback": "accept_and_return_to_real_content"}
+    },
+    {
+      "id": "continuation-ordinary",
+      "input": {"partner_outcome": "ordinary", "candidate": "humor"},
+      "expected": {"test_first_line_and_followup": true, "do_not_explain_joke": true, "fallback": "ordinary_topic_or_close"}
+    },
+    {
+      "id": "continuation-no-play",
+      "input": {"partner_outcome": "no_play", "candidate": "playful_framing"},
+      "expected": {"test_first_line_and_followup": true, "do_not_try_another_trick": true, "fallback": "deescalate_or_close"}
+    }
+  ]
+}
+
+# Modified by AI on 2026-08-21 13:48:02

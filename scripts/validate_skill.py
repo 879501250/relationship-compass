@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""Validate the distributable goutoujunshi-personal skill."""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import re
+import json
+import sys
+import unittest
+from math import ceil
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+from date_utils import normalize_iso8601
+from run_contract_evals import main as run_contract_evals
+from run_model_evals import command_validate as validate_model_eval_command
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ERRORS: list[str] = []
+SKILL_MAX_LINES = 150
+SKILL_MAX_CHARACTERS = 5_000
+SKILL_MAX_APPROX_TOKENS = 4_500
+
+REQUIRED_KNOWLEDGE = (
+    "01-证据分级与内容边界.md",
+    "05-PUA操控与伦理替代.md",
+    "08-同意边界性与亲密.md",
+    "09-在线约会与数字关系.md",
+    "17-中国法律安全与危机转介.md",
+    "20-经典社交体系的机制、证据与风险边界.md",
+)
+REQUIRED_PRACTICAL = (
+    "00-导读与使用分级.md",
+    "关系投入失衡：互惠判断、降级投入与退出决策.md",
+    "场景感、松弛感与社交校准：从接话到关系推进.md",
+    "实战话术编排器：从一句回复到后续分支.md",
+    "主动表达、第一次见面与自然接触.md",
+    "自然流、内在状态与结构化互动：伦理能力转译.md",
+    "ChatLab聊天记录分析适配.md",
+    "长期记忆与关系档案.md",
+)
+REQUIRED_PERSONAL = (
+    "微信截图解析协议.md",
+    "关系阶段与聊天节奏.md",
+    "自然回复生成器.md",
+    "网络聊天表达升级器.md",
+    "幽默与调侃生成器.md",
+    "主动话题与conversation-hook.md",
+    "投入预算与停止条件.md",
+    "成长状态与记忆适配.md",
+    "复盘模式与实际发送学习闭环.md",
+    "memory_lifecycle.md",
+)
+REQUIRED_EVALS = (
+    "screenshot_cases.yaml",
+    "reply_cases.yaml",
+    "stage_cases.yaml",
+    "expression_growth_cases.yaml",
+    "interview_mode_cases.yaml",
+    "continuation_cases.yaml",
+    "memory_cases.yaml",
+    "review_cases.yaml",
+    "actual_send_cases.yaml",
+)
+
+
+def require(path: str) -> Path:
+    target = ROOT / path
+    if not target.exists():
+        ERRORS.append(f"missing required path: {path}")
+    return target
+
+
+def validate_frontmatter() -> None:
+    skill = require("SKILL.md")
+    if not skill.is_file():
+        return
+    content = skill.read_text(encoding="utf-8")
+    match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
+    if not match:
+        ERRORS.append("SKILL.md has invalid YAML frontmatter boundaries")
+        return
+    frontmatter = match.group(1)
+    keys = re.findall(r"^([A-Za-z0-9_-]+):", frontmatter, re.MULTILINE)
+    if keys != ["name", "description"]:
+        ERRORS.append(f"frontmatter keys must be name, description; got {keys}")
+    name_match = re.search(r"^name:\s*([^\n]+)$", frontmatter, re.MULTILINE)
+    description_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
+    name = name_match.group(1).strip() if name_match else ""
+    description = description_match.group(1).strip() if description_match else ""
+    if name != "goutoujunshi-personal" or not re.fullmatch(r"[a-z0-9-]{1,64}", name):
+        ERRORS.append(f"invalid skill name: {name!r}")
+    if not description or len(description) > 1024 or "<" in description or ">" in description:
+        ERRORS.append("description is empty, too long, or contains angle brackets")
+
+
+def approximate_token_count(content: str) -> int:
+    cjk = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", content))
+    latin_words = len(re.findall(r"[A-Za-z0-9_]+", content))
+    other = len(re.findall(r"[^\sA-Za-z0-9_\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", content))
+    return cjk + ceil(latin_words * 1.3) + ceil(other / 4)
+
+
+def validate_skill_budget() -> None:
+    skill = ROOT / "SKILL.md"
+    if not skill.is_file():
+        return
+    content = skill.read_text(encoding="utf-8")
+    lines = len(content.splitlines())
+    characters = len(content)
+    tokens = approximate_token_count(content)
+    if lines > SKILL_MAX_LINES:
+        ERRORS.append(f"SKILL.md exceeds {SKILL_MAX_LINES} lines: {lines}")
+    if characters > SKILL_MAX_CHARACTERS:
+        ERRORS.append(f"SKILL.md exceeds {SKILL_MAX_CHARACTERS} characters: {characters}")
+    if tokens > SKILL_MAX_APPROX_TOKENS:
+        ERRORS.append(f"SKILL.md exceeds approximate token budget {SKILL_MAX_APPROX_TOKENS}: {tokens}")
+
+
+def validate_inventory(runtime_only: bool) -> None:
+    require("agents/openai.yaml")
+    require("scripts/memory_store.py")
+    require("scripts/date_utils.py")
+    require("scripts/run_tests.py")
+    require("scripts/run_contract_evals.py")
+    require("scripts/run_model_evals.py")
+    require("LICENSE")
+    for filename in REQUIRED_KNOWLEDGE:
+        require(f"references/knowledge/{filename}")
+    for filename in REQUIRED_PRACTICAL:
+        require(f"references/practical/{filename}")
+    for filename in REQUIRED_PERSONAL:
+        require(f"references/personal/{filename}")
+    if not runtime_only:
+        require("README.md")
+        require("NOTICE.md")
+        require("IMPLEMENTATION_REPORT.md")
+        require("V1_1_REVIEW.md")
+        require("UPSTREAM_LOCK.json")
+        require("UPSTREAM_LOCK.md")
+        require("shared/CORE_POLICY.md")
+        require("shared/FACT_HYPOTHESIS_POLICY.md")
+        require("tests/unit/test_memory_isolation.py")
+        require("tests/unit/test_memory_retention.py")
+        require("tests/unit/test_memory_delete.py")
+        require("tests/unit/test_memory_expiration.py")
+        require("tests/integration/test_memory_cli.py")
+        require("model_evals/cases.yaml")
+        require("model_evals/rubric.yaml")
+        require("model_evals/README.md")
+        require("chatgpt-project/PROJECT_INSTRUCTIONS.md")
+        require("chatgpt-project/README.md")
+        require("chatgpt-project/knowledge/DAILY_REPLY_PLAYBOOK.md")
+        require("chatgpt-project/knowledge/RELATIONSHIP_AND_SIGNAL_RULES.md")
+        require("chatgpt-project/knowledge/GROWTH_AND_REVIEW.md")
+        require("chatgpt-project/knowledge/PRIVACY_AND_CHECKPOINTS.md")
+        require("sync/CHATGPT_TO_CODEX.md")
+        require("sync/CODEX_TO_CHATGPT.md")
+        require("sync/CHECKPOINT_TEMPLATE.md")
+        for filename in REQUIRED_EVALS:
+            require(f"evals/{filename}")
+    agent = ROOT / "agents/openai.yaml"
+    if agent.is_file():
+        text = agent.read_text(encoding="utf-8")
+        if "$goutoujunshi-personal" not in text:
+            ERRORS.append("agents/openai.yaml must mention $goutoujunshi-personal")
+        if 'display_name: "关系罗盘"' not in text:
+            ERRORS.append("agents/openai.yaml must use the display name 关系罗盘")
+
+
+def validate_routes_and_invariants() -> None:
+    skill = ROOT / "SKILL.md"
+    if not skill.is_file():
+        return
+    content = skill.read_text(encoding="utf-8")
+    required = (
+        "默认只读当前问题直接需要的 1–3 份参考",
+        "references/personal/微信截图解析协议.md",
+        "references/personal/关系阶段与聊天节奏.md",
+        "references/personal/自然回复生成器.md",
+        "references/personal/网络聊天表达升级器.md",
+        "references/personal/幽默与调侃生成器.md",
+        "references/personal/主动话题与conversation-hook.md",
+        "references/personal/投入预算与停止条件.md",
+        "references/personal/成长状态与记忆适配.md",
+        "E1–E5 仅为内部表达路由",
+        "只是训练强度上限，不是默认升级",
+        "允许无技巧回复",
+        "Continuation ownership",
+        "积极接梗",
+        "A0 assisted",
+        "A1 collaborative",
+        "A2 calibration",
+        "对方反馈用于关系策略，不作为用户成长的主要分数",
+        "按对象隔离",
+        "线上可比线下主动丰富",
+        "她刚回",
+        "明确表示不发展、要求别联系或反复不欢迎时停止",
+        "不声称能直接读取、解密或导出",
+    )
+    for marker in required:
+        if marker not in content:
+            ERRORS.append(f"SKILL.md missing invariant or route: {marker}")
+
+
+def validate_runtime_boundaries() -> None:
+    runtime_roots = (
+        ROOT / "SKILL.md",
+        ROOT / "agents",
+        ROOT / "references",
+        ROOT / "scripts",
+        ROOT / "shared",
+        ROOT / "assets",
+    )
+    forbidden_parts = {"research", "documentation", ".git", "__pycache__", "evals"}
+    for runtime_root in runtime_roots:
+        if not runtime_root.exists():
+            continue
+        paths = (runtime_root,) if runtime_root.is_file() else runtime_root.rglob("*")
+        for path in paths:
+            if forbidden_parts.intersection(path.relative_to(ROOT).parts):
+                ERRORS.append(f"non-runtime content inside runtime allowlist: {path.relative_to(ROOT)}")
+            if path.is_file() and path.suffix in {".pyc", ".pyo"}:
+                ERRORS.append(f"compiled artifact found: {path.relative_to(ROOT)}")
+
+
+def validate_markdown_links() -> None:
+    link_pattern = re.compile(r"\]\(([^)]+)\)")
+    for markdown in ROOT.rglob("*.md"):
+        text = markdown.read_text(encoding="utf-8")
+        for raw_target in link_pattern.findall(text):
+            target = raw_target.strip().split("#", 1)[0]
+            if not target or re.match(r"^(?:https?://|mailto:)", target):
+                continue
+            if not (markdown.parent / target).resolve().exists():
+                ERRORS.append(f"broken local link in {markdown.relative_to(ROOT)}: {raw_target}")
+
+
+def validate_markers() -> None:
+    patterns = {
+        ".md": re.compile(r"<!-- Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} -->"),
+        ".py": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
+        ".yaml": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
+        ".yml": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
+    }
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.parts or path.suffix.lower() not in patterns:
+            continue
+        lines = path.read_text(encoding="utf-8").rstrip().splitlines()
+        if not lines or not patterns[path.suffix.lower()].fullmatch(lines[-1]):
+            ERRORS.append(f"missing final modification marker: {path.relative_to(ROOT)}")
+
+
+def validate_placeholders() -> None:
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.suffix.lower() not in {".md", ".yaml", ".yml", ".py"}:
+            continue
+        if "[" + "TODO" in path.read_text(encoding="utf-8"):
+            ERRORS.append(f"template placeholder in {path.relative_to(ROOT)}")
+
+
+def validate_upstream_lock(runtime_only: bool) -> None:
+    if runtime_only:
+        return
+    path = ROOT / "UPSTREAM_LOCK.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        ERRORS.append(f"UPSTREAM_LOCK.json is invalid JSON: {exc}")
+        return
+    if set(data) != {"schema_version", "sources"} or data.get("schema_version") != 1:
+        ERRORS.append("UPSTREAM_LOCK.json must use schema_version 1 and sources only")
+    sources = data.get("sources")
+    if not isinstance(sources, list) or len(sources) != 2:
+        ERRORS.append("UPSTREAM_LOCK.json must contain exactly two sources")
+        return
+    repositories = {item.get("repository") for item in sources if isinstance(item, dict)}
+    expected_repositories = {
+        "https://github.com/powerycy/goutoujunshi.git",
+        "https://github.com/liuzitong901/goutoujunshi-warm-fork.git",
+    }
+    if repositories != expected_repositories:
+        ERRORS.append("UPSTREAM_LOCK.json must lock original and warm-fork repositories")
+    for item in sources:
+        if not isinstance(item, dict):
+            ERRORS.append("UPSTREAM_LOCK.json source must be an object")
+            continue
+        allowed = {"repository", "commit", "copied_at"}
+        selector = {key for key in ("branch", "tag") if key in item}
+        if len(selector) != 1 or set(item) != allowed | selector:
+            ERRORS.append("each source must contain repository, commit, copied_at, and one branch/tag")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(item.get("commit", ""))):
+            ERRORS.append(f"UPSTREAM_LOCK.json has invalid commit for {item.get('repository')}")
+        if not str(item.get("repository", "")).startswith("https://github.com/"):
+            ERRORS.append(f"UPSTREAM_LOCK.json has invalid repository: {item.get('repository')}")
+        try:
+            normalize_iso8601(str(item.get("copied_at", "")), field_name="copied_at")
+        except ValueError as exc:
+            ERRORS.append(f"UPSTREAM_LOCK.json invalid copied_at: {exc}")
+    serialized = json.dumps(data, ensure_ascii=False)
+    if re.search(r"[A-Za-z]:\\\\|(?:^|[\"'])/(?:Users|home)/", serialized):
+        ERRORS.append("UPSTREAM_LOCK.json must not contain local absolute paths")
+
+
+def validate_evals(runtime_only: bool) -> None:
+    if runtime_only or not (ROOT / "scripts" / "run_contract_evals.py").is_file():
+        return
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        result = run_contract_evals()
+    if result:
+        ERRORS.append("contract eval validation failed: " + output.getvalue().strip())
+    else:
+        print("contract eval: PASS")
+
+
+def validate_model_eval_definitions(runtime_only: bool) -> None:
+    if runtime_only or not (ROOT / "scripts" / "run_model_evals.py").is_file():
+        return
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        result = validate_model_eval_command(argparse.Namespace())
+    output = stream.getvalue().strip()
+    if result:
+        ERRORS.append("model eval definition validation failed: " + output)
+    elif "behavioral evaluation NOT RUN" not in output:
+        ERRORS.append("model eval validator must explicitly report behavioral evaluation NOT RUN")
+
+
+def validate_test_suites(runtime_only: bool) -> None:
+    if runtime_only:
+        return
+    for label, directory in (("unit tests", "unit"), ("integration tests", "integration")):
+        suite = unittest.defaultTestLoader.discover(
+            str(ROOT / "tests" / directory), top_level_dir=str(ROOT)
+        )
+        stream = io.StringIO()
+        result = unittest.TextTestRunner(stream=stream, verbosity=1).run(suite)
+        if not result.wasSuccessful():
+            ERRORS.append(f"{label} failed: {stream.getvalue().strip()}")
+        else:
+            print(f"{label}: PASS ({result.testsRun})")
+
+
+def validate_policy_parity(runtime_only: bool) -> None:
+    core = require("shared/CORE_POLICY.md")
+    if not core.is_file():
+        return
+    content = core.read_text(encoding="utf-8")
+    for marker in (
+        "fact != hypothesis",
+        "object isolation",
+        "green / gray / yellow / red",
+        "continuation ownership",
+        "actual send learning",
+        "user growth != partner response",
+        "stop conditions",
+    ):
+        if marker not in content:
+            ERRORS.append(f"shared/CORE_POLICY.md missing parity rule: {marker}")
+    for path in ("SKILL.md", "chatgpt-project/PROJECT_INSTRUCTIONS.md"):
+        target = ROOT / path
+        if target.is_file() and "CORE_POLICY.md" not in target.read_text(encoding="utf-8"):
+            ERRORS.append(f"{path} must reference CORE_POLICY.md")
+    if not runtime_only:
+        checkpoint = ROOT / "sync" / "CHECKPOINT_TEMPLATE.md"
+        if checkpoint.is_file():
+            text = checkpoint.read_text(encoding="utf-8")
+            for heading in ("## confirmed", "## hypothesis", "## recommendation", "## unknown"):
+                if heading not in text:
+                    ERRORS.append(f"checkpoint missing structure: {heading}")
+
+
+def main() -> int:
+    unexpected = [arg for arg in sys.argv[1:] if arg != "--runtime"]
+    if unexpected:
+        print(f"ERROR: unsupported arguments: {' '.join(unexpected)}")
+        return 2
+    runtime_only = "--runtime" in sys.argv[1:]
+    validate_frontmatter()
+    validate_skill_budget()
+    validate_inventory(runtime_only)
+    validate_routes_and_invariants()
+    validate_runtime_boundaries()
+    validate_markdown_links()
+    validate_markers()
+    validate_placeholders()
+    validate_upstream_lock(runtime_only)
+    validate_policy_parity(runtime_only)
+    validate_evals(runtime_only)
+    validate_model_eval_definitions(runtime_only)
+    validate_test_suites(runtime_only)
+    if ERRORS:
+        for error in ERRORS:
+            print(f"ERROR: {error}")
+        return 1
+    print("goutoujunshi-personal validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+# Modified by AI on 2026-08-21 14:47:55

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "criteria": {
+    "sendable_first": {"question": "第一屏是否先给可直接发送的内容？"},
+    "hide_internal_labels": {"question": "普通实时输出是否隐藏 E 标签和内部路由？"},
+    "no_realtime_lecture": {"question": "实时场景是否避免长篇成长教学？"},
+    "stage_appropriate": {"question": "表达强度是否符合关系阶段和当前反馈？"},
+    "gray_for_insufficient_evidence": {"question": "单次忙、短回或晚回是否优先标为 gray/证据不足？"},
+    "separate_fact_and_inference": {"question": "是否区分可见事实、推测和未知？"},
+    "avoid_fixed_reply_time_rule": {"question": "是否避免用固定回复小时数直接判兴趣？"},
+    "break_interview_mode": {"question": "是否停止裸问题链并优先分享、观点或故事？"},
+    "use_real_user_content": {"question": "回复内容是否来自用户可认领的真实材料？"},
+    "no_forced_humor": {"question": "是否允许不用技巧，避免强塞段子？"},
+    "continuation_owned": {"question": "积极接梗后是否提供用户能用普通语言接续的路径？"},
+    "reversible_teasing": {"question": "调侃是否轻度、可逆且不触碰敏感点？"},
+    "plain_followup_available": {"question": "是否能从玩笑自然回到真实内容？"},
+    "review_two_tracks": {"question": "复盘是否分为 User Growth 与 Partner / Relationship？"},
+    "one_training_focus": {"question": "是否只选择一个下阶段训练重点？"},
+    "no_combined_chat_score": {"question": "是否避免把用户成长和对方反应合成单一分数？"},
+    "compare_actual_send": {"question": "是否比较 AI 建议与用户实际发送版本？"},
+    "extract_owned_preference": {"question": "是否提炼用户真正愿意认领的表达偏好？"},
+    "partner_result_not_quality_score": {"question": "是否避免用对方反馈直接判定哪版更优秀？"},
+    "confirmation_before_profile_update": {"question": "是否在更新稳定画像前请求用户确认？"},
+    "dimensioned_capability_profile": {"question": "是否按多个能力维度使用 emerging/developing/stable？"},
+    "no_precise_capability_score": {"question": "是否避免精确能力分和全局 stable E？"},
+    "partner_specific_isolation": {"question": "是否把对象反馈、边界和技巧历史按对象隔离？"},
+    "no_cross_object_assumption": {"question": "是否没有把对象A的接受度迁移给对象B？"},
+    "respect_explicit_stop": {"question": "明确拒绝或停止要求出现时是否停止推进？"},
+    "no_reengagement_hook": {"question": "是否拒绝设计继续吊住对方的钩子？"},
+    "preserve_dignity": {"question": "退出回复是否简洁、尊重且保留用户尊严？"}
+  }
+}
+
+# Modified by AI on 2026-08-21 13:48:02

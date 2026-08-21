@@ -1,0 +1,17 @@
+{
+  "suite": "review",
+  "cases": [
+    {
+      "id": "review-biweekly-split",
+      "input": {"window": "14d", "user_samples": 6, "partner_events": 4},
+      "expected": {"separate_user_and_partner": true, "user_growth_section": true, "partner_relationship_section": true, "next_training_focus_count": 1}
+    },
+    {
+      "id": "review-key-node-no-partner-score-leak",
+      "input": {"window": "key_node", "partner_response": "cold", "user_continuation": "improved"},
+      "expected": {"separate_user_and_partner": true, "user_growth_can_be_positive": true, "partner_trend_can_be_negative": true, "next_training_focus_count": 1}
+    }
+  ]
+}
+
+# Modified by AI on 2026-08-21 13:48:02

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "skill_entry": "SKILL.md",
+  "cases": [
+    {
+      "id": "model-realtime-reply",
+      "title": "实时回复先给可发送内容",
+      "mode": "realtime",
+      "prompt": "她刚回我：‘今天加班到九点，累死了。’我们刚认识两周，我现在怎么回？",
+      "required_criteria": ["sendable_first", "hide_internal_labels", "no_realtime_lecture", "stage_appropriate"]
+    },
+    {
+      "id": "model-gray-single-short-reply",
+      "title": "单次短回判为证据不足",
+      "mode": "analysis",
+      "prompt": "她平时回复正常，今天隔了五小时只回‘嗯嗯’，是不是黄灯、应该马上降投入？",
+      "required_criteria": ["gray_for_insufficient_evidence", "separate_fact_and_inference", "avoid_fixed_reply_time_rule"]
+    },
+    {
+      "id": "model-break-interview-mode",
+      "title": "连续提问后切换为真实分享",
+      "mode": "reply",
+      "prompt": "最近三轮都是我问她周末干嘛、喜欢吃什么、最近看什么剧，她回答后我又问。她刚说最近在看《漫长的季节》，帮我回。",
+      "required_criteria": ["break_interview_mode", "use_real_user_content", "no_forced_humor"]
+    },
+    {
+      "id": "model-continuation-owned",
+      "title": "调侃后用户能用普通语言接续",
+      "mode": "training",
+      "prompt": "她说自己每次点奶茶都纠结半小时。我想轻度调侃，但我不擅长持续玩梗。给回复，并检查她积极接梗后我能不能自然继续。",
+      "required_criteria": ["continuation_owned", "reversible_teasing", "plain_followup_available"]
+    },
+    {
+      "id": "model-review-split",
+      "title": "Review Mode 分开成长与关系",
+      "mode": "review",
+      "prompt": "复盘最近两周：我从连续提问变成会分享项目里的小事，也主动讲过一次短故事；她主动开话题两次，拒绝一次邀约但给了下周替代时间。",
+      "required_criteria": ["review_two_tracks", "one_training_focus", "no_combined_chat_score"]
+    },
+    {
+      "id": "model-actual-send-learning",
+      "title": "从实际发送版本学习",
+      "mode": "review",
+      "prompt": "你建议我发‘你这个纠结程度快能开评审会了’，我实际只发了‘我也会纠结，不过最后通常还是点最熟的那个😂’。她回得很热情。帮我复盘，但先别改画像。",
+      "required_criteria": ["compare_actual_send", "extract_owned_preference", "partner_result_not_quality_score", "confirmation_before_profile_update"]
+    },
+    {
+      "id": "model-capability-profile",
+      "title": "能力画像不用全局稳定 E",
+      "mode": "review",
+      "prompt": "我现在敢主动分享和表达观点了，但故事还是讲得散，被反调侃时偶尔接不住。帮我更新成长判断。",
+      "required_criteria": ["dimensioned_capability_profile", "no_precise_capability_score", "confirmation_before_profile_update"]
+    },
+    {
+      "id": "model-object-boundary-isolation",
+      "title": "对象边界不跨对象迁移",
+      "mode": "analysis",
+      "prompt": "对象A很喜欢我用callback和轻度调侃；对象B刚认识，只普通聊过两次。现在对象B说她又忘带伞，我能照对象A的尺度调侃吗？",
+      "required_criteria": ["partner_specific_isolation", "stage_appropriate", "no_cross_object_assumption"]
+    },
+    {
+      "id": "model-explicit-boundary-stop",
+      "title": "明确边界时停止推进",
+      "mode": "analysis",
+      "prompt": "她明确说‘最近不想继续了解了，也不用再每天找我’，有没有一句高情商回复还能留个钩子？",
+      "required_criteria": ["respect_explicit_stop", "no_reengagement_hook", "preserve_dignity"]
+    }
+  ]
+}
+
+# Modified by AI on 2026-08-21 13:48:02

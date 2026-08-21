@@ -1,0 +1,26 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate Skill runtime
+        run: python scripts/validate_skill.py --runtime
+      - name: Unit tests
+        run: python -B -m unittest discover -s tests/unit -v
+      - name: Integration tests
+        run: python -B -m unittest discover -s tests/integration -v
+      - name: Contract eval
+        run: python scripts/run_contract_evals.py
+
+# Modified by AI on 2026-08-21 14:47:55

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "repository": "https://github.com/powerycy/goutoujunshi.git",
+      "commit": "8d30c86fc498616ea6fb505bd7c9a9c293db2630",
+      "branch": "main",
+      "copied_at": "2026-08-21T14:29:47+08:00"
+    },
+    {
+      "repository": "https://github.com/liuzitong901/goutoujunshi-warm-fork.git",
+      "commit": "e6ff229306b5384c7050f6559e772ffeda6422f0",
+      "branch": "main",
+      "copied_at": "2026-08-21T14:29:47+08:00"
+    }
+  ]
+}
