@@ -16,6 +16,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 from date_utils import normalize_iso8601
+from build_chatgpt_pack import build_knowledge_bodies, clean_markdown, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
 from run_contract_evals import main as run_contract_evals
@@ -144,6 +145,7 @@ def validate_inventory(runtime_only: bool) -> None:
     require("scripts/knowledge_schema.py")
     require("scripts/knowledge_intake.py")
     require("scripts/knowledge_merge.py")
+    require("scripts/build_chatgpt_pack.py")
     require("LICENSE")
     for filename in REQUIRED_KNOWLEDGE:
         require(f"references/knowledge/{filename}")
@@ -158,6 +160,7 @@ def validate_inventory(runtime_only: bool) -> None:
         require("NOTICE.md")
         require("IMPLEMENTATION_REPORT.md")
         require("V1_1_REVIEW.md")
+        require("V1_2_IMPLEMENTATION_REPORT.md")
         require("UPSTREAM_LOCK.json")
         require("UPSTREAM_LOCK.md")
         require("shared/CORE_POLICY.md")
@@ -191,12 +194,25 @@ def validate_inventory(runtime_only: bool) -> None:
         require("tests/integration/test_proposal_validation.py")
         require("tests/integration/test_knowledge_approve_gate.py")
         require("tests/integration/test_knowledge_merge.py")
+        require("tests/unit/test_chatgpt_pack.py")
+        require("tests/unit/test_policy_pack.py")
+        require("tests/integration/test_chatgpt_pack_cli.py")
         require("chatgpt-project/PROJECT_INSTRUCTIONS.md")
         require("chatgpt-project/README.md")
         require("chatgpt-project/knowledge/DAILY_REPLY_PLAYBOOK.md")
         require("chatgpt-project/knowledge/RELATIONSHIP_AND_SIGNAL_RULES.md")
         require("chatgpt-project/knowledge/GROWTH_AND_REVIEW.md")
         require("chatgpt-project/knowledge/PRIVACY_AND_CHECKPOINTS.md")
+        for filename in (
+            "01-CORE_POLICY.md",
+            "02-DAILY_CONVERSATION.md",
+            "03-RELATIONSHIP_SIGNALS.md",
+            "04-GROWTH_AND_REVIEW.md",
+            "05-SAFETY_AND_EVIDENCE.md",
+            "06-CURATED_CLAIMS.md",
+            "KNOWLEDGE_PACK_INFO.json",
+        ):
+            require(f"chatgpt-project/generated-knowledge/{filename}")
         require("sync/CHATGPT_TO_CODEX.md")
         require("sync/CODEX_TO_CHATGPT.md")
         require("sync/CHECKPOINT_TEMPLATE.md")
@@ -240,6 +256,7 @@ def validate_routes_and_invariants() -> None:
         "她刚回",
         "明确表示不发展、要求别联系或反复不欢迎时停止",
         "不声称能直接读取、解密或导出",
+        "references/curated/INDEX.md",
     )
     for marker in required:
         if marker not in content:
@@ -369,6 +386,35 @@ def validate_curated_knowledge(runtime_only: bool) -> None:
                 ERRORS.append(f"rejected source appears in curated runtime: {source_id}")
     if store_ids != runtime_claim_ids:
         ERRORS.append("CURATED_CLAIMS.json does not match curated runtime claim IDs")
+
+
+def validate_chatgpt_pack(runtime_only: bool) -> None:
+    if runtime_only:
+        return
+    output = ROOT / "chatgpt-project" / "generated-knowledge"
+    try:
+        expected_bodies = build_knowledge_bodies(ROOT)
+    except (OSError, ValueError) as exc:
+        ERRORS.append(f"cannot build expected ChatGPT pack: {exc}")
+        return
+    for filename, expected in expected_bodies.items():
+        path = output / filename
+        if not path.is_file():
+            continue
+        actual = clean_markdown(path.read_text(encoding="utf-8")).rstrip()
+        if actual != expected.rstrip():
+            ERRORS.append(f"generated ChatGPT pack is stale: {filename}")
+    info_path = output / "KNOWLEDGE_PACK_INFO.json"
+    if not info_path.is_file():
+        return
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+        expected_info = pack_metadata(ROOT, info.get("built_at"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        ERRORS.append(f"invalid KNOWLEDGE_PACK_INFO.json: {exc}")
+        return
+    if info != expected_info:
+        ERRORS.append("KNOWLEDGE_PACK_INFO.json does not match current inputs")
 
 
 def validate_markdown_links() -> None:
@@ -534,6 +580,7 @@ def main() -> int:
     validate_routes_and_invariants()
     validate_runtime_boundaries()
     validate_curated_knowledge(runtime_only)
+    validate_chatgpt_pack(runtime_only)
     validate_markdown_links()
     validate_markers()
     validate_placeholders()
@@ -553,4 +600,4 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# Modified by AI on 2026-08-21 17:03:53
+# Modified by AI on 2026-08-21 17:21:04

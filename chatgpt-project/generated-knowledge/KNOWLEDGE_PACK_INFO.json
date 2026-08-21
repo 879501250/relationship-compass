@@ -1,0 +1,9 @@
+{
+  "built_at": "2026-08-21T09:18:00+00:00",
+  "curated_revision": "sha256:eec17c6b870c76e149566abb5ec8345f1ef8044e6f86c3e7f9f0086e1c889490",
+  "included_claim_ids": [],
+  "included_sources": [],
+  "pack_version": "1.2.0",
+  "skill_revision": "sha256:2cb90027b4b679d9d7f61cd76d3fe91fd60e02e1b31aeefde7bd4182a587cf43",
+  "source_registry_revision": "sha256:8f6a17cf87aa05150ade5c6cc510b72e5d2a5098130021f6a2d2be53762e91fc"
+}

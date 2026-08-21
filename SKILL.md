@@ -81,6 +81,8 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 默认只读当前问题直接需要的 1–3 份参考，不批量加载全库。高风险或证据争议时再读原版知识：PUA/操控读 `references/knowledge/05-PUA操控与伦理替代.md`；同意边界读 `references/knowledge/08-同意边界性与亲密.md`；危机读 `references/knowledge/17-中国法律安全与危机转介.md`；一句话与反馈分支可补 `references/practical/实战话术编排器：从一句回复到后续分支.md`。
 
+需要 V1.2 新增知识时先读 `references/curated/INDEX.md`，再只加载命中 topic 文件；未审核 source card、proposal、review decision 和 rejected 内容都不是 runtime 知识。
+
 ## 安全边界
 
 - 不诊断心理疾病，不用 MBTI、依恋、性别或单次消息替代行为证据。
@@ -90,4 +92,4 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 始终让用户保留最终决定权，并说明关键不确定性、何时降级和何时停止。
 
-<!-- Modified by AI on 2026-08-21 14:47:55 -->
+<!-- Modified by AI on 2026-08-21 17:15:12 -->

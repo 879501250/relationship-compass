@@ -1,4 +1,4 @@
-# 关系罗盘 V1.1.1
+# 关系罗盘 V1.2
 
 `goutoujunshi-personal` 是内部 Skill 名称与调用 slug；`relationship-compass` 是安装目录和 GitHub 仓库名；“关系罗盘”是面向用户的展示名称。
 
@@ -39,9 +39,10 @@ cp -R ./relationship-compass "$HOME/.agents/skills/"
 
 1. 新建一个 ChatGPT Project，展示名可设为“关系罗盘”。
 2. 将 `chatgpt-project/PROJECT_INSTRUCTIONS.md` 内容粘贴到 Project instructions。
-3. 上传 `chatgpt-project/knowledge/` 下 4 份精简知识文件。
-4. 同时上传 `shared/CORE_POLICY.md` 和 `shared/FACT_HYPOTHESIS_POLICY.md`，作为双系统共同政策。
-5. 如需同步状态，按 `sync/CHECKPOINT_TEMPLATE.md` 为每个对象生成一份待确认 checkpoint；用户审核后再上传。
+3. 运行 `python scripts/build_chatgpt_pack.py`。
+4. 上传 `chatgpt-project/generated-knowledge/` 下 6 份主题 Markdown；共享政策已自动包含在 `01-CORE_POLICY.md`。
+5. 使用 `KNOWLEDGE_PACK_INFO.json` 核对 pack、Skill、curated 与 registry revision。
+6. 如需同步状态，按 `sync/CHECKPOINT_TEMPLATE.md` 为每个对象生成一份待确认 checkpoint；用户审核后再上传。
 
 不要上传 SQLite、WAL/SHM、`memory_store.py`、完整 upstream references、整段聊天导出或跨对象混合 checkpoint。ChatGPT Project 不能直接写 Local Codex Memory。
 
@@ -113,6 +114,14 @@ python scripts/knowledge_merge.py merge --proposal knowledge-management/proposal
 冲突不能静默覆盖。`keep_existing`、`merge_with_conditions`、`keep_both`、`reject_new` 写在 proposal 的 Conflict Resolution；`replace_existing` 除审核和 merge 确认外，还要对每个旧 claim 增加 `--confirm-replace <claim-id>`。
 
 删除本机原始书籍不会删除审计记录。来源不再推荐时使用 `knowledge_intake.py deprecate --source-id <id> --confirm`；不物理删除已审核来源。新版/修订版用新的 source_id 和指纹重新登记，旧版再 deprecate。元数据笔误可在 registry/source card 修正后运行 validate；已进入 curated 的实质性纠错必须走新 proposal，不能手改覆盖。完整流程见 `knowledge-management/KNOWLEDGE_GOVERNANCE.md`。
+
+生成 ChatGPT 精简包：
+
+```text
+python scripts/build_chatgpt_pack.py
+```
+
+builder 只读取固定 allowlist 中的 shared policy、personal 规则、必要安全知识与已批准 curated 内容。它不会打包 SQLite、Memory 实现、raw、local registry、proposal、review decision、rejected 内容或本机绝对路径。
 
 ## 数据备份方式
 
@@ -192,4 +201,4 @@ TTL 只把它从 active 变为 stale，不删除历史。`context` 默认不召�
 
 没有应用层加密。它依赖本机账户、目录权限和磁盘安全；备份也应按敏感数据管理。
 
-<!-- Modified by AI on 2026-08-21 17:01:55 -->
+<!-- Modified by AI on 2026-08-21 17:21:04 -->
