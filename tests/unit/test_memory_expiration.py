@@ -6,6 +6,20 @@ from date_utils import add_days_iso
 
 
 class MemoryExpirationTests(DirectMemoryCase):
+    def test_apply_refreshes_expired_hypotheses_before_write(self) -> None:
+        self.enable()
+        expired = self.hypothesis_delta("obj-a", "old_estimate", "旧判断")
+        expired["expires_at"] = "2020-01-01T00:00:00+00:00"
+        expired_id = self.apply(expired)["memory"]["id"]
+
+        self.apply(self.hypothesis_delta("obj-a", "new_estimate", "新判断"))
+
+        with memory_store.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM memories WHERE id = ?", (expired_id,)
+            ).fetchone()
+        self.assertEqual(row["status"], "stale")
+
     def test_active_hypothesis_becomes_stale_but_remains_visible_in_show(self) -> None:
         self.enable()
         applied = self.apply(
@@ -74,4 +88,4 @@ if __name__ == "__main__":
 
     unittest.main()
 
-# Modified by AI on 2026-08-21 14:47:55
+# Modified by AI on 2026-08-21 16:32:17

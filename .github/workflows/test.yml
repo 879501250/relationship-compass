@@ -7,13 +7,18 @@ on:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11"]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Validate Skill runtime
         run: python scripts/validate_skill.py --runtime
       - name: Unit tests
@@ -22,5 +27,7 @@ jobs:
         run: python -B -m unittest discover -s tests/integration -v
       - name: Contract eval
         run: python scripts/run_contract_evals.py
+      - name: Validate model eval definitions
+        run: python scripts/run_model_evals.py validate
 
-# Modified by AI on 2026-08-21 14:47:55
+# Modified by AI on 2026-08-21 16:32:17

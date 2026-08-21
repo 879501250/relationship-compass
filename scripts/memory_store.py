@@ -645,9 +645,10 @@ def load_delta(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_apply(args: argparse.Namespace) -> None:
     delta = load_delta(args)
-    timestamp = now_iso()
     with connect() as conn:
         require_enabled(conn)
+        refresh_hypothesis_lifecycle(conn)
+        timestamp = now_iso()
         conn.execute("BEGIN IMMEDIATE")
         before: list[dict[str, Any]] = []
         was_update = False
@@ -831,49 +832,83 @@ def command_show(args: argparse.Namespace) -> None:
     emit({"count": len(rows), "memories": rows})
 
 
+def compact_context_row(row: dict[str, Any]) -> dict[str, Any]:
+    item = {
+        "id": row["id"],
+        "scope": row["scope"],
+        "subject_id": row["subject_id"],
+        "field": row["field"],
+        "value": row["value"],
+        "occurred_at": row["occurred_at"],
+        "updated_at": row["updated_at"],
+        "observed_at": row["observed_at"],
+        "retention": row["retention"],
+        "confidence": row["confidence"],
+        "expires_at": row["expires_at"],
+        "source_type": row["source_type"],
+        "source_ref": row["source_ref"],
+    }
+    if row["scope"] == "user" and row["field"] == "current_style":
+        item["review_status"] = current_style_review_status(row["updated_at"])
+    return item
+
+
+def context_priority_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Order context candidates by policy before applying the character budget."""
+    core = [row for row in rows if row["scope"] in {"user", "object", "relationship"}]
+    hypotheses = [row for row in rows if row["scope"] == "hypothesis"]
+    hypothesis_rank = {"stage_estimate": 0, "trend_estimate": 1}
+    hypotheses.sort(
+        key=lambda row: (
+            hypothesis_rank.get(row["field"], 2),
+            row["field"],
+            row["id"],
+        )
+    )
+    events = [row for row in rows if row["scope"] == "event"]
+    landmarks = [row for row in events if row["retention"] == "landmark"]
+    recent_normal = [row for row in events if row["retention"] == "normal"]
+    recent_temporary = [row for row in events if row["retention"] == "temporary"]
+    recent_slots = CONTEXT_EVENT_LIMIT
+    normal_candidates = recent_normal[:recent_slots]
+    recent_slots -= len(normal_candidates)
+    temporary_candidates = recent_temporary[:recent_slots]
+    return core + hypotheses + landmarks + normal_candidates + temporary_candidates
+
+
+def build_context_payload(
+    rows: list[dict[str, Any]], subject_id: str, max_chars: int
+) -> dict[str, Any]:
+    """Select whole records deterministically without exceeding rendered output size."""
+    selected: list[dict[str, Any]] = []
+    for row in context_priority_rows(rows):
+        candidate = selected + [compact_context_row(row)]
+        payload = {
+            "count": len(candidate),
+            "subject_id": subject_id,
+            "max_chars": max_chars,
+            "memories": candidate,
+        }
+        rendered_chars = len(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        ) + 1
+        if rendered_chars <= max_chars:
+            selected = candidate
+    return {
+        "count": len(selected),
+        "subject_id": subject_id,
+        "max_chars": max_chars,
+        "memories": selected,
+    }
+
+
 def command_context(args: argparse.Namespace) -> None:
     subject_id = validate_text("subject_id", args.subject_id, 64)
     with connect() as conn:
         require_enabled(conn)
         refresh_hypothesis_lifecycle(conn)
         rows = list_memories(conn, subject_id)
-    core = [row for row in rows if row["scope"] in {"user", "object", "relationship"}]
-    hypotheses = [row for row in rows if row["scope"] == "hypothesis"]
-    events = [row for row in rows if row["scope"] == "event"]
-    landmarks = [row for row in events if row["retention"] == "landmark"]
-    recent_normal = [row for row in events if row["retention"] == "normal"]
-    recent_temporary = [row for row in events if row["retention"] == "temporary"]
-    rows = core + landmarks + (recent_normal + recent_temporary)[:CONTEXT_EVENT_LIMIT] + hypotheses
-    compact = []
-    for row in rows:
-        item = {
-            "id": row["id"],
-            "scope": row["scope"],
-            "subject_id": row["subject_id"],
-            "field": row["field"],
-            "value": row["value"],
-            "occurred_at": row["occurred_at"],
-            "updated_at": row["updated_at"],
-            "observed_at": row["observed_at"],
-            "retention": row["retention"],
-            "confidence": row["confidence"],
-            "expires_at": row["expires_at"],
-            "source_type": row["source_type"],
-            "source_ref": row["source_ref"],
-        }
-        if row["scope"] == "user" and row["field"] == "current_style":
-            item["review_status"] = current_style_review_status(row["updated_at"])
-        compact.append(item)
-    while compact and len(json.dumps(compact, ensure_ascii=False)) > args.max_chars:
-        compact.pop()
-    emit(
-        {
-            "count": len(compact),
-            "subject_id": subject_id,
-            "max_chars": args.max_chars,
-            "memories": compact,
-        }
-    )
+    emit(build_context_payload(rows, subject_id, args.max_chars))
 
 
 def command_style_status(args: argparse.Namespace) -> None:
@@ -1137,4 +1172,4 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# Modified by AI on 2026-08-21 14:47:55
+# Modified by AI on 2026-08-21 16:32:17
