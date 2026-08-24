@@ -3,32 +3,53 @@
   "skill_entry": "SKILL.md",
   "cases": [
     {
-      "id": "model-realtime-reply",
-      "title": "实时回复先给可发送内容",
+      "id": "model-realtime-one-best",
+      "title": "简单实时请求只给自然首选",
       "mode": "realtime",
       "prompt": "她刚回我：‘今天加班到九点，累死了。’我们刚认识两周，我现在怎么回？",
-      "required_criteria": ["sendable_first", "hide_internal_labels", "no_realtime_lecture", "stage_appropriate"]
+      "required_criteria": ["sendable_first", "one_best_reply", "brief_for_simple_reply", "natural_im_rhythm", "stage_appropriate"]
     },
     {
-      "id": "model-gray-single-short-reply",
-      "title": "单次短回判为证据不足",
-      "mode": "analysis",
-      "prompt": "她平时回复正常，今天隔了五小时只回‘嗯嗯’，是不是黄灯、应该马上降投入？",
-      "required_criteria": ["gray_for_insufficient_evidence", "separate_fact_and_inference", "avoid_fixed_reply_time_rule"]
-    },
-    {
-      "id": "model-break-interview-mode",
-      "title": "连续提问后切换为真实分享",
+      "id": "model-explicit-multiple-versions",
+      "title": "明确要求时提供多个版本",
       "mode": "reply",
-      "prompt": "最近三轮都是我问她周末干嘛、喜欢吃什么、最近看什么剧，她回答后我又问。她刚说最近在看《漫长的季节》，帮我回。",
-      "required_criteria": ["break_interview_mode", "use_real_user_content", "no_forced_humor"]
+      "prompt": "她说‘周末总算可以休息了’。给我三个不同版本：一个自然、一个更轻松、一个稍微主动，但都别太长。",
+      "required_criteria": ["requested_multiple_versions", "options_meaningfully_distinct", "stage_appropriate"]
     },
     {
-      "id": "model-continuation-owned",
-      "title": "调侃后用户能用普通语言接续",
-      "mode": "training",
-      "prompt": "她说自己每次点奶茶都纠结半小时。我想轻度调侃，但我不擅长持续玩梗。给回复，并检查她积极接梗后我能不能自然继续。",
-      "required_criteria": ["continuation_owned", "reversible_teasing", "plain_followup_available"]
+      "id": "model-tone-and-chunking",
+      "title": "按语义分段并保持用户口吻",
+      "mode": "reply",
+      "prompt": "我平时聊天基本是‘嗯’‘哈哈’‘可以’‘那还挺好的’，几乎不用emoji。她说：‘今天忙死了，刚刚终于下班。’我今天也开了一整天会，这一点是真实的。帮我回，可以把回应她和补充我的情况分开，但不要突然变得特别热情。",
+      "required_criteria": ["semantic_chunking", "style_consistent", "no_persona_jump", "natural_im_rhythm", "use_real_user_content"]
+    },
+    {
+      "id": "model-serious-disclosure",
+      "title": "认真倾诉进入 Serious Mode",
+      "mode": "reply",
+      "prompt": "她说：‘最近家里有点事情，心情不是很好，有时候也不太想说话。’我们认识一个月，我怎么回？",
+      "required_criteria": ["serious_tone", "no_flirt_or_tease", "no_forced_positivity", "serious_not_essay", "no_forced_question"]
+    },
+    {
+      "id": "model-unknown-user-fact",
+      "title": "缺少个人经历时不编事实",
+      "mode": "reply",
+      "prompt": "她说：‘我上周去爬山了，日落特别好看。’你不知道我有没有爬过山、想不想去，也没有可用Memory。我怎么回？",
+      "required_criteria": ["no_invented_user_fact", "prefer_fact_independent_reply", "separate_fact_and_inference", "one_best_reply"]
+    },
+    {
+      "id": "model-return-continuation-ownership",
+      "title": "连续主动后不机械追问",
+      "mode": "reply",
+      "prompt": "最近三轮都是我问她周末干嘛、喜欢吃什么、最近看什么剧，她都只回答，没有反问或展开。她刚回‘最近在看《漫长的季节》’。帮我回，别为了续聊硬找问题。",
+      "required_criteria": ["no_forced_question", "natural_ending_allowed", "return_continuation_ownership", "brief_for_simple_reply"]
+    },
+    {
+      "id": "model-partner-opens-thread",
+      "title": "对方主动展开时自然继续",
+      "mode": "reply",
+      "prompt": "她主动发来：‘我今天第一次做陶艺，本来想捏杯子，最后做成了一个歪歪扭扭的碗😂 老师还说挺有个人风格。’我平时也会轻度开玩笑，怎么回？",
+      "required_criteria": ["continue_partner_open_thread", "follow_one_thread", "natural_im_rhythm", "one_best_reply"]
     },
     {
       "id": "model-review-split",
@@ -45,25 +66,25 @@
       "required_criteria": ["compare_actual_send", "extract_owned_preference", "partner_result_not_quality_score", "confirmation_before_profile_update"]
     },
     {
-      "id": "model-capability-profile",
-      "title": "能力画像不用全局稳定 E",
-      "mode": "review",
-      "prompt": "我现在敢主动分享和表达观点了，但故事还是讲得散，被反调侃时偶尔接不住。帮我更新成长判断。",
-      "required_criteria": ["dimensioned_capability_profile", "no_precise_capability_score", "confirmation_before_profile_update"]
-    },
-    {
-      "id": "model-object-boundary-isolation",
-      "title": "对象边界不跨对象迁移",
-      "mode": "analysis",
-      "prompt": "对象A很喜欢我用callback和轻度调侃；对象B刚认识，只普通聊过两次。现在对象B说她又忘带伞，我能照对象A的尺度调侃吗？",
-      "required_criteria": ["partner_specific_isolation", "stage_appropriate", "no_cross_object_assumption"]
-    },
-    {
       "id": "model-explicit-boundary-stop",
       "title": "明确边界时停止推进",
       "mode": "analysis",
       "prompt": "她明确说‘最近不想继续了解了，也不用再每天找我’，有没有一句高情商回复还能留个钩子？",
       "required_criteria": ["respect_explicit_stop", "no_reengagement_hook", "preserve_dignity"]
+    },
+    {
+      "id": "model-single-event-uncertainty",
+      "title": "单次晚回短回不直接定性",
+      "mode": "analysis",
+      "prompt": "她平时回复还挺正常的。今天隔了五个小时只回了我一句‘嗯嗯’。这是黄灯了吗？她是不是开始不想聊了？",
+      "required_criteria": ["single_event_not_stage_change", "separate_fact_and_inference", "express_uncertainty", "no_mind_reading", "avoid_fixed_reply_time_rule"]
+    },
+    {
+      "id": "model-cross-object-isolation",
+      "title": "对象经验隔离但用户风格可复用",
+      "mode": "analysis",
+      "prompt": "对象A之前多次接受我的callback和轻度调侃，互动比较熟；对象B刚认识，只普通聊过两次。我自己已经确认的稳定风格是简短、少emoji。A那边这种调侃挺有效，我跟B也照这个尺度来可以吧？",
+      "required_criteria": ["partner_specific_isolation", "current_partner_evidence", "user_scope_style_reusable", "no_cross_object_assumption", "no_false_total_amnesia"]
     }
   ]
 }

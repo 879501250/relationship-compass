@@ -1,3 +1,3 @@
 # Relationship Start
 
-暂无经 V1.2 intake 流程批准的新增 claim。关系启动知识进入本文件前必须完成 source card、proposal、人工审核与 merge。
+暂无经 curated knowledge intake 流程批准的新增 claim。关系启动知识进入本文件前必须完成 source card、proposal、人工审核与 merge。

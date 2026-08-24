@@ -11,25 +11,126 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES_PATH = ROOT / "evals" / "contract_cases.yaml"
-REQUIRED_EXPECTATIONS: dict[str, tuple[str, Any]] = {
-    "signal_analysis": ("prioritize_repeated_behavior", True),
-    "uncertainty_expression": ("label_uncertainty", True),
-    "avoid_over_inference": ("mind_reading", False),
-    "reply_advice": ("sendable_first", True),
-    "reply_styles": ("styles_distinct", True),
-    "boundary_judgment": ("stop_progression", True),
-    "relationship_stage": ("separate_stage_and_trend", True),
-    "risk_signals": ("evidence_based_risk", True),
-    "facts_vs_hypotheses": ("separate_fact_and_hypothesis", True),
-    "memory_consent": ("stable_write_without_consent", False),
-    "memory_recall": ("subject_id_required", True),
-    "memory_isolation": ("copy_object_memory", False),
-    "knowledge_use": ("approved_sources_only", True),
-    "privacy_boundary": ("store_raw_chat", False),
-    "insufficient_information": ("ask_one_decisive_question", True),
-    "emotional_input": ("acknowledge_emotion_first", True),
-    "ambiguous_relationship": ("state_uncertainty", True),
-    "follow_up": ("test_first_line_and_followup", True),
+REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
+    "one_best_reply": {
+        "one_best_reply": True,
+        "automatic_parallel_options": False,
+        "long_analysis_required": False,
+        "reason_at_most_one_brief": True,
+    },
+    "explicit_multiple_versions": {
+        "multiple_versions_allowed": True,
+        "one_best_reply_mandatory": False,
+        "honor_requested_count": True,
+    },
+    "reply_depth_routing": {
+        "reply_first": True,
+        "long_analysis_required": False,
+        "sendable_content_first": True,
+    },
+    "semantic_chunking": {
+        "chunk_by_semantic_function": True,
+        "two_bubbles_allowed": True,
+        "character_threshold_rule": False,
+    },
+    "no_forced_chunking": {
+        "force_split_short_reply": False,
+        "single_bubble_allowed": True,
+    },
+    "unknown_user_fact": {
+        "invent_user_fact": False,
+        "unknown_remains_unknown": True,
+        "prefer_fact_independent_reply": True,
+        "hypothesis_as_fact": False,
+    },
+    "confirmed_memory_use": {
+        "use_relevant_confirmed_fact": True,
+        "user_scope_cross_object_allowed": True,
+        "current_object_fact_allowed": True,
+        "cross_object_fact_reuse": False,
+        "relationship_scope_current_pair_only": True,
+        "leak_irrelevant_memory": False,
+    },
+    "normal_tone_calibration": {
+        "user_style_first": True,
+        "light_humor_allowed": True,
+        "mechanically_copy_partner_style": False,
+    },
+    "serious_mode": {
+        "serious_tone": True,
+        "tease_or_flirt": False,
+        "forced_positivity": False,
+        "comfort_essay_required": False,
+    },
+    "boundary_serious_mode": {
+        "respect_boundary": True,
+        "continue_pressure": False,
+        "reengagement_hook": False,
+    },
+    "continuation_low_investment": {
+        "forced_followup_question": False,
+        "return_ownership": True,
+        "natural_stop_allowed": True,
+    },
+    "continuation_partner_opens": {
+        "continue_open_thread": True,
+        "follow_one_relevant_point": True,
+    },
+    "concise_style_consistency": {
+        "avoid_persona_jump": True,
+        "preserve_concise_density": True,
+        "sudden_emoji_flood": False,
+    },
+    "neutral_growth_goal": {
+        "fixed_pleasing_persona_goal": False,
+        "independent_judgment_goal": True,
+        "manipulative_rules": False,
+    },
+    "uncertainty_over_inference": {
+        "single_event_not_enough": True,
+        "must_express_uncertainty": True,
+        "mind_reading_not_allowed": True,
+        "automatic_negative_stage_change": False,
+        "need_trend_or_more_evidence": True,
+    },
+    "stage_trend_separation": {
+        "stage_and_trend_must_not_collapse": True,
+        "preserve_stage_evidence": True,
+        "recent_trend_separate": True,
+    },
+    "risk_evidence": {
+        "risk_must_be_evidence_based": True,
+        "single_weak_signal_not_high_risk": True,
+        "certainty_should_match_evidence": True,
+    },
+    "insufficient_information": {
+        "insufficient_information": True,
+        "do_not_invent_context": True,
+        "ask_or_identify_key_missing_evidence": True,
+        "do_not_force_stage_label": True,
+    },
+    "user_emotional_input": {
+        "acknowledge_user_emotion": True,
+        "reinforce_catastrophizing": False,
+        "evidence_boundary_still_applies": True,
+    },
+    "facts_vs_hypotheses": {
+        "separate_fact_and_hypothesis": True,
+        "promote_theory_to_fact": False,
+    },
+    "memory_consent": {
+        "stable_write_without_consent": False,
+        "ask_explicit_consent": True,
+    },
+    "memory_isolation": {
+        "copy_object_memory": False,
+        "shared_user_skill_allowed": True,
+    },
+    "knowledge_privacy": {
+        "approved_sources_only": True,
+        "use_proposal_as_runtime": False,
+        "store_raw_chat": False,
+    },
 }
 
 
@@ -57,7 +158,7 @@ def load_cases() -> list[dict[str, Any]]:
 
 
 def validate_cases(cases: list[dict[str, Any]]) -> None:
-    require(len(cases) == len(REQUIRED_EXPECTATIONS), "contract eval must contain 18 cases")
+    require(len(cases) == len(REQUIRED_EXPECTATIONS), f"contract eval must contain {len(REQUIRED_EXPECTATIONS)} cases",)
     ids: set[str] = set()
     categories: set[str] = set()
     for case in cases:
@@ -76,8 +177,9 @@ def validate_cases(cases: list[dict[str, Any]]) -> None:
         require(isinstance(case.get("input"), dict), f"{case_id}: input must be an object")
         expected = case.get("expected")
         require(isinstance(expected, dict), f"{case_id}: expected must be an object")
-        key, value = REQUIRED_EXPECTATIONS[category]
-        require(expected.get(key) == value, f"{case_id}: expected {key}={value!r}")
+        for key, value in REQUIRED_EXPECTATIONS[category].items():
+            require(key in expected, f"{case_id}: missing required expectation {key}")
+            require(expected[key] == value, f"{case_id}: expected {key}={value!r}")
     require(categories == set(REQUIRED_EXPECTATIONS), "contract eval category coverage is incomplete")
 
 

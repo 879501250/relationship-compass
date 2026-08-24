@@ -1,9 +1,9 @@
 {
-  "built_at": "2026-08-24T06:22:33+00:00",
-  "curated_revision": "sha256:05d413b7471ef9e55531e5eebef742abc560eb8c960a3f2195f9cce2307b9847",
+  "built_at": "2026-08-24T07:14:28+00:00",
+  "curated_revision": "sha256:24cd584e3d1f113ec35eb1133cfd7b0364bb8a9a072e2d88ba05dd6a87b3eae2",
   "included_claim_ids": [],
   "included_sources": [],
-  "pack_version": "1.2.0",
-  "skill_revision": "sha256:6720f236e5b8f7aad3262f9dd80806cdf020524b697b8f64b2d14c5b2e42ad30",
+  "pack_version": "1.3.0",
+  "skill_revision": "sha256:8cd2787c0b8d210f307cf8e7071c4129731830f77ee883f37ffb3bac9b840b97",
   "source_registry_revision": "sha256:8f6a17cf87aa05150ade5c6cc510b72e5d2a5098130021f6a2d2be53762e91fc"
 }

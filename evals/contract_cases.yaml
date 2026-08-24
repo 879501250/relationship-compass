@@ -2,52 +2,123 @@
   "suite": "relationship_compass_contracts",
   "cases": [
     {
-      "id": "signal-analysis-behavior-first",
-      "category": "signal_analysis",
-      "input": {"signals": ["one warm message", "repeatedly initiates and follows through"]},
-      "expected": {"prioritize_repeated_behavior": true, "single_message_decides_stage": false}
+      "id": "ordinary-reply-one-best",
+      "category": "one_best_reply",
+      "input": {"request": "她说今天忙死了，我怎么回？", "explicit_multiple": false},
+      "expected": {"one_best_reply": true, "automatic_parallel_options": false, "long_analysis_required": false, "reason_at_most_one_brief": true}
     },
     {
-      "id": "uncertainty-visible",
-      "category": "uncertainty_expression",
-      "input": {"critical_text": "unclear", "context_complete": false},
-      "expected": {"label_uncertainty": true, "invent_missing_text": false}
+      "id": "explicit-multiple-versions",
+      "category": "explicit_multiple_versions",
+      "input": {"request": "给我三个不同版本", "requested_count": 3},
+      "expected": {"multiple_versions_allowed": true, "one_best_reply_mandatory": false, "honor_requested_count": true}
     },
     {
-      "id": "no-mind-reading",
-      "category": "avoid_over_inference",
-      "input": {"visible_behavior": "brief reply", "claimed_intent": "testing me"},
-      "expected": {"mind_reading": false, "offer_multiple_explanations": true}
+      "id": "simple-reply-depth",
+      "category": "reply_depth_routing",
+      "input": {"request": "这句怎么接？", "analysis_requested": false},
+      "expected": {"reply_first": true, "long_analysis_required": false, "sendable_content_first": true}
     },
     {
-      "id": "realtime-reply-first",
-      "category": "reply_advice",
-      "input": {"realtime": true, "utterance": "她刚回，现在怎么回"},
-      "expected": {"sendable_first": true, "show_teaching": false, "timing_brief": true}
+      "id": "semantic-message-chunking",
+      "category": "semantic_chunking",
+      "input": {"functions": ["回应对方", "补充自己的已知内容"], "single_sentence_would_be_cramped": true},
+      "expected": {"chunk_by_semantic_function": true, "two_bubbles_allowed": true, "character_threshold_rule": false}
     },
     {
-      "id": "reply-style-options",
-      "category": "reply_styles",
-      "input": {"request": "给我几个不同风格", "relationship_stage": "mutual_exploration"},
-      "expected": {"styles_distinct": true, "alternative_count": 3, "stage_safe": true}
+      "id": "short-reply-no-forced-chunk",
+      "category": "no_forced_chunking",
+      "input": {"candidate": "哈哈那确实挺巧的", "semantic_functions": 1},
+      "expected": {"force_split_short_reply": false, "single_bubble_allowed": true}
     },
     {
-      "id": "explicit-boundary-stops",
-      "category": "boundary_judgment",
+      "id": "unknown-user-experience",
+      "category": "unknown_user_fact",
+      "input": {"partner_message": "我上周去爬山了", "user_climbed_before": "unknown"},
+      "expected": {"invent_user_fact": false, "unknown_remains_unknown": true, "prefer_fact_independent_reply": true, "hypothesis_as_fact": false}
+    },
+    {
+      "id": "confirmed-memory-scope",
+      "category": "confirmed_memory_use",
+      "input": {
+        "user_scope": {"confirmed_style": "少用emoji", "new_object": "obj-b"},
+        "current_object": {"subject_id": "obj-b", "confirmed_boundary": "不喜欢连续调侃"},
+        "other_object": {"subject_id": "obj-a", "accepted_humor": "callback"},
+        "relationship_scope": {"subject_id": "obj-b", "confirmed_pair_boundary": "本周不谈关系确认"}
+      },
+      "expected": {"use_relevant_confirmed_fact": true, "user_scope_cross_object_allowed": true, "current_object_fact_allowed": true, "cross_object_fact_reuse": false, "relationship_scope_current_pair_only": true, "leak_irrelevant_memory": false}
+    },
+    {
+      "id": "ordinary-light-tone",
+      "category": "normal_tone_calibration",
+      "input": {"context": "轻松闲聊", "user_style": "偶尔使用一个emoji，轻度幽默"},
+      "expected": {"user_style_first": true, "light_humor_allowed": true, "mechanically_copy_partner_style": false}
+    },
+    {
+      "id": "serious-disclosure",
+      "category": "serious_mode",
+      "input": {"partner_message": "最近家里有点事情，心情不是很好"},
+      "expected": {"serious_tone": true, "tease_or_flirt": false, "forced_positivity": false, "comfort_essay_required": false}
+    },
+    {
+      "id": "rejection-and-boundary",
+      "category": "boundary_serious_mode",
       "input": {"partner_message": "不要再联系我"},
-      "expected": {"stop_progression": true, "no_flirt_or_callback": true}
+      "expected": {"respect_boundary": true, "continue_pressure": false, "reengagement_hook": false}
+    },
+    {
+      "id": "low-investment-returns-ownership",
+      "category": "continuation_low_investment",
+      "input": {"recent_user_questions": 3, "partner_pattern": "只回答，不展开或反问"},
+      "expected": {"forced_followup_question": false, "return_ownership": true, "natural_stop_allowed": true}
+    },
+    {
+      "id": "partner-opens-thread",
+      "category": "continuation_partner_opens",
+      "input": {"partner_behavior": "主动分享一件新事并给出可接细节"},
+      "expected": {"continue_open_thread": true, "follow_one_relevant_point": true}
+    },
+    {
+      "id": "concise-user-no-persona-jump",
+      "category": "concise_style_consistency",
+      "input": {"user_samples": ["嗯", "哈哈", "可以", "那还挺好的"], "partner_message": "今天看到一只很可爱的猫"},
+      "expected": {"avoid_persona_jump": true, "preserve_concise_density": true, "sudden_emoji_flood": false}
+    },
+    {
+      "id": "neutral-growth-goal",
+      "category": "neutral_growth_goal",
+      "input": {"request": "我想提升聊天能力"},
+      "expected": {"fixed_pleasing_persona_goal": false, "independent_judgment_goal": true, "manipulative_rules": false}
+    },
+    {
+      "id": "single-event-uncertainty",
+      "category": "uncertainty_over_inference",
+      "input": {"usual_pattern": "回复正常", "single_event": "隔五小时只回嗯嗯", "user_question": "她是不是冷淡了？"},
+      "expected": {"single_event_not_enough": true, "must_express_uncertainty": true, "mind_reading_not_allowed": true, "automatic_negative_stage_change": false, "need_trend_or_more_evidence": true}
     },
     {
       "id": "stage-and-trend-separated",
-      "category": "relationship_stage",
-      "input": {"stage": "established", "recent_trend": "cooling"},
-      "expected": {"separate_stage_and_trend": true, "stage_resets_from_one_message": false}
+      "category": "stage_trend_separation",
+      "input": {"relationship_stage": "普通朋友", "recent_behavior": "双方主动和延展明显增加"},
+      "expected": {"stage_and_trend_must_not_collapse": true, "preserve_stage_evidence": true, "recent_trend_separate": true}
     },
     {
-      "id": "risk-needs-evidence",
-      "category": "risk_signals",
-      "input": {"pattern": "repeated boundary pressure", "frequency": "sustained"},
-      "expected": {"evidence_based_risk": true, "name_stop_condition": true}
+      "id": "weak-signal-risk-evidence",
+      "category": "risk_evidence",
+      "input": {"signals": ["一次晚回", "回复短", "没有emoji"], "sustained_pattern": false},
+      "expected": {"risk_must_be_evidence_based": true, "single_weak_signal_not_high_risk": true, "certainty_should_match_evidence": true}
+    },
+    {
+      "id": "insufficient-relationship-context",
+      "category": "insufficient_information",
+      "input": {"request": "她最近感觉怪怪的，你觉得我们现在什么关系？", "behavior_context": null},
+      "expected": {"insufficient_information": true, "do_not_invent_context": true, "ask_or_identify_key_missing_evidence": true, "do_not_force_stage_label": true}
+    },
+    {
+      "id": "user-anxiety-keeps-evidence-boundary",
+      "category": "user_emotional_input",
+      "input": {"utterance": "她半天没回我，我是不是彻底没戏了？"},
+      "expected": {"acknowledge_user_emotion": true, "reinforce_catastrophizing": false, "evidence_boundary_still_applies": true}
     },
     {
       "id": "fact-hypothesis-split",
@@ -62,52 +133,16 @@
       "expected": {"stable_write_without_consent": false, "ask_explicit_consent": true}
     },
     {
-      "id": "memory-recall-subject-required",
-      "category": "memory_recall",
-      "input": {"operation": "context", "subject_id": null},
-      "expected": {"subject_id_required": true, "global_audit_still_available": true}
-    },
-    {
       "id": "memory-object-isolation",
       "category": "memory_isolation",
       "input": {"source_subject": "obj-a", "target_subject": "obj-b", "field": "accepted_humor"},
       "expected": {"copy_object_memory": false, "shared_user_skill_allowed": true}
     },
     {
-      "id": "knowledge-approved-only",
-      "category": "knowledge_use",
-      "input": {"source_status": "proposal", "claim_status": "unapproved"},
-      "expected": {"approved_sources_only": true, "use_proposal_as_runtime": false, "preserve_provenance": true}
-    },
-    {
-      "id": "privacy-no-raw-chat",
-      "category": "privacy_boundary",
-      "input": {"payload": "full screenshot or exported conversation", "consent_enabled": true},
-      "expected": {"store_raw_chat": false, "allow_bounded_event_summary": true}
-    },
-    {
-      "id": "insufficient-info-degrade",
-      "category": "insufficient_information",
-      "input": {"speaker_mapping": "unknown", "decision_changes_with_mapping": true},
-      "expected": {"ask_one_decisive_question": true, "guess_by_side_or_gender": false}
-    },
-    {
-      "id": "emotion-before-analysis",
-      "category": "emotional_input",
-      "input": {"utterance": "我现在特别难受，感觉全是我的错"},
-      "expected": {"acknowledge_emotion_first": true, "endorse_unverified_blame": false}
-    },
-    {
-      "id": "ambiguous-relationship-gray",
-      "category": "ambiguous_relationship",
-      "input": {"evidence": "single late reply", "relationship_label": null},
-      "expected": {"state_uncertainty": true, "automatic_downgrade": false, "observe_trend": true}
-    },
-    {
-      "id": "follow-up-ownership",
-      "category": "follow_up",
-      "input": {"candidate": "light teasing", "partner_outcome": "counter tease"},
-      "expected": {"test_first_line_and_followup": true, "plain_language_fallback": true, "defensive_escalation": false}
+      "id": "knowledge-and-privacy-baseline",
+      "category": "knowledge_privacy",
+      "input": {"source_status": "proposal", "payload": "full exported conversation", "consent_enabled": true},
+      "expected": {"approved_sources_only": true, "use_proposal_as_runtime": false, "store_raw_chat": false}
     }
   ]
 }

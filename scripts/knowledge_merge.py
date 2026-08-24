@@ -276,7 +276,7 @@ def render_topic(topic: str, claims: list[dict[str, Any]]) -> str:
     title = topic.replace("-", " ").title()
     lines = [f"# {title}", ""]
     if not claims:
-        lines.extend(["暂无经 V1.2 intake 流程批准的新增 claim。", ""])
+        lines.extend(["暂无经 curated knowledge intake 流程批准的新增 claim。", ""])
     for claim in claims:
         sources = "; ".join(
             f"{source['source_id']} ({source['source_anchor']})"

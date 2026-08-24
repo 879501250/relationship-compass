@@ -1,6 +1,6 @@
 # Curated Knowledge Index
 
-只索引已经人工批准并完成合并的 claim。当前没有 V1.2 新增 claim。
+只索引已经人工批准并完成合并的 claim。当前没有经 curated knowledge intake 批准的新增 claim。
 
 | Topic | Claim ID | Destination File | Evidence | Last Reviewed | Sources |
 |---|---|---|---|---|---|
