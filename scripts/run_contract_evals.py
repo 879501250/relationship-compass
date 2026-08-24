@@ -88,15 +88,16 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
     },
     "uncertainty_over_inference": {
         "single_event_not_enough": True,
+        "single_event_not_enough_for_trend_change": True,
         "must_express_uncertainty": True,
         "mind_reading_not_allowed": True,
         "automatic_negative_stage_change": False,
         "need_trend_or_more_evidence": True,
     },
     "stage_trend_separation": {
-        "stage_and_trend_must_not_collapse": True,
-        "preserve_stage_evidence": True,
-        "recent_trend_separate": True,
+        "stage_and_trend_separate": True,
+        "stage_not_auto_upgraded": True,
+        "warming_trend_allowed": True,
     },
     "risk_evidence": {
         "risk_must_be_evidence_based": True,
@@ -117,6 +118,25 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "facts_vs_hypotheses": {
         "separate_fact_and_hypothesis": True,
         "promote_theory_to_fact": False,
+    },
+    "explicit_boundary_priority": {
+        "boundary_remains_valid": True,
+        "warm_interaction_does_not_override_boundary": True,
+        "trend_and_boundary_can_coexist": True,
+    },
+    "conflicting_evidence": {
+        "conflicting_evidence": True,
+        "force_single_positive_conclusion": False,
+        "force_single_negative_conclusion": False,
+    },
+    "baseline_relative_trend": {
+        "fixed_reply_time_rule": False,
+        "relative_to_baseline": True,
+        "automatic_cooling": False,
+    },
+    "key_evidence_selection": {
+        "prioritize_high_value_evidence": True,
+        "line_by_line_analysis_required": False,
     },
     "memory_consent": {
         "stable_write_without_consent": False,

@@ -275,6 +275,9 @@ def validate_routes_and_invariants() -> None:
         "她刚回",
         "明确表示不发展、要求别联系或反复不欢迎时停止",
         "不声称能直接读取、解密或导出",
+        "Observed Fact → Reasonable Interpretation → Relationship Conclusion",
+        "Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action",
+        "走势必须相对该对象的既有互动基线",
         "references/curated/INDEX.md",
     )
     for marker in required:

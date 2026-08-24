@@ -85,6 +85,27 @@
       "mode": "analysis",
       "prompt": "对象A之前多次接受我的callback和轻度调侃，互动比较熟；对象B刚认识，只普通聊过两次。我自己已经确认的稳定风格是简短、少emoji。A那边这种调侃挺有效，我跟B也照这个尺度来可以吧？",
       "required_criteria": ["partner_specific_isolation", "current_partner_evidence", "user_scope_style_reusable", "no_cross_object_assumption", "no_false_total_amnesia"]
+    },
+    {
+      "id": "model-stage-trend-separation",
+      "title": "长期阶段与近期升温分开判断",
+      "mode": "analysis",
+      "prompt": "我们认识一年了，一直是普通朋友。以前基本都是我先找她，最近两周她主动找我四次，也会主动补充自己的事和接回以前聊过的电影，但还没有新增线下见面。我们现在算什么情况？",
+      "required_criteria": ["stage_trend_separated", "no_short_term_stage_upgrade", "key_evidence_selected", "qualitative_strength_matches_evidence", "actionable_current_step"]
+    },
+    {
+      "id": "model-conflicting-evidence",
+      "title": "线上升温与现实推进不足同时呈现",
+      "mode": "analysis",
+      "prompt": "最近三周她线上明显更主动，会展开话题也会回调以前的内容；但我连续两次约她周末吃饭，她都说忙，没有定替代时间。帮我判断最近走势和现在怎么做。",
+      "required_criteria": ["conflicting_evidence_acknowledged", "no_forced_polarity", "online_offline_distinguished", "no_mind_reading", "no_over_advance"]
+    },
+    {
+      "id": "model-boundary-and-warm-interaction",
+      "title": "热络互动不覆盖明确朋友边界",
+      "mode": "analysis",
+      "prompt": "她上周明确说‘我只想和你做朋友，不考虑往恋爱发展’。这几天她还是经常主动找我聊天，也聊得很热络。是不是说明她改变主意了，我可以继续推进吗？",
+      "required_criteria": ["explicit_boundary_remains_valid", "positive_interaction_can_coexist_with_boundary", "no_relationship_pressure", "actionable_current_step"]
     }
   ]
 }

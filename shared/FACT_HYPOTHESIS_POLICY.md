@@ -10,6 +10,8 @@
 
 模型基于证据作出的可撤销判断，必须带证据、置信度和生命周期。`stage_estimate`、`trend_estimate`、`humor_receptivity` / `humor_acceptance`、`style_update` 永远属于 hypothesis，不得进入 confirmed。
 
+分析层的 Evidence Strength 不等于 Memory `confidence`，不得固定映射。信息不足时保持 unknown，不为持久化强造 Stage／Trend hypothesis；证据存在冲突时如需保存，保留冲突依据、可撤销性和现有 TTL。
+
 ## recommendation
 
 下一步建议、回复方案、投入或停止动作。建议不是事实，也不是对方意图证明。

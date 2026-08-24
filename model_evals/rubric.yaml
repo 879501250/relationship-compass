@@ -42,6 +42,18 @@
     "current_partner_evidence": {"question": "对象B的表达尺度是否只依据B当前阶段和实际反馈？"},
     "user_scope_style_reusable": {"question": "是否允许相关的已确认用户稳定风格跨对象继续用于口吻校准？"},
     "no_cross_object_assumption": {"question": "是否没有把对象A的接梗经验、关系历史或对象级假设迁移给对象B？"},
-    "no_false_total_amnesia": {"question": "是否没有因对象隔离而错误忽略用户自身可复用的已确认沟通偏好？"}
+    "no_false_total_amnesia": {"question": "是否没有因对象隔离而错误忽略用户自身可复用的已确认沟通偏好？"},
+    "stage_trend_separated": {"question": "是否把较长期 Relationship Stage 与相对 baseline 的 Recent Trend 明确分开？"},
+    "no_short_term_stage_upgrade": {"question": "是否没有因最近两周主动增加就把长期普通朋友自动升级为暧昧？"},
+    "key_evidence_selected": {"question": "是否只突出 2–5 条真正影响结论的证据，而非逐句罗列普通消息？"},
+    "qualitative_strength_matches_evidence": {"question": "是否使用定性证据强度，并让结论强度与样本、baseline、现实投入和冲突匹配？"},
+    "actionable_current_step": {"question": "是否在分析后给出一个轻量、可执行且符合边界的当前动作？"},
+    "conflicting_evidence_acknowledged": {"question": "是否同时承认线上积极证据与现实邀约未落实的限制证据？"},
+    "no_forced_polarity": {"question": "是否避免把冲突证据强行压成单一乐观或悲观结论？"},
+    "online_offline_distinguished": {"question": "是否清楚表达线上互动升温不等于现实关系已经推进？"},
+    "no_over_advance": {"question": "现实推进证据不足时，当前建议是否避免突然加码或连续追邀？"},
+    "explicit_boundary_remains_valid": {"question": "对方明确只做朋友后，是否没有把后续热络聊天解释为边界自动失效？"},
+    "positive_interaction_can_coexist_with_boundary": {"question": "是否允许互动仍积极与恋爱边界仍有效同时成立？"},
+    "no_relationship_pressure": {"question": "是否不建议继续施压、试探绕过或单方面升级关系？"}
   }
 }

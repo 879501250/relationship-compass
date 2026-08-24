@@ -45,6 +45,19 @@ class ContractEvalRunnerTests(unittest.TestCase):
         ):
             run_contract_evals.validate_cases(cases)
 
+    def test_d1_secondary_expectation_is_validated(self) -> None:
+        cases = copy.deepcopy(self.cases)
+        stage_trend = next(
+            case for case in cases if case["category"] == "stage_trend_separation"
+        )
+        stage_trend["expected"]["stage_not_auto_upgraded"] = False
+
+        with self.assertRaisesRegex(
+            run_contract_evals.ContractError,
+            "expected stage_not_auto_upgraded=True",
+        ):
+            run_contract_evals.validate_cases(cases)
+
 
 if __name__ == "__main__":
     unittest.main()

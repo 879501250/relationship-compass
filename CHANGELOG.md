@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.0
+
+### Added
+
+- Evidence normalization、关键证据选择，以及 Stage + Recent Trend 双轴关系状态判断。
+- 定性 Evidence Strength／Conflict 表达与 Evidence → Current Action 主路径。
+
+### Changed
+
+- 关系走势改为相对同一对象 baseline 判断，并要求多个观察点；单次晚回、短回复或热聊不再翻转 Stage／Trend。
+- 明确边界优先于微弱积极信号，线上互动与现实投入可作为冲突证据同时呈现。
+- Contract Eval 扩展 D.1 核心行为，Model Eval 保留 Phase C／C.1 baseline 并加入三类高价值关系分析场景。
+
+### Fixed
+
+- 统一 Review Mode 中 Stage、Recent Trend、Evidence Strength、Feedback Color、E 与 Memory confidence 的职责边界。
+
 ## 1.3.0
 
 ### Added

@@ -94,13 +94,13 @@
       "id": "single-event-uncertainty",
       "category": "uncertainty_over_inference",
       "input": {"usual_pattern": "回复正常", "single_event": "隔五小时只回嗯嗯", "user_question": "她是不是冷淡了？"},
-      "expected": {"single_event_not_enough": true, "must_express_uncertainty": true, "mind_reading_not_allowed": true, "automatic_negative_stage_change": false, "need_trend_or_more_evidence": true}
+      "expected": {"single_event_not_enough": true, "single_event_not_enough_for_trend_change": true, "must_express_uncertainty": true, "mind_reading_not_allowed": true, "automatic_negative_stage_change": false, "need_trend_or_more_evidence": true}
     },
     {
       "id": "stage-and-trend-separated",
       "category": "stage_trend_separation",
-      "input": {"relationship_stage": "普通朋友", "recent_behavior": "双方主动和延展明显增加"},
-      "expected": {"stage_and_trend_must_not_collapse": true, "preserve_stage_evidence": true, "recent_trend_separate": true}
+      "input": {"relationship_history": "长期普通朋友", "recent_behavior": "最近两周对方主动频率和展开明显增加"},
+      "expected": {"stage_and_trend_separate": true, "stage_not_auto_upgraded": true, "warming_trend_allowed": true}
     },
     {
       "id": "weak-signal-risk-evidence",
@@ -125,6 +125,30 @@
       "category": "facts_vs_hypotheses",
       "input": {"screenshot_fact": "seen at 20:00", "user_theory": "故意冷我"},
       "expected": {"separate_fact_and_hypothesis": true, "promote_theory_to_fact": false}
+    },
+    {
+      "id": "explicit-boundary-priority",
+      "category": "explicit_boundary_priority",
+      "input": {"explicit_boundary": "只想做朋友", "later_interaction": "之后仍然经常主动聊天且很热络"},
+      "expected": {"boundary_remains_valid": true, "warm_interaction_does_not_override_boundary": true, "trend_and_boundary_can_coexist": true}
+    },
+    {
+      "id": "conflicting-online-offline-evidence",
+      "category": "conflicting_evidence",
+      "input": {"online_pattern": "主动和展开明显增加", "offline_pattern": "连续两次现实邀约都回避且未给替代时间"},
+      "expected": {"conflicting_evidence": true, "force_single_positive_conclusion": false, "force_single_negative_conclusion": false}
+    },
+    {
+      "id": "trend-relative-to-baseline",
+      "category": "baseline_relative_trend",
+      "input": {"usual_pattern": "一直回复较慢", "recent_pattern": "最近仍然同样慢"},
+      "expected": {"fixed_reply_time_rule": false, "relative_to_baseline": true, "automatic_cooling": false}
+    },
+    {
+      "id": "key-evidence-selection",
+      "category": "key_evidence_selection",
+      "input": {"long_chat": "包含大量普通句子", "high_value_signals": ["连续主动", "明确邀约", "明确边界"]},
+      "expected": {"prioritize_high_value_evidence": true, "line_by_line_analysis_required": false}
     },
     {
       "id": "memory-consent-gate",
