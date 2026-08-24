@@ -20,11 +20,8 @@ class ModelEvalError(RuntimeError):
 
 
 def load_json_yaml(path: Path) -> dict[str, Any]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if lines and lines[-1].startswith("# Modified by AI on "):
-        lines.pop()
     try:
-        data = json.loads("\n".join(lines))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ModelEvalError(f"{path.name}: invalid JSON-compatible YAML: {exc}") from exc
     if not isinstance(data, dict):
@@ -181,5 +178,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
-# Modified by AI on 2026-08-21 13:48:02

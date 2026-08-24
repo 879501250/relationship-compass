@@ -21,6 +21,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Validate Skill runtime
         run: python scripts/validate_skill.py --runtime
+      - name: Repository convergence check
+        run: python scripts/validate_skill.py --convergence-only
       - name: Unit tests
         run: python -B -m unittest discover -s tests/unit -v
       - name: Integration tests
@@ -29,5 +31,3 @@ jobs:
         run: python scripts/run_contract_evals.py
       - name: Validate model eval definitions
         run: python scripts/run_model_evals.py validate
-
-# Modified by AI on 2026-08-21 16:32:17

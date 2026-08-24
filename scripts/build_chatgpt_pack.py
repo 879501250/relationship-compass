@@ -8,7 +8,6 @@ import hashlib
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,11 +92,6 @@ FORBIDDEN_PACK_TOKENS = (
 LOCAL_PATH_PATTERN = re.compile(
     r"(?:[A-Za-z]:\\(?:Users|Documents and Settings)\\|/(?:Users|home)/[^/\s]+/)"
 )
-MODIFICATION_MARKER = re.compile(
-    r"^<!-- Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} -->$"
-)
-
-
 class PackBuildError(RuntimeError):
     """Raised when pack inputs or privacy boundaries are invalid."""
 
@@ -118,14 +112,10 @@ def revision_for_files(root: Path, relative_paths: list[str]) -> str:
 
 
 def clean_markdown(content: str) -> str:
-    lines = content.rstrip().splitlines()
-    if lines and MODIFICATION_MARKER.fullmatch(lines[-1]):
-        lines.pop()
-    cleaned = "\n".join(lines).rstrip()
     return re.sub(
         r"\[([^\]]+)\]\((?!https?://|mailto:)[^)]+\)",
         r"\1",
-        cleaned,
+        content.rstrip(),
     )
 
 
@@ -211,12 +201,8 @@ def write_pack(
 ) -> dict[str, Any]:
     bodies = build_knowledge_bodies(root)
     output.mkdir(parents=True, exist_ok=True)
-    modification_timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     for filename, body in bodies.items():
-        atomic_write_text(
-            output / filename,
-            body + f"\n<!-- Modified by AI on {modification_timestamp} -->",
-        )
+        atomic_write_text(output / filename, body)
     metadata = pack_metadata(root, built_at)
     atomic_write_json(output / "KNOWLEDGE_PACK_INFO.json", metadata)
     return {
@@ -257,5 +243,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 17:18:00

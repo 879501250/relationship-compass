@@ -28,7 +28,7 @@ class DirectMemoryCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env_patch = patch.dict(
             os.environ,
-            {"GOUTOUJUNSHI_PERSONAL_MEMORY_DIR": self.temp_dir.name},
+            {"RELATIONSHIP_COMPASS_MEMORY_DIR": self.temp_dir.name},
         )
         self.env_patch.start()
 
@@ -117,5 +117,3 @@ class DirectMemoryCase(unittest.TestCase):
             "source_ref": "test:hypothesis",
             "confidence": "medium",
         }
-
-# Modified by AI on 2026-08-21 14:47:55

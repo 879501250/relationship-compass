@@ -74,5 +74,3 @@
 - CDC, [Intimate Partner Violence Risk and Protective Factors](https://www.cdc.gov/intimate-partner-violence/risk-factors/index.html).
 - Ging (等男性圈研究入口), Ribeiro et al. (2020), [The Evolution of the Manosphere Across the Web](https://arxiv.org/abs/2001.07600).
 - Hambling-Jones & Merrison (2012), [Inequity in the pursuit of intimacy: British pick-up artist interactions](https://www.sciencedirect.com/science/article/abs/pii/S0378216612000999).
-
-<!-- Modified by AI on 2026-08-21 13:48:02 -->

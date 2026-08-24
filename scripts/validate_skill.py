@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the distributable goutoujunshi-personal skill."""
+"""Validate the distributable relationship-compass skill."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 from date_utils import normalize_iso8601
-from build_chatgpt_pack import build_knowledge_bodies, clean_markdown, pack_metadata
+from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
 from run_contract_evals import main as run_contract_evals
@@ -70,15 +70,7 @@ REQUIRED_CURATED = (
     "personal-growth.md",
 )
 REQUIRED_EVALS = (
-    "screenshot_cases.yaml",
-    "reply_cases.yaml",
-    "stage_cases.yaml",
-    "expression_growth_cases.yaml",
-    "interview_mode_cases.yaml",
-    "continuation_cases.yaml",
-    "memory_cases.yaml",
-    "review_cases.yaml",
-    "actual_send_cases.yaml",
+    "contract_cases.yaml",
 )
 
 
@@ -87,6 +79,12 @@ def require(path: str) -> Path:
     if not target.exists():
         ERRORS.append(f"missing required path: {path}")
     return target
+
+
+def require_test_suite(path: str) -> None:
+    directory = require(path)
+    if directory.is_dir() and not any(directory.glob("test_*.py")):
+        ERRORS.append(f"test suite has no test_*.py files: {path}")
 
 
 def validate_frontmatter() -> None:
@@ -106,7 +104,7 @@ def validate_frontmatter() -> None:
     description_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
     name = name_match.group(1).strip() if name_match else ""
     description = description_match.group(1).strip() if description_match else ""
-    if name != "goutoujunshi-personal" or not re.fullmatch(r"[a-z0-9-]{1,64}", name):
+    if name != "relationship-compass" or not re.fullmatch(r"[a-z0-9-]{1,64}", name):
         ERRORS.append(f"invalid skill name: {name!r}")
     if not description or len(description) > 1024 or "<" in description or ">" in description:
         ERRORS.append("description is empty, too long, or contains angle brackets")
@@ -158,22 +156,18 @@ def validate_inventory(runtime_only: bool) -> None:
     if not runtime_only:
         require("README.md")
         require("NOTICE.md")
-        require("IMPLEMENTATION_REPORT.md")
-        require("V1_1_REVIEW.md")
-        require("V1_2_IMPLEMENTATION_REPORT.md")
+        require("CHANGELOG.md")
         require("UPSTREAM_LOCK.json")
         require("UPSTREAM_LOCK.md")
         require("shared/CORE_POLICY.md")
         require("shared/FACT_HYPOTHESIS_POLICY.md")
-        require("tests/unit/test_memory_isolation.py")
-        require("tests/unit/test_memory_retention.py")
-        require("tests/unit/test_memory_delete.py")
-        require("tests/unit/test_memory_expiration.py")
-        require("tests/integration/test_memory_cli.py")
+        require_test_suite("tests/unit")
+        require_test_suite("tests/integration")
+        require("tests/unit/test_repository_convergence.py")
         require("model_evals/cases.yaml")
         require("model_evals/rubric.yaml")
         require("model_evals/README.md")
-        require("model_evals/results/V1_1_1_BASELINE.md")
+        require("model_evals/results/README.md")
         require("knowledge-management/KNOWLEDGE_GOVERNANCE.md")
         require("knowledge-management/SOURCE_REGISTRY.json")
         require("knowledge-management/CURATED_CLAIMS.json")
@@ -183,26 +177,8 @@ def validate_inventory(runtime_only: bool) -> None:
         require("knowledge-management/proposals/README.md")
         require("knowledge-management/review-decisions/README.md")
         require("knowledge-management/merge-reports/README.md")
-        require("tests/unit/test_source_registry.py")
-        require("tests/unit/test_source_fingerprint.py")
-        require("tests/unit/test_claim_schema.py")
-        require("tests/unit/test_freshness.py")
-        require("tests/unit/test_claim_dedup.py")
-        require("tests/unit/test_claim_conflict.py")
-        require("tests/unit/test_knowledge_merge.py")
-        require("tests/integration/test_knowledge_register.py")
-        require("tests/integration/test_proposal_validation.py")
-        require("tests/integration/test_knowledge_approve_gate.py")
-        require("tests/integration/test_knowledge_merge.py")
-        require("tests/unit/test_chatgpt_pack.py")
-        require("tests/unit/test_policy_pack.py")
-        require("tests/integration/test_chatgpt_pack_cli.py")
         require("chatgpt-project/PROJECT_INSTRUCTIONS.md")
         require("chatgpt-project/README.md")
-        require("chatgpt-project/knowledge/DAILY_REPLY_PLAYBOOK.md")
-        require("chatgpt-project/knowledge/RELATIONSHIP_AND_SIGNAL_RULES.md")
-        require("chatgpt-project/knowledge/GROWTH_AND_REVIEW.md")
-        require("chatgpt-project/knowledge/PRIVACY_AND_CHECKPOINTS.md")
         for filename in (
             "01-CORE_POLICY.md",
             "02-DAILY_CONVERSATION.md",
@@ -221,10 +197,53 @@ def validate_inventory(runtime_only: bool) -> None:
     agent = ROOT / "agents/openai.yaml"
     if agent.is_file():
         text = agent.read_text(encoding="utf-8")
-        if "$goutoujunshi-personal" not in text:
-            ERRORS.append("agents/openai.yaml must mention $goutoujunshi-personal")
+        if "$relationship-compass" not in text:
+            ERRORS.append("agents/openai.yaml must mention $relationship-compass")
         if 'display_name: "关系罗盘"' not in text:
             ERRORS.append("agents/openai.yaml must use the display name 关系罗盘")
+
+
+def validate_repository_convergence(runtime_only: bool = False) -> None:
+    """Validate the current identity and reject repository-cleanliness regressions."""
+    text_suffixes = {".md", ".py", ".yaml", ".yml", ".json", ".txt"}
+    marker = "Modified" + " by AI"
+    encoded_name = re.compile(r"#U[0-9A-Fa-f]{4}")
+    for path in ROOT.rglob("*"):
+        if ".git" in path.parts:
+            continue
+        relative = path.relative_to(ROOT).as_posix()
+        if any(encoded_name.search(part) for part in path.relative_to(ROOT).parts):
+            ERRORS.append(f"encoded Unicode path: {relative}")
+        if not path.is_file() or path.suffix.lower() not in text_suffixes:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        if marker in content:
+            ERRORS.append(f"repository marker found: {relative}")
+    memory_store = ROOT / "scripts" / "memory_store.py"
+    if memory_store.is_file():
+        memory_text = memory_store.read_text(encoding="utf-8")
+        for required in (
+            'MEMORY_NAMESPACE = "relationship-compass"',
+            'MEMORY_ENV = "RELATIONSHIP_COMPASS_MEMORY_DIR"',
+        ):
+            if required not in memory_text:
+                ERRORS.append(f"current Memory identity missing: {required}")
+    if runtime_only:
+        return
+    for relative in (
+        "chatgpt-project/knowledge",
+        "IMPLEMENTATION_REPORT.md",
+        "INTERNAL_RENAME_REPORT.md",
+        "RENAME_INVENTORY.md",
+        "V1_1_REVIEW.md",
+        "V1_1_1_IMPLEMENTATION_REPORT.md",
+        "V1_2_IMPLEMENTATION_REPORT.md",
+    ):
+        if (ROOT / relative).exists():
+            ERRORS.append(f"obsolete repository artifact: {relative}")
 
 
 def validate_routes_and_invariants() -> None:
@@ -401,7 +420,7 @@ def validate_chatgpt_pack(runtime_only: bool) -> None:
         path = output / filename
         if not path.is_file():
             continue
-        actual = clean_markdown(path.read_text(encoding="utf-8")).rstrip()
+        actual = path.read_text(encoding="utf-8").rstrip()
         if actual != expected.rstrip():
             ERRORS.append(f"generated ChatGPT pack is stale: {filename}")
     info_path = output / "KNOWLEDGE_PACK_INFO.json"
@@ -427,21 +446,6 @@ def validate_markdown_links() -> None:
                 continue
             if not (markdown.parent / target).resolve().exists():
                 ERRORS.append(f"broken local link in {markdown.relative_to(ROOT)}: {raw_target}")
-
-
-def validate_markers() -> None:
-    patterns = {
-        ".md": re.compile(r"<!-- Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} -->"),
-        ".py": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
-        ".yaml": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
-        ".yml": re.compile(r"# Modified by AI on \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}"),
-    }
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts or path.suffix.lower() not in patterns:
-            continue
-        lines = path.read_text(encoding="utf-8").rstrip().splitlines()
-        if not lines or not patterns[path.suffix.lower()].fullmatch(lines[-1]):
-            ERRORS.append(f"missing final modification marker: {path.relative_to(ROOT)}")
 
 
 def validate_placeholders() -> None:
@@ -569,12 +573,25 @@ def validate_policy_parity(runtime_only: bool) -> None:
 
 
 def main() -> int:
-    unexpected = [arg for arg in sys.argv[1:] if arg != "--runtime"]
+    supported = {"--runtime", "--convergence-only"}
+    unexpected = [arg for arg in sys.argv[1:] if arg not in supported]
     if unexpected:
         print(f"ERROR: unsupported arguments: {' '.join(unexpected)}")
         return 2
+    if "--runtime" in sys.argv[1:] and "--convergence-only" in sys.argv[1:]:
+        print("ERROR: --runtime and --convergence-only are mutually exclusive")
+        return 2
     runtime_only = "--runtime" in sys.argv[1:]
+    convergence_only = "--convergence-only" in sys.argv[1:]
     validate_frontmatter()
+    validate_repository_convergence(runtime_only)
+    if convergence_only:
+        if ERRORS:
+            for error in ERRORS:
+                print(f"ERROR: {error}")
+            return 1
+        print("relationship-compass repository convergence validation passed")
+        return 0
     validate_skill_budget()
     validate_inventory(runtime_only)
     validate_routes_and_invariants()
@@ -582,7 +599,6 @@ def main() -> int:
     validate_curated_knowledge(runtime_only)
     validate_chatgpt_pack(runtime_only)
     validate_markdown_links()
-    validate_markers()
     validate_placeholders()
     validate_upstream_lock(runtime_only)
     validate_policy_parity(runtime_only)
@@ -593,11 +609,9 @@ def main() -> int:
         for error in ERRORS:
             print(f"ERROR: {error}")
         return 1
-    print("goutoujunshi-personal validation passed")
+    print("relationship-compass validation passed")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 17:21:04

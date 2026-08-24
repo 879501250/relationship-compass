@@ -6,5 +6,3 @@
 |---|---|---|---|---|---|
 
 每个 topic 文件中的正式知识块必须使用以下字段：`Claim ID`、`Practical Meaning`、`Evidence`、`Applicable When`、`Limits`、`Risks`、`Sources`。到期内容标为 `review_due`，不自动删除。
-
-<!-- Modified by AI on 2026-08-21 16:38:32 -->

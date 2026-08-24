@@ -44,5 +44,3 @@ class ClaimDedupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-# Modified by AI on 2026-08-21 16:53:25

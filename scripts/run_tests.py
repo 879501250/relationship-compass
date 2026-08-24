@@ -55,5 +55,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 14:47:55

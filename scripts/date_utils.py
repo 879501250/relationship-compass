@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared ISO 8601 helpers for goutoujunshi-personal."""
+"""Shared ISO 8601 helpers for relationship-compass."""
 
 from __future__ import annotations
 
@@ -41,5 +41,3 @@ def age_in_days(value: str, *, now: str | None = None) -> int:
     reference = parse_iso8601(now, field_name="now") if now else datetime.now(timezone.utc)
     observed = parse_iso8601(value, field_name="timestamp")
     return (reference.astimezone(timezone.utc) - observed.astimezone(timezone.utc)).days
-
-# Modified by AI on 2026-08-21 14:47:55

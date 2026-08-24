@@ -21,7 +21,7 @@ class MemoryCliIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.env = os.environ.copy()
-        self.env["GOUTOUJUNSHI_PERSONAL_MEMORY_DIR"] = self.temp_dir.name
+        self.env["RELATIONSHIP_COMPASS_MEMORY_DIR"] = self.temp_dir.name
         self.env["PYTHONIOENCODING"] = "utf-8"
 
     def tearDown(self) -> None:
@@ -70,5 +70,3 @@ class MemoryCliIntegrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-# Modified by AI on 2026-08-21 14:47:55

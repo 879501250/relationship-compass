@@ -1,8 +1,21 @@
-# 关系罗盘 V1.2
+# Relationship Compass
 
-`goutoujunshi-personal` 是内部 Skill 名称与调用 slug；`relationship-compass` 是安装目录和 GitHub 仓库名；“关系罗盘”是面向用户的展示名称。
+## 关系罗盘
+
+- Repository：`relationship-compass`
+- Codex Skill：`relationship-compass`
+- Invoke：`$relationship-compass`
+- Display：关系罗盘 / Relationship Compass
 
 这是一个个人版 Local Codex Skill，并附带轻量 ChatGPT Project 配置。它用于微信聊天截图与节奏分析、自然回复、关系阶段和投入判断、表达成长复盘，以及在用户明确同意后维护按对象隔离、可撤销的本地记忆。它不导出聊天软件数据，不自动发送消息。
+
+## 主要能力
+
+- 将聊天中的可见事实、用户转述、合理推测和未知信息分开处理。
+- 给出与关系阶段、互惠程度和边界相匹配的自然回复与后续节奏。
+- 支持聊天表达训练、实际发送复盘和按对象隔离的技巧历史。
+- 在明确同意后使用本地 Memory，并提供暂停、撤回、字段删除和对象删除。
+- 通过人工批准的 Knowledge 流程维护来源、冲突、去重和可追溯性。
 
 ## 安装步骤
 
@@ -10,10 +23,9 @@
 
 ```text
 python scripts/validate_skill.py
-python scripts/run_tests.py
 ```
 
-将整个项目目录复制到以下位置。安装目录名使用 `relationship-compass`，内部 Skill slug 仍为 `goutoujunshi-personal`：
+将整个 `relationship-compass` 项目目录复制到以下正式位置：
 
 - Linux/macOS：`$HOME/.agents/skills/relationship-compass`
 - Windows：`%USERPROFILE%\.agents\skills\relationship-compass`
@@ -48,12 +60,12 @@ cp -R ./relationship-compass "$HOME/.agents/skills/"
 
 ## Local Codex 配置方式
 
-安装目录使用 `relationship-compass`；`SKILL.md` frontmatter 和调用 slug 保持 `goutoujunshi-personal`。`agents/openai.yaml` 中的展示名是“关系罗盘”。
+安装目录、`SKILL.md` frontmatter 和调用 slug 均使用 `relationship-compass`。`agents/openai.yaml` 中的展示名是“关系罗盘”。
 
 明确调用：
 
 ```text
-$goutoujunshi-personal 分析这段聊天，给我自然回复。
+$relationship-compass 分析这段聊天，给我自然回复。
 ```
 
 实时说“她刚回”“现在怎么回”时，系统默认先给可发送内容并隐藏 E 标签与成长教学。长期一致性底线由 `shared/CORE_POLICY.md` 约束。
@@ -66,6 +78,8 @@ Memory 是 Skill 目录外的独立 SQLite 文件。即时分析无需启用长�
 python scripts/memory_store.py status
 python scripts/memory_store.py enable --confirm
 ```
+
+正式环境变量为 `RELATIONSHIP_COMPASS_MEMORY_DIR`。未设置时，默认目录 basename 是 `relationship-compass`：Windows 使用 `%LOCALAPPDATA%\relationship-compass`，macOS 使用 `$HOME/Library/Application Support/relationship-compass`，Linux 使用 `$XDG_DATA_HOME/relationship-compass` 或 `$HOME/.local/share/relationship-compass`。
 
 常用命令：
 
@@ -140,12 +154,11 @@ python scripts\memory_store.py resume
 1. 阅读 `UPSTREAM_LOCK.json` 和 `UPSTREAM_LOCK.md`，确认旧版同步基线。
 2. 备份 Memory 和当前安装目录。
 3. 把新版解压到临时目录，不要覆盖两个源仓库或现有安装。
-4. 运行 `python scripts/validate_skill.py` 和 `python scripts/run_tests.py`。
+4. 运行 `python scripts/validate_skill.py`。
 5. 对比 personal 配置、scripts、tests、shared policy 和 checkpoint schema。
 6. 验证通过后替换精确的 `relationship-compass` 安装目录。
-7. 首次连接旧库后检查 `status`、单对象 `context`、全局 `show`，并确认 hypothesis 生命周期迁移正常。
 
-Memory schema 采用向后兼容列迁移；升级不会把 SQLite 复制进 Skill。未来 upstream 增量同步遵循 `UPSTREAM_LOCK.md`。
+Memory schema 采用向后兼容列升级；升级不会把 SQLite 复制进 Skill。未来 upstream 增量同步遵循 `UPSTREAM_LOCK.md`。
 
 ## 卸载方式
 
@@ -166,14 +179,62 @@ python scripts/memory_store.py revoke --confirm
 python scripts/memory_store.py revoke --delete --confirm
 ```
 
-## 测试与 Eval
+## 验证与测试
+
+### 完整仓库验收
 
 ```text
-python scripts/run_tests.py
 python scripts/validate_skill.py
 ```
 
-`run_tests.py` 分别统计 unit tests、integration tests 和 contract eval。Contract eval 只验证案例结构与契约，不运行模型。`python scripts/run_model_evals.py validate` 只校验 model eval 定义并明确报告 `NOT RUN`；真实模型行为不得伪造通过。
+验证仓库结构、引用、生成产物、Unit、Integration、Contract Eval 和 Model Eval 定义。发布或完成较大改动前使用此命令。
+
+### 仅运行自动测试
+
+```text
+python scripts/run_tests.py
+```
+
+运行 Unit、Integration 和 Contract Eval，适合开发过程中的快速反馈；不会运行模型行为测试。
+
+### 仅验证 Runtime Skill 包
+
+```text
+python scripts/validate_skill.py --runtime
+```
+
+只验证正式 Skill runtime 所需结构、引用和运行边界，不执行完整测试套件。
+
+### 仅验证 Model Eval 定义
+
+```text
+python scripts/run_model_evals.py validate
+```
+
+只校验 Model Eval cases 与 criteria，并明确报告 `NOT RUN`；没有真实模型输出和独立 judge 结果时，不得报告行为评测通过。
+
+## 仓库结构
+
+```text
+SKILL.md                         Skill 入口与运行规则
+references/                     canonical 知识与个人化规则
+scripts/                        Memory、Knowledge、构建与校验工具
+tests/                          单元与集成行为测试
+evals/                          精简后的 Contract Eval
+model_evals/                    高价值人工判断案例与 rubric
+knowledge-management/           来源、claim schema 与审批记录
+chatgpt-project/generated-knowledge/  由 references 构建的唯一 Knowledge 产物
+shared/                         Local / ChatGPT 共享政策
+sync/                           经用户确认的同步模板
+```
+
+## 隐私说明
+
+Memory 只写入 Skill 目录外的本地 SQLite；首次保存必须明确同意，不保存完整聊天、截图或导出。ChatGPT Knowledge 构建使用固定 allowlist，不包含私有 Memory、本机绝对路径、proposal、review decision 或未批准来源。
+
+## Upstream / License
+
+来源 commit、版本与同步基线见 `UPSTREAM_LOCK.md` 和 `UPSTREAM_LOCK.json`；版权、fork 来源和许可证归属见 `NOTICE.md` 与 `LICENSE`。
 
 ## 常见问题
 
@@ -200,5 +261,3 @@ TTL 只把它从 active 变为 stale，不删除历史。`context` 默认不召�
 ### Memory 是否加密？
 
 没有应用层加密。它依赖本机账户、目录权限和磁盘安全；备份也应按敏感数据管理。
-
-<!-- Modified by AI on 2026-08-21 17:21:04 -->

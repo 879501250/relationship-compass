@@ -17,5 +17,3 @@
 ## 隔离检查
 
 导出前搜索其他对象 ID、代号和对象专属内容。发现任何对象 B 数据时停止上传并回到 Local Codex 检查；用户通用 capability profile 可以保留，但对象反馈和 recent_techniques 不能共享。
-
-<!-- Modified by AI on 2026-08-21 13:48:02 -->

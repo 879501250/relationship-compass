@@ -51,5 +51,3 @@ if __name__ == "__main__":
     import unittest
 
     unittest.main()
-
-# Modified by AI on 2026-08-21 17:06:16

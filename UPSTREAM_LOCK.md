@@ -39,5 +39,3 @@ python scripts/run_tests.py
 ```
 
 Model behavioral eval 不属于自动 CI 通过项；需要真实加载 Skill 的模型输出和明确 judge 结果。
-
-<!-- Modified by AI on 2026-08-21 14:47:55 -->

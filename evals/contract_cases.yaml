@@ -1,0 +1,113 @@
+{
+  "suite": "relationship_compass_contracts",
+  "cases": [
+    {
+      "id": "signal-analysis-behavior-first",
+      "category": "signal_analysis",
+      "input": {"signals": ["one warm message", "repeatedly initiates and follows through"]},
+      "expected": {"prioritize_repeated_behavior": true, "single_message_decides_stage": false}
+    },
+    {
+      "id": "uncertainty-visible",
+      "category": "uncertainty_expression",
+      "input": {"critical_text": "unclear", "context_complete": false},
+      "expected": {"label_uncertainty": true, "invent_missing_text": false}
+    },
+    {
+      "id": "no-mind-reading",
+      "category": "avoid_over_inference",
+      "input": {"visible_behavior": "brief reply", "claimed_intent": "testing me"},
+      "expected": {"mind_reading": false, "offer_multiple_explanations": true}
+    },
+    {
+      "id": "realtime-reply-first",
+      "category": "reply_advice",
+      "input": {"realtime": true, "utterance": "她刚回，现在怎么回"},
+      "expected": {"sendable_first": true, "show_teaching": false, "timing_brief": true}
+    },
+    {
+      "id": "reply-style-options",
+      "category": "reply_styles",
+      "input": {"request": "给我几个不同风格", "relationship_stage": "mutual_exploration"},
+      "expected": {"styles_distinct": true, "alternative_count": 3, "stage_safe": true}
+    },
+    {
+      "id": "explicit-boundary-stops",
+      "category": "boundary_judgment",
+      "input": {"partner_message": "不要再联系我"},
+      "expected": {"stop_progression": true, "no_flirt_or_callback": true}
+    },
+    {
+      "id": "stage-and-trend-separated",
+      "category": "relationship_stage",
+      "input": {"stage": "established", "recent_trend": "cooling"},
+      "expected": {"separate_stage_and_trend": true, "stage_resets_from_one_message": false}
+    },
+    {
+      "id": "risk-needs-evidence",
+      "category": "risk_signals",
+      "input": {"pattern": "repeated boundary pressure", "frequency": "sustained"},
+      "expected": {"evidence_based_risk": true, "name_stop_condition": true}
+    },
+    {
+      "id": "fact-hypothesis-split",
+      "category": "facts_vs_hypotheses",
+      "input": {"screenshot_fact": "seen at 20:00", "user_theory": "故意冷我"},
+      "expected": {"separate_fact_and_hypothesis": true, "promote_theory_to_fact": false}
+    },
+    {
+      "id": "memory-consent-gate",
+      "category": "memory_consent",
+      "input": {"consent_enabled": false, "requested_write": "object preference"},
+      "expected": {"stable_write_without_consent": false, "ask_explicit_consent": true}
+    },
+    {
+      "id": "memory-recall-subject-required",
+      "category": "memory_recall",
+      "input": {"operation": "context", "subject_id": null},
+      "expected": {"subject_id_required": true, "global_audit_still_available": true}
+    },
+    {
+      "id": "memory-object-isolation",
+      "category": "memory_isolation",
+      "input": {"source_subject": "obj-a", "target_subject": "obj-b", "field": "accepted_humor"},
+      "expected": {"copy_object_memory": false, "shared_user_skill_allowed": true}
+    },
+    {
+      "id": "knowledge-approved-only",
+      "category": "knowledge_use",
+      "input": {"source_status": "proposal", "claim_status": "unapproved"},
+      "expected": {"approved_sources_only": true, "use_proposal_as_runtime": false, "preserve_provenance": true}
+    },
+    {
+      "id": "privacy-no-raw-chat",
+      "category": "privacy_boundary",
+      "input": {"payload": "full screenshot or exported conversation", "consent_enabled": true},
+      "expected": {"store_raw_chat": false, "allow_bounded_event_summary": true}
+    },
+    {
+      "id": "insufficient-info-degrade",
+      "category": "insufficient_information",
+      "input": {"speaker_mapping": "unknown", "decision_changes_with_mapping": true},
+      "expected": {"ask_one_decisive_question": true, "guess_by_side_or_gender": false}
+    },
+    {
+      "id": "emotion-before-analysis",
+      "category": "emotional_input",
+      "input": {"utterance": "我现在特别难受，感觉全是我的错"},
+      "expected": {"acknowledge_emotion_first": true, "endorse_unverified_blame": false}
+    },
+    {
+      "id": "ambiguous-relationship-gray",
+      "category": "ambiguous_relationship",
+      "input": {"evidence": "single late reply", "relationship_label": null},
+      "expected": {"state_uncertainty": true, "automatic_downgrade": false, "observe_trend": true}
+    },
+    {
+      "id": "follow-up-ownership",
+      "category": "follow_up",
+      "input": {"candidate": "light teasing", "partner_outcome": "counter tease"},
+      "expected": {"test_first_line_and_followup": true, "plain_language_fallback": true, "defensive_escalation": false}
+    }
+  ]
+}

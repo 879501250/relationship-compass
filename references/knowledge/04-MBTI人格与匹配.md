@@ -59,5 +59,3 @@ Big Five 描述开放性、尽责性、外向性、宜人性和神经质/负性�
 - Myers-Briggs Company, [官方信效度立场](https://www.themyersbriggs.com/en-US/Support/Validity-of-the-Myers-Briggs-assessment). 这是测评发行方材料，应与独立研究并读。
 - [Big Five personality domains and relationship satisfaction](https://pmc.ncbi.nlm.nih.gov/articles/PMC11239117/).
 - Laajaj et al. (2019), [Challenges to capture the Big Five in non-WEIRD populations](https://pubmed.ncbi.nlm.nih.gov/31309152/).
-
-<!-- Modified by AI on 2026-08-21 13:48:02 -->

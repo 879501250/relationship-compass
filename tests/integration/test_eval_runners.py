@@ -73,5 +73,3 @@ class EvalRunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-# Modified by AI on 2026-08-21 14:47:55

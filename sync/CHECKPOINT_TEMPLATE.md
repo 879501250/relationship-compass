@@ -77,5 +77,3 @@
 - 不把 partner response 当作 user growth 分数；
 - stage/trend/humor receptivity 没有混入 confirmed；
 - recommendation 和 unknown 没有伪装成事实。
-
-<!-- Modified by AI on 2026-08-21 14:47:55 -->

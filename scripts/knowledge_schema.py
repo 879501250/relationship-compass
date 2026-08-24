@@ -257,6 +257,3 @@ def load_registry(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise KnowledgeSchemaError(f"cannot load registry: {exc}") from exc
     return validate_registry(registry)
-
-
-# Modified by AI on 2026-08-21 16:38:32

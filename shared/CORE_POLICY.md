@@ -11,5 +11,3 @@
 7. `stop conditions`：明确不发展、要求别联系、反复不欢迎、越界或危险时停止推进；不以话术绕过拒绝。
 
 具体分类见 `FACT_HYPOTHESIS_POLICY.md`。跨系统 checkpoint 必须由用户审核，并且一份 checkpoint 只对应一个对象。
-
-<!-- Modified by AI on 2026-08-21 14:47:55 -->

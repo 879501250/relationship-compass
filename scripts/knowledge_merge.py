@@ -8,7 +8,6 @@ import copy
 import json
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -273,9 +272,7 @@ def merge_approved_claims(
     return working, outcomes
 
 
-def render_topic(
-    topic: str, claims: list[dict[str, Any]], modification_timestamp: str
-) -> str:
+def render_topic(topic: str, claims: list[dict[str, Any]]) -> str:
     title = topic.replace("-", " ").title()
     lines = [f"# {title}", ""]
     if not claims:
@@ -299,11 +296,10 @@ def render_topic(
                 "",
             ]
         )
-    lines.append(f"<!-- Modified by AI on {modification_timestamp} -->")
     return "\n".join(lines)
 
 
-def render_index(claims: list[dict[str, Any]], modification_timestamp: str) -> str:
+def render_index(claims: list[dict[str, Any]]) -> str:
     lines = [
         "# Curated Knowledge Index",
         "",
@@ -317,13 +313,11 @@ def render_index(claims: list[dict[str, Any]], modification_timestamp: str) -> s
             f"`{claim['destination']}.md` | {claim['evidence']} | "
             f"{claim['last_reviewed_at']} | {source_ids} |"
         )
-    lines.extend(["", f"<!-- Modified by AI on {modification_timestamp} -->"])
     return "\n".join(lines)
 
 
 def write_curated_runtime(paths: KnowledgePaths, store: dict[str, Any]) -> None:
     curated_dir = paths.root / "references" / "curated"
-    modification_timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     topics = (
         "relationship-start",
         "conversation",
@@ -337,10 +331,10 @@ def write_curated_runtime(paths: KnowledgePaths, store: dict[str, Any]) -> None:
         claims = [item for item in store["claims"] if item["destination"] == topic]
         atomic_write_text(
             curated_dir / f"{topic}.md",
-            render_topic(topic, claims, modification_timestamp),
+            render_topic(topic, claims),
         )
     atomic_write_text(
-        curated_dir / "INDEX.md", render_index(store["claims"], modification_timestamp)
+        curated_dir / "INDEX.md", render_index(store["claims"])
     )
 
 
@@ -437,5 +431,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 17:06:16

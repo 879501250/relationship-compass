@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local, bounded, consent-gated memory for goutoujunshi-personal."""
+"""Local, bounded, consent-gated memory for relationship-compass."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from date_utils import add_days_iso, age_in_days, normalize_iso8601, utc_now_iso
 
 
 POLICY_VERSION = "4"
+MEMORY_NAMESPACE = "relationship-compass"
+MEMORY_ENV = "RELATIONSHIP_COMPASS_MEMORY_DIR"
 MAX_VALUE_CHARS = 600
 MAX_SOURCE_CHARS = 200
 MAX_ROWS = 200
@@ -100,17 +102,23 @@ def now_iso() -> str:
     return utc_now_iso()
 
 
+def default_memory_dir(namespace: str) -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / namespace
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        base = Path(local_app_data) if local_app_data else Path.home()
+        return base / namespace
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
+    return base / namespace
+
+
 def memory_dir() -> Path:
-    override = os.environ.get("GOUTOUJUNSHI_PERSONAL_MEMORY_DIR")
+    override = os.environ.get(MEMORY_ENV)
     if override:
         return Path(override).expanduser().resolve()
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "goutoujunshi-personal"
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-        return base / "goutoujunshi-personal"
-    base = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
-    return base / "goutoujunshi-personal"
+    return default_memory_dir(MEMORY_NAMESPACE)
 
 
 def db_path() -> Path:
@@ -580,7 +588,7 @@ def command_status(_: argparse.Namespace) -> None:
                 "consent_enabled": False,
                 "paused": False,
                 "policy_version": POLICY_VERSION,
-                "namespace": "goutoujunshi-personal",
+                "namespace": MEMORY_NAMESPACE,
                 "path": str(target),
             }
         )
@@ -593,7 +601,7 @@ def command_status(_: argparse.Namespace) -> None:
                 "consent_at": get_setting(conn, "consent_at") or None,
                 "paused": get_setting(conn, "paused") == "true",
                 "policy_version": get_setting(conn, "policy_version", POLICY_VERSION),
-                "namespace": "goutoujunshi-personal",
+                "namespace": MEMORY_NAMESPACE,
                 "memory_count": conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()["n"],
                 "undo_count": conn.execute("SELECT COUNT(*) AS n FROM operations").fetchone()["n"],
                 "path": str(target),
@@ -1171,5 +1179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 16:32:17

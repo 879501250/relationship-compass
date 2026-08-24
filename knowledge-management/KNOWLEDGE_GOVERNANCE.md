@@ -46,5 +46,3 @@ Knowledge Evolution 只维护“可追溯、可审核、可更新”的知识。
 - 引用只保留复核所需的短片段和 anchor。
 - 不把用户私人材料、聊天记录或 Memory 数据混入知识库。
 - rejected/proposals/raw/local registry 不得进入 runtime 或 ChatGPT pack。
-
-<!-- Modified by AI on 2026-08-21 16:38:32 -->

@@ -184,6 +184,3 @@ class KnowledgeCliCase(unittest.TestCase):
             / "proposals"
             / f"{claims[0]['source_id']}-proposal.md"
         )
-
-
-# Modified by AI on 2026-08-21 16:58:58

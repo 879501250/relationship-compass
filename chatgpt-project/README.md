@@ -1,6 +1,6 @@
 # 关系罗盘 ChatGPT Project 部署说明
 
-该目录是 `goutoujunshi-personal` 的轻量 ChatGPT Project 版本，不是 Local Codex Skill 的完整复制。
+该目录是 Relationship Compass（关系罗盘）的轻量 ChatGPT Project 版本，不是 Local Codex Skill 的完整复制。
 
 ## 建立项目
 
@@ -33,5 +33,3 @@ ChatGPT Project 的界面、memory 选项和文件限制可能随账户或工作
 ChatGPT Project 无法直接写入 Local Codex Memory。需要同步时生成“待确认 checkpoint”，由用户审核后再交给另一端。
 
 当 Local Codex 的 personal 规则、shared policy 或 curated claims 变化时，重新运行 builder，核对 `KNOWLEDGE_PACK_INFO.json` 后替换 Project 文件。不要手改 generated knowledge；修改其上游文件并重建。
-
-<!-- Modified by AI on 2026-08-21 17:15:12 -->

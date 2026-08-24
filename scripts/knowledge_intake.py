@@ -9,7 +9,6 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +78,7 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     temporary.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
     temporary.replace(path)
 
@@ -86,7 +86,7 @@ def atomic_write_json(path: Path, payload: Any) -> None:
 def atomic_write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
+    temporary.write_text(content.rstrip() + "\n", encoding="utf-8", newline="\n")
     temporary.replace(path)
 
 
@@ -108,7 +108,6 @@ def load_local_registry(path: Path) -> dict[str, Any]:
 
 def render_source_card(source: dict[str, Any]) -> str:
     topics = ", ".join(source["topics"])
-    modification_timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
     return f"""# Source Card: `{source['source_id']}`
 
 ## Metadata
@@ -160,8 +159,6 @@ def render_source_card(source: dict[str, Any]) -> str:
 ## Source Anchors
 
 待补充页码、章节、论文节或其他可复核定位。
-
-<!-- Modified by AI on {modification_timestamp} -->
 """
 
 
@@ -253,8 +250,6 @@ def render_proposal(source_id: str, claims: list[dict[str, Any]]) -> str:
                 "",
             ]
         )
-    modification_timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-    parts.append(f"<!-- Modified by AI on {modification_timestamp} -->")
     return "\n".join(parts)
 
 
@@ -430,5 +425,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-# Modified by AI on 2026-08-21 17:19:53
