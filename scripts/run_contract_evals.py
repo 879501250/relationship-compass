@@ -17,6 +17,9 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "automatic_parallel_options": False,
         "long_analysis_required": False,
         "reason_at_most_one_brief": True,
+        "decision_sufficient": True,
+        "ask_clarifying_question": False,
+        "reply_first": True,
     },
     "explicit_multiple_versions": {
         "multiple_versions_allowed": True,
@@ -50,6 +53,7 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "cross_object_fact_reuse": False,
         "relationship_scope_current_pair_only": True,
         "leak_irrelevant_memory": False,
+        "do_not_reask_known_fact": True,
     },
     "normal_tone_calibration": {
         "user_style_first": True,
@@ -123,6 +127,9 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "boundary_remains_valid": True,
         "warm_interaction_does_not_override_boundary": True,
         "trend_and_boundary_can_coexist": True,
+        "decision_sufficient": True,
+        "ask_clarifying_question": False,
+        "respect_action_without_loophole": True,
     },
     "conflicting_evidence": {
         "conflicting_evidence": True,
@@ -137,6 +144,20 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
     "key_evidence_selection": {
         "prioritize_high_value_evidence": True,
         "line_by_line_analysis_required": False,
+    },
+    "highest_value_missing_evidence": {
+        "decision_sufficient": False,
+        "identify_baseline_gap": True,
+        "ask_highest_value_question": True,
+        "default_question_count": 1,
+        "batch_questionnaire": False,
+    },
+    "stop_after_sufficient_evidence": {
+        "answer_incorporated": True,
+        "state_action_recomputed": True,
+        "decision_sufficient": True,
+        "stop_interview": True,
+        "ask_next_question": False,
     },
     "memory_consent": {
         "stable_write_without_consent": False,

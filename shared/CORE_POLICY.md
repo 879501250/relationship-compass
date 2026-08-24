@@ -10,5 +10,7 @@
 6. `user growth != partner response`：成长看真实内容、观点、主动性、技巧理解、自然接续和自主生成；对方反应只用于关系策略，不作为成长主分数。
 7. `stop conditions`：明确不发展、要求别联系、反复不欢迎、越界或危险时停止推进；不以话术绕过拒绝。
 8. `evidence -> state -> action`：关系分析先把可观察事实与解释、结论分开，再分别判断长期 Stage 与相对 baseline 的 Recent Trend，以离散自然语言表达证据强度或冲突，最后给当前动作。Trend 波动描述时间方向反复，Evidence conflict 描述证据支持不同解释，二者不自动映射。明确边界优先于微弱积极信号；单次晚回、短回复或表情不能独自翻转 Stage／Trend。
+9. `decision sufficiency`：只按当前回复、判断或行动检查证据；足够就直接完成，不为补全关系全貌而追问。
+10. `guided interview stop`：不足时默认只问一个最可能改变动作的问题；吸收回答后重算，足够或边界／安全已决定行动时立即停止。
 
 具体分类见 `FACT_HYPOTHESIS_POLICY.md`。跨系统 checkpoint 必须由用户审核，并且一份 checkpoint 只对应一个对象。

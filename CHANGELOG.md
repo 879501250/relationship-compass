@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0
+
+### Added
+
+- 决策特定的证据充分性判断，以及缺失上下文的高信息量追问规则。
+- 回答吸收、状态重算与充分后立即停止的 Guided Interview 闭环。
+
+### Changed
+
+- 简单回复、明确边界和安全行动在证据已足够时直接完成，不因仍有未知而自动追问。
+- Contract Eval 与 Model Eval 覆盖无需访谈、baseline 缺口、回答后停止和边界提前停止。
+
+### Fixed
+
+- 明确区分助手向用户补证据的 Guided Interview、聊天结构 `interview mode` 与 Conversation Hook。
+
 ## 1.4.0
 
 ### Added

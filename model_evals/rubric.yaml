@@ -17,6 +17,7 @@
     "no_forced_positivity": {"question": "是否避免鸡汤、轻描淡写或强行让对方积极？"},
     "serious_not_essay": {"question": "Serious Mode 是否保持必要长度，而非自动生成安慰长文？"},
     "no_forced_question": {"question": "问题不是必要动作时，是否避免为了续聊机械追加问句？"},
+    "no_unnecessary_interview": {"question": "简单回复已有足够上下文时，是否直接给首选而不先向用户补问关系信息？"},
     "no_invented_user_fact": {"question": "是否没有擅自创造用户的经历、偏好、计划或可用时间？"},
     "prefer_fact_independent_reply": {"question": "个人事实未知时，是否优先提供不依赖该事实的安全成品？"},
     "separate_fact_and_inference": {"question": "是否区分已知事实、推测和未知，没有把 hypothesis 当事实？"},
@@ -54,6 +55,14 @@
     "no_over_advance": {"question": "现实推进证据不足时，当前建议是否避免突然加码或连续追邀？"},
     "explicit_boundary_remains_valid": {"question": "对方明确只做朋友后，是否没有把后续热络聊天解释为边界自动失效？"},
     "positive_interaction_can_coexist_with_boundary": {"question": "是否允许互动仍积极与恋爱边界仍有效同时成立？"},
-    "no_relationship_pressure": {"question": "是否不建议继续施压、试探绕过或单方面升级关系？"}
+    "no_relationship_pressure": {"question": "是否不建议继续施压、试探绕过或单方面升级关系？"},
+    "no_direct_trend_without_baseline": {"question": "缺少同一对象既有 baseline 时，是否没有直接把最近积极观察定性为升温？"},
+    "identify_baseline_gap": {"question": "是否识别出当前 Trend 判断最关键的缺口是此前通常的主动与互动模式？"},
+    "ask_one_high_value_question": {"question": "信息不足时是否只提出一个最可能改变当前结论或动作的问题？"},
+    "no_batch_questionnaire": {"question": "是否避免一次列出多个问题、资料清单或固定问卷？"},
+    "natural_answerable_question": {"question": "追问是否使用日常语言、指向用户容易准确回答的事实或对比？"},
+    "incorporate_answer_before_reasking": {"question": "是否先把用户刚补充的 baseline 纳入证据，而不是忽略回答继续索取信息？"},
+    "update_trend_from_baseline": {"question": "是否依据此前由用户主动到近期对方主动增加的对比更新 Recent Trend？"},
+    "stop_when_decision_sufficient": {"question": "新回答已经足以判断走势和当前动作时，是否停止追问而直接完成任务？"}
   }
 }

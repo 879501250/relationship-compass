@@ -5,7 +5,7 @@
       "id": "ordinary-reply-one-best",
       "category": "one_best_reply",
       "input": {"request": "她说今天忙死了，我怎么回？", "explicit_multiple": false},
-      "expected": {"one_best_reply": true, "automatic_parallel_options": false, "long_analysis_required": false, "reason_at_most_one_brief": true}
+      "expected": {"one_best_reply": true, "automatic_parallel_options": false, "long_analysis_required": false, "reason_at_most_one_brief": true, "decision_sufficient": true, "ask_clarifying_question": false, "reply_first": true}
     },
     {
       "id": "explicit-multiple-versions",
@@ -46,7 +46,7 @@
         "other_object": {"subject_id": "obj-a", "accepted_humor": "callback"},
         "relationship_scope": {"subject_id": "obj-b", "confirmed_pair_boundary": "本周不谈关系确认"}
       },
-      "expected": {"use_relevant_confirmed_fact": true, "user_scope_cross_object_allowed": true, "current_object_fact_allowed": true, "cross_object_fact_reuse": false, "relationship_scope_current_pair_only": true, "leak_irrelevant_memory": false}
+      "expected": {"use_relevant_confirmed_fact": true, "user_scope_cross_object_allowed": true, "current_object_fact_allowed": true, "cross_object_fact_reuse": false, "relationship_scope_current_pair_only": true, "leak_irrelevant_memory": false, "do_not_reask_known_fact": true}
     },
     {
       "id": "ordinary-light-tone",
@@ -130,7 +130,7 @@
       "id": "explicit-boundary-priority",
       "category": "explicit_boundary_priority",
       "input": {"explicit_boundary": "只想做朋友", "later_interaction": "之后仍然经常主动聊天且很热络"},
-      "expected": {"boundary_remains_valid": true, "warm_interaction_does_not_override_boundary": true, "trend_and_boundary_can_coexist": true}
+      "expected": {"boundary_remains_valid": true, "warm_interaction_does_not_override_boundary": true, "trend_and_boundary_can_coexist": true, "decision_sufficient": true, "ask_clarifying_question": false, "respect_action_without_loophole": true}
     },
     {
       "id": "conflicting-online-offline-evidence",
@@ -149,6 +149,18 @@
       "category": "key_evidence_selection",
       "input": {"long_chat": "包含大量普通句子", "high_value_signals": ["连续主动", "明确邀约", "明确边界"]},
       "expected": {"prioritize_high_value_evidence": true, "line_by_line_analysis_required": false}
+    },
+    {
+      "id": "missing-baseline-asks-one-high-value-question",
+      "category": "highest_value_missing_evidence",
+      "input": {"request": "她这三天主动找了我两次，是不是升温了？", "recent_observations": "两次主动并展开", "prior_baseline": null, "other_missing_details": ["具体话题", "emoji", "回复间隔"]},
+      "expected": {"decision_sufficient": false, "identify_baseline_gap": true, "ask_highest_value_question": true, "default_question_count": 1, "batch_questionnaire": false}
+    },
+    {
+      "id": "answer-makes-trend-decision-sufficient",
+      "category": "stop_after_sufficient_evidence",
+      "input": {"prior_question": "前几周通常是谁先找谁？", "user_answer": "之前基本都是我先找她，最近两周她主动四次并会展开", "remaining_unknowns": ["她每次主动的精确时间", "emoji数量"]},
+      "expected": {"answer_incorporated": true, "state_action_recomputed": true, "decision_sufficient": true, "stop_interview": true, "ask_next_question": false}
     },
     {
       "id": "memory-consent-gate",

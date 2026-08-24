@@ -7,7 +7,7 @@
       "title": "简单实时请求只给自然首选",
       "mode": "realtime",
       "prompt": "她刚回我：‘今天加班到九点，累死了。’我们刚认识两周，我现在怎么回？",
-      "required_criteria": ["sendable_first", "one_best_reply", "brief_for_simple_reply", "natural_im_rhythm", "stage_appropriate"]
+      "required_criteria": ["sendable_first", "one_best_reply", "brief_for_simple_reply", "natural_im_rhythm", "stage_appropriate", "no_unnecessary_interview"]
     },
     {
       "id": "model-explicit-multiple-versions",
@@ -106,6 +106,20 @@
       "mode": "analysis",
       "prompt": "她上周明确说‘我只想和你做朋友，不考虑往恋爱发展’。这几天她还是经常主动找我聊天，也聊得很热络。是不是说明她改变主意了，我可以继续推进吗？",
       "required_criteria": ["explicit_boundary_remains_valid", "positive_interaction_can_coexist_with_boundary", "no_relationship_pressure", "actionable_current_step"]
+    },
+    {
+      "id": "model-minimum-information-gain",
+      "title": "缺 baseline 时只问一个高信息量问题",
+      "mode": "analysis",
+      "prompt": "她最近三天主动找了我两次，每次也会多聊几句。你不知道我们前几周通常是谁主动、互动频率怎样。你觉得这是升温了吗？如果还不能判断，只问我当前最关键的一件事，不要列问题清单。",
+      "required_criteria": ["no_direct_trend_without_baseline", "identify_baseline_gap", "ask_one_high_value_question", "no_batch_questionnaire", "natural_answerable_question", "no_mind_reading"]
+    },
+    {
+      "id": "model-stop-after-answer",
+      "title": "回答补足 baseline 后更新并停止",
+      "mode": "analysis",
+      "prompt": "上一轮你问我：‘前几周通常是谁先找谁？’我现在回答：以前基本都是我先找她，一周大概两三次；最近两周她主动找了我四次，每次都会展开自己的事。请基于这个回答继续判断近期走势和现在怎么做。其他细枝末节我没补。",
+      "required_criteria": ["incorporate_answer_before_reasking", "update_trend_from_baseline", "stop_when_decision_sufficient", "actionable_current_step", "no_mind_reading"]
     }
   ]
 }

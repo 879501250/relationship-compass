@@ -48,6 +48,7 @@ REQUIRED_PRACTICAL = (
     "长期记忆与关系档案.md",
 )
 REQUIRED_PERSONAL = (
+    "缺失上下文与高信息量追问.md",
     "微信截图解析协议.md",
     "关系阶段与聊天节奏.md",
     "自然回复生成器.md",
@@ -254,6 +255,7 @@ def validate_routes_and_invariants() -> None:
     required = (
         "默认只读当前问题直接需要的 1–3 份参考",
         "references/personal/微信截图解析协议.md",
+        "references/personal/缺失上下文与高信息量追问.md",
         "references/personal/关系阶段与聊天节奏.md",
         "references/personal/自然回复生成器.md",
         "references/personal/网络聊天表达升级器.md",

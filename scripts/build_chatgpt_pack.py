@@ -20,7 +20,7 @@ from knowledge_schema import load_registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACK_VERSION = "1.4.0"
+PACK_VERSION = "1.5.0"
 PACK_MANIFEST: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "01-CORE_POLICY.md",
@@ -59,6 +59,7 @@ PACK_MANIFEST: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "05-SAFETY_AND_EVIDENCE.md",
         "证据、截图、安全与边界",
         (
+            "references/personal/缺失上下文与高信息量追问.md",
             "references/personal/微信截图解析协议.md",
             "references/knowledge/01-证据分级与内容边界.md",
             "references/knowledge/05-PUA操控与伦理替代.md",
