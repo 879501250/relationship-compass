@@ -82,7 +82,25 @@
       "id": "concise-user-no-persona-jump",
       "category": "concise_style_consistency",
       "input": {"user_samples": ["嗯", "哈哈", "可以", "那还挺好的"], "partner_message": "今天看到一只很可爱的猫"},
-      "expected": {"avoid_persona_jump": true, "preserve_concise_density": true, "sudden_emoji_flood": false}
+      "expected": {"avoid_persona_jump": true, "preserve_concise_density": true, "sudden_emoji_flood": false, "current_style_first": true, "one_small_stretch": true, "large_persona_jump": false}
+    },
+    {
+      "id": "high-stage-serious-scene-keeps-contextual-e",
+      "category": "expression_level_contextual",
+      "input": {"relationship_stage": "暧昧探索", "recent_trend": "升温", "current_scene": "对方认真倾诉家庭压力", "target_style": "更主动、更会轻调侃"},
+      "expected": {"expression_level_contextual": true, "stage_to_e_direct_mapping": false, "trend_to_e_direct_mapping": false, "serious_boundary_constraints_apply": true, "growth_target_overridden_by_safety": true}
+    },
+    {
+      "id": "actual-send-outweighs-assistant-draft",
+      "category": "actual_send_style_learning",
+      "input": {"assistant_draft": "那今天是真的辛苦了，回去早点休息，明天再满血复活。", "confirmed_actual_send": "辛苦了，早点休息。", "partner_outcome": "哈哈好", "profile_update_confirmed": false},
+      "expected": {"learn_from_actual_send": true, "assistant_draft_not_treated_as_user_style": true, "copy_rate_not_success_metric": true, "partner_outcome_not_sole_metric": true, "stable_profile_update_requires_confirmation": true}
+    },
+    {
+      "id": "good-user-draft-is-not-rewritten",
+      "category": "user_draft_minimal_edit",
+      "input": {"request": "我想回‘哈哈那你这周确实够折腾的，周末好好休息’，这样行吗？", "draft_is_natural": true, "safety_issue": false},
+      "expected": {"preserve_user_draft": true, "minimal_edit_preferred": true, "direct_send_if_good": true, "full_rewrite_required": false, "reply_first": true}
     },
     {
       "id": "neutral-growth-goal",

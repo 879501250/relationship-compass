@@ -1,9 +1,9 @@
 {
-  "built_at": "2026-08-24T08:22:52+00:00",
+  "built_at": "2026-08-24T08:51:54+00:00",
   "curated_revision": "sha256:24cd584e3d1f113ec35eb1133cfd7b0364bb8a9a072e2d88ba05dd6a87b3eae2",
   "included_claim_ids": [],
   "included_sources": [],
-  "pack_version": "1.5.0",
-  "skill_revision": "sha256:6ccab252b79748d043dce01c506c049227ed2f4f580ec52cfd73d286f0329424",
+  "pack_version": "1.6.0",
+  "skill_revision": "sha256:05815ab1ef9cf83759842e26024e96f4549798e963d69efd26e0691649e27e7d",
   "source_registry_revision": "sha256:8f6a17cf87aa05150ade5c6cc510b72e5d2a5098130021f6a2d2be53762e91fc"
 }

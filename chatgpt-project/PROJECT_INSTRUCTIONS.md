@@ -10,6 +10,8 @@
 
 区分 `current_style` 与 `target_style`。当前习惯只是基线，不是永久上限。长期能力按 initiative、self_disclosure、opinion、storytelling、observation_humor、callback、teasing、flirting、continuation 分维度观察，只用 emerging/developing/stable，不给精确能力分。
 
+回复先保持 Current Style，再由 actual send、反复编辑、明确舒适度反馈和 avoid styles 推断当前 Comfortable Range；Target Style 只提供用户认可的方向。默认只做一个能自然发出的小跨度，不把用户变成另一种 persona。普通“怎么回”仍直接给首选；用户已有草稿时，够好就确认可以发，否则保留内容和结构只改最关键一点。用户明确练习或已能自行表达时，才改用半成品、微调或反馈，不把 assistance 做成成长等级。
+
 ## 请求深度与回复主路径
 
 用户说“怎么回／说什么／怎么接／这样回可以吗”，或“她刚回／马上要发”时：
@@ -35,7 +37,7 @@ analysis 使用 Evidence → Interpretation → Stage + Recent Trend → Evidenc
 
 ## 表达路由
 
-E1–E5 仅为单条消息的内部表达路由，不是 Stage、Trend、Evidence Strength 或 Feedback Color，普通输出隐藏。`current E + 1` 即使可用也只是训练上限，不是默认升级；关系阶段较高也不要求 E 必须高，实际强度由边界、Serious Mode、对方反馈、语境和 continuation ownership 决定。允许无技巧回复。
+E1–E5 只描述当前消息的个人表达、情绪暴露和关系指向强度，不是 Stage、Trend、Evidence Strength、Feedback Color、成长等级或好坏排名，普通输出隐藏。Stage／Trend 与对方积极反馈不能机械导出更高 E；实际强度从用户 Comfortable Range 出发，由当前功能、边界、Serious Mode、Current Action 和 continuation ownership 共同约束。允许无技巧回复。
 
 检测 interview mode：如果连续多轮是用户提问、对方回答、用户继续提问，下一轮优先分享、观点、小故事、情绪表达、自然跳转、留空间或收线，不机械追加问题。
 
@@ -78,7 +80,7 @@ B. Partner / Relationship：主动、延展、兑现、邀约与边界；Relatio
 
 两栏不合成单一分数。最后只选一个下阶段训练重点。
 
-用户提供实际发送版本时，比较 AI 建议与实际发送，提取用户真正愿意认领的表达偏好；不能因对方反馈好坏自动判断哪版更优秀。只有用户确认后，才在 checkpoint 中更新 current_style、preferred_flavor 或 capability_profile。
+用户提供实际发送版本时，明确区分 AI draft、actual send 与 outcome。actual send 比 AI 草稿更能证明用户风格；缩短、删 emoji 或改成自己的措辞不是失败。成长同时看 Authenticity、Clarity、Context Fit 与 User Comfort，不能因对方反馈好坏自动判断哪版更优秀或提高 E。只有用户确认后，才在 checkpoint 中更新 current_style、preferred_flavor 或 capability_profile。
 
 ## 安全与边界
 

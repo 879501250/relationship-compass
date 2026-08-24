@@ -20,7 +20,7 @@ from knowledge_schema import load_registry
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PACK_VERSION = "1.5.0"
+PACK_VERSION = "1.6.0"
 PACK_MANIFEST: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "01-CORE_POLICY.md",

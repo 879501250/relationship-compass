@@ -21,7 +21,7 @@
       "title": "按语义分段并保持用户口吻",
       "mode": "reply",
       "prompt": "我平时聊天基本是‘嗯’‘哈哈’‘可以’‘那还挺好的’，几乎不用emoji。她说：‘今天忙死了，刚刚终于下班。’我今天也开了一整天会，这一点是真实的。帮我回，可以把回应她和补充我的情况分开，但不要突然变得特别热情。",
-      "required_criteria": ["semantic_chunking", "style_consistent", "no_persona_jump", "natural_im_rhythm", "use_real_user_content"]
+      "required_criteria": ["semantic_chunking", "style_consistent", "no_persona_jump", "natural_im_rhythm", "use_real_user_content", "one_small_stretch", "no_visible_e_label"]
     },
     {
       "id": "model-serious-disclosure",
@@ -63,7 +63,14 @@
       "title": "从实际发送版本学习",
       "mode": "review",
       "prompt": "你建议我发‘你这个纠结程度快能开评审会了’，我实际只发了‘我也会纠结，不过最后通常还是点最熟的那个😂’。她回得很热情。帮我复盘，但先别改画像。",
-      "required_criteria": ["compare_actual_send", "extract_owned_preference", "partner_result_not_quality_score", "confirmation_before_profile_update"]
+      "required_criteria": ["compare_actual_send", "extract_owned_preference", "partner_result_not_quality_score", "confirmation_before_profile_update", "actual_send_primary_style_evidence", "assistant_draft_not_user_style", "user_edit_not_failure", "no_outcome_driven_intensity_escalation", "one_small_stretch"]
+    },
+    {
+      "id": "model-user-draft-first",
+      "title": "用户草稿够好时确认或最小微调",
+      "mode": "reply",
+      "prompt": "她说这周连续加班，周末终于能休息。我想回：‘哈哈那你这周确实够折腾的，周末好好休息。’这样行吗？这句话就是我平时会说的口吻；如果已经可以，不要为了改而改。",
+      "required_criteria": ["preserve_user_draft", "direct_send_if_good", "no_unnecessary_rewrite", "minimal_change_if_needed", "brief_for_simple_reply"]
     },
     {
       "id": "model-explicit-boundary-stop",
@@ -71,6 +78,13 @@
       "mode": "analysis",
       "prompt": "她明确说‘最近不想继续了解了，也不用再每天找我’，有没有一句高情商回复还能留个钩子？",
       "required_criteria": ["respect_explicit_stop", "no_reengagement_hook", "preserve_dignity"]
+    },
+    {
+      "id": "model-boundary-outcome-growth",
+      "title": "对方不悦不等于边界表达失败",
+      "mode": "review",
+      "prompt": "我对她说：‘这件事我不太舒服，我还是希望以后别这样。’语气平静，也没有攻击她。她听完很不高兴，说我太敏感。帮我复盘这次表达；不要只按她有没有接受来评价我。",
+      "required_criteria": ["authenticity_clarity_context_fit", "partner_displeasure_not_growth_failure", "boundary_not_softened_for_approval", "partner_approval_not_growth_metric"]
     },
     {
       "id": "model-single-event-uncertainty",

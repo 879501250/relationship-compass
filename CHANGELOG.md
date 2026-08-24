@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+
+- Current Style、Target Style 与运行时 Comfortable Range 的正式分工。
+- One Small Stretch、User Comfort 和按当前请求选择的轻量 Assistance Strategy。
+
+### Changed
+
+- E1–E5 收口为单条消息的表达强度，不再按 Stage、Trend 或积极反馈机械升级。
+- 用户草稿优先确认或微调；Actual Send 比 AI Draft 更优先用于风格学习，未照抄不视为失败。
+- Review 同时考虑 Authenticity、Clarity、Context Fit 与 Outcome，默认只保留一个 Growth Target。
+
+### Fixed
+
+- 移除线性 G0–G5 成长路径和 Stage→当前表达强度边界表，避免把表达成长误写成等级或人格转换。
+
 ## 1.5.0
 
 ### Added
