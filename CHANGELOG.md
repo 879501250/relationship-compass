@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- ChatGPT Project 手工 Target/Judge 导出与可分段导入路径，并与 API 路径共享 artifact schema、report 和 validator。
+- 运行元数据记录动态 pack version、git dirty state、runner revision 与执行环境。
+- Behavioral run 保存 prepared、eval definition、profile-specific runtime 与 runner/Skill source snapshots，用于离线重算 fingerprint provenance。
+- `api_canonical` 与 `chatgpt_project` runtime profile，以及按 profile 隔离的结果目录和 baseline identity。
+
+### Changed
+
+- Model Eval 结果目录改为从当前 Knowledge pack 动态派生，报告明确区分行为失败、provider/judge 错误与未评估 case。
+- Artifact validation 改为交叉验证 fingerprint、case/criterion 集合、responses、judgments、计数和 summary 派生结果。
+- Run lifecycle 改为 `PREPARED → TARGET_PARTIAL/TARGET_COMPLETE → JUDGE_PARTIAL → COMPLETED`，失败单独为 `FAILED`；顶层 `completed_at` 仅用于终态。
+- `bundle_hash` 统一表示 canonical prepared + runtime snapshot；移除与其语义重复的 `runtime_bundle_hash`。
+
+### Fixed
+
+- Target 输入不再泄漏 case id、reply/analysis mode 或 rubric criterion。
+- 重新生成过期的 ChatGPT Knowledge pack，并将 `.work/` 排除出版本控制。
+
 ## 1.6.0
 
 ### Added

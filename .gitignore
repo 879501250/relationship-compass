@@ -9,6 +9,7 @@ __pycache__/
 Thumbs.db
 .idea/
 .vscode/
+.work/
 knowledge-management/SOURCE_REGISTRY.local.json
 knowledge-management/raw/
 knowledge-management/private/

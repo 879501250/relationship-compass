@@ -223,6 +223,23 @@ python scripts/run_model_evals.py validate
 
 只校验 Model Eval cases 与 criteria，并明确报告 `NOT RUN`；没有真实模型输出和独立 judge 结果时，不得报告行为评测通过。
 
+### 执行 Model Behavioral Eval
+
+真实执行与完整 validator 分离。API 路径使用 `prepare → run → judge → report`；结果同时按 pack version 与 runtime profile 隔离：
+
+```text
+python scripts/run_model_evals.py prepare --output .work/model-eval-prepared.jsonl
+python scripts/run_model_evals.py run --prepared .work/model-eval-prepared.jsonl --run-id <run-id>
+python scripts/run_model_evals.py judge --run-dir model_evals/results/v<pack-version>/api_canonical/<run-id>
+python scripts/run_model_evals.py report --run-dir model_evals/results/v<pack-version>/api_canonical/<run-id>
+```
+
+`api_canonical` 使用 runner 组装的逐 case canonical runtime；`chatgpt_project` 使用 Project Instructions + Generated Knowledge。两者不假设等价，也不能共用无 profile 标识的 baseline。
+
+也可通过 `export-manual → import-responses → export-judge → import-judgments → report` 在 ChatGPT Project 中手工执行。Target 导出不含 case id、mode 或 criteria；Judge 必须使用独立 Chat，支持分批导入并复用同一 artifact validator。每个 run 保存 prepared、eval definition、runtime 和 runner/Skill source snapshots；validator 使用 canonical JSON 重算 fingerprint，而非只检查 hash 格式。
+
+OpenAI provider 从环境变量读取凭证与 target/judge model；缺失时明确 `NOT RUN`，不会伪造结果或 baseline。完整命令、隔离要求、artifact 和人工 baseline 规则见 [Model Behavioral Eval 说明](model_evals/README.md)。
+
 ## 仓库结构
 
 ```text

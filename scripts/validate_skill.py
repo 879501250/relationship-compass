@@ -20,7 +20,12 @@ from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
 from run_contract_evals import main as run_contract_evals
-from run_model_evals import command_validate as validate_model_eval_command
+from run_model_evals import (
+    ModelEvalError,
+    RUNTIME_PROFILES,
+    command_validate as validate_model_eval_command,
+    validate_result_artifacts,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -533,6 +538,28 @@ def validate_model_eval_definitions(runtime_only: bool) -> None:
         ERRORS.append("model eval validator must explicitly report behavioral evaluation NOT RUN")
 
 
+def validate_model_eval_artifacts(runtime_only: bool) -> None:
+    """Statically validate saved run schemas without executing a provider."""
+    if runtime_only:
+        return
+    results_root = ROOT / "model_evals" / "results"
+    if not results_root.is_dir():
+        return
+    for version_dir in sorted(path for path in results_root.iterdir() if path.is_dir()):
+        if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version_dir.name):
+            ERRORS.append(f"invalid model eval version directory: {version_dir.name}")
+            continue
+        for profile_dir in sorted(path for path in version_dir.iterdir() if path.is_dir()):
+            if profile_dir.name not in RUNTIME_PROFILES:
+                ERRORS.append(f"invalid model eval runtime profile: {profile_dir.name}")
+                continue
+            for run_dir in sorted(path for path in profile_dir.iterdir() if path.is_dir()):
+                try:
+                    validate_result_artifacts(run_dir)
+                except (ModelEvalError, OSError) as exc:
+                    ERRORS.append(f"model eval artifact validation failed: {exc}")
+
+
 def validate_test_suites(runtime_only: bool) -> None:
     if runtime_only:
         return
@@ -609,6 +636,7 @@ def main() -> int:
     validate_policy_parity(runtime_only)
     validate_evals(runtime_only)
     validate_model_eval_definitions(runtime_only)
+    validate_model_eval_artifacts(runtime_only)
     validate_test_suites(runtime_only)
     if ERRORS:
         for error in ERRORS:

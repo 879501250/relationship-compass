@@ -1,14 +1,43 @@
 # Model Eval Results
 
-此目录用于保存实际执行的 Model Behavioral Eval 结果。当前仓库暂未提交正式 baseline。
+此目录保存实际 Model Behavioral Eval 结果。当前仓库没有正式 baseline；Definition PASS、fake E2E 或 partial run 都不等于 Behavioral Baseline。
 
-`python scripts/run_model_evals.py validate` 只验证案例与 rubric 定义，不执行模型，也不等价于模型行为测试通过。
+## 目录约定
 
-只有同时具备以下材料时，才应创建正式 baseline：
+```text
+model_evals/results/v<pack-version>/
+├── api_canonical/
+│   └── <run-id>/
+└── chatgpt_project/
+    └── <run-id>/
+```
 
-- 每个 case 的逐字模型输出；
-- 完整运行配置与被测 Skill revision；
-- 独立 judge 身份及每项 rubric 的明确判断；
-- 可复核的 responses、judgments 和汇总结果。
+Runtime profile 是 baseline identity 的组成部分，不允许 API canonical 与 ChatGPT Project 结果无标识混合。
 
-未来结果文件应采用能说明执行日期或被测 revision 的名称，并在内容中记录模型、配置和评审信息。仅有 `NOT RUN` 状态时不要创建 baseline 文件。
+每个 run 保存：
+
+```text
+run.json
+prepared.jsonl
+eval-definition.json
+runtime-snapshot.json
+source-snapshots.json
+responses.jsonl
+judgments.jsonl
+summary.json
+summary.md
+```
+
+- `run.json`：版本、runtime profile、Git SHA/dirty state、Target/Judge identity、生命周期、计数与 recorded fingerprints。
+- `prepared.jsonl`：case、criteria、原始输入及 canonical per-case runtime 的 immutable workload snapshot。
+- `eval-definition.json`：计算 `eval_definition_hash` 的完整离线来源。
+- `runtime-snapshot.json`：实际 profile 的 instruction/runtime identity；它与 prepared 共同计算 `bundle_hash`。
+- `source-snapshots.json`：计算 runner 与 Skill content revision 的离线来源。
+- `responses.jsonl` / `judgments.jsonl`：逐条携带 run/profile/bundle binding，防止跨 run 混用。
+- `summary.json` / `summary.md`：由同一证据集合派生，明确区分行为 FAIL、基础设施错误与未评估。
+
+Validator 按 canonical serialization 重算 fingerprint，而非只检查 `sha256:<64 hex>` 格式；也会拒绝目录 profile/version 不一致、snapshot 篡改、重复或未知 case、criterion 不完整、artifact mix、生命周期冲突、计数或 summary 篡改及 credential-like 字段。
+
+## Baseline 规则
+
+只有 `COMPLETED`、完整保存 Target 原文与独立 Judge 证据、validator 通过并经人工选择的 run 才有 baseline 资格。报告中的 `DIRTY WORKTREE` run 默认不得作为正式 reference baseline。runner 没有自动 promotion 功能，也不会自动将 `baseline` 设为 `true`。
