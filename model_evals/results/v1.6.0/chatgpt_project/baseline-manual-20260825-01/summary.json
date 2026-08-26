@@ -1,0 +1,80 @@
+{
+  "artifacts": {
+    "eval_definition": "eval-definition.json",
+    "judgments": "judgments.jsonl",
+    "prepared": "prepared.jsonl",
+    "responses": "responses.jsonl",
+    "run": "run.json",
+    "runtime_snapshot": "runtime-snapshot.json",
+    "source_snapshots": "source-snapshots.json",
+    "summary": "summary.json",
+    "summary_markdown": "summary.md"
+  },
+  "baseline": false,
+  "behavioral_status": "PASS",
+  "bundle_hash": "sha256:53a0a9647d588eb92454a730d14651443958f4a6bf5c2b93e70086ea7e904f60",
+  "completion_status": "COMPLETED",
+  "counts": {
+    "errored_cases": 0,
+    "executed_cases": 19,
+    "failed_cases": 0,
+    "failed_criteria": 0,
+    "judged_criteria": 92,
+    "not_evaluable_cases": 0,
+    "passed_cases": 19,
+    "passed_criteria": 92,
+    "pending_cases": 0,
+    "response_records": 19,
+    "total_cases": 19,
+    "total_criteria": 92,
+    "unjudged_criteria": 0
+  },
+  "errored_cases": [],
+  "evaluation_type": "model_behavioral",
+  "failed_cases": [],
+  "generated_at": "2026-08-25T08:03:08Z",
+  "git_dirty": false,
+  "git_sha": "8833d89e52a3415289f04f4784d60ae83885bdf0",
+  "judge": {
+    "model": "GPT-5.6 Sol",
+    "parameters": {
+      "independent_context_required": true,
+      "judge_mode": "manual_chatgpt"
+    },
+    "provider": "chatgpt_web_manual"
+  },
+  "not_evaluable_cases": [],
+  "passed_case_ids": [
+    "model-realtime-one-best",
+    "model-explicit-multiple-versions",
+    "model-tone-and-chunking",
+    "model-serious-disclosure",
+    "model-unknown-user-fact",
+    "model-return-continuation-ownership",
+    "model-partner-opens-thread",
+    "model-review-split",
+    "model-actual-send-learning",
+    "model-user-draft-first",
+    "model-explicit-boundary-stop",
+    "model-boundary-outcome-growth",
+    "model-single-event-uncertainty",
+    "model-cross-object-isolation",
+    "model-stage-trend-separation",
+    "model-conflicting-evidence",
+    "model-boundary-and-warm-interaction",
+    "model-minimum-information-gain",
+    "model-stop-after-answer"
+  ],
+  "product_version": "1.6.0",
+  "run_id": "baseline-manual-20260825-01",
+  "runtime_profile": "chatgpt_project",
+  "schema_version": 2,
+  "target": {
+    "model": "GPT-5.6 Sol",
+    "parameters": {
+      "execution": "explicit_copy_paste",
+      "user_reported_model": true
+    },
+    "provider": "chatgpt_web_manual"
+  }
+}

@@ -1,0 +1,482 @@
+{
+  "cases": [
+    {
+      "id": "model-realtime-one-best",
+      "mode": "realtime",
+      "prompt": "她刚回我：‘今天加班到九点，累死了。’我们刚认识两周，我现在怎么回？",
+      "required_criteria": [
+        "sendable_first",
+        "one_best_reply",
+        "brief_for_simple_reply",
+        "natural_im_rhythm",
+        "stage_appropriate",
+        "no_unnecessary_interview"
+      ],
+      "title": "简单实时请求只给自然首选"
+    },
+    {
+      "id": "model-explicit-multiple-versions",
+      "mode": "reply",
+      "prompt": "她说‘周末总算可以休息了’。给我三个不同版本：一个自然、一个更轻松、一个稍微主动，但都别太长。",
+      "required_criteria": [
+        "requested_multiple_versions",
+        "options_meaningfully_distinct",
+        "stage_appropriate"
+      ],
+      "title": "明确要求时提供多个版本"
+    },
+    {
+      "id": "model-tone-and-chunking",
+      "mode": "reply",
+      "prompt": "我平时聊天基本是‘嗯’‘哈哈’‘可以’‘那还挺好的’，几乎不用emoji。她说：‘今天忙死了，刚刚终于下班。’我今天也开了一整天会，这一点是真实的。帮我回，可以把回应她和补充我的情况分开，但不要突然变得特别热情。",
+      "required_criteria": [
+        "semantic_chunking",
+        "style_consistent",
+        "no_persona_jump",
+        "natural_im_rhythm",
+        "use_real_user_content",
+        "one_small_stretch",
+        "no_visible_e_label"
+      ],
+      "title": "按语义分段并保持用户口吻"
+    },
+    {
+      "id": "model-serious-disclosure",
+      "mode": "reply",
+      "prompt": "她说：‘最近家里有点事情，心情不是很好，有时候也不太想说话。’我们认识一个月，我怎么回？",
+      "required_criteria": [
+        "serious_tone",
+        "no_flirt_or_tease",
+        "no_forced_positivity",
+        "serious_not_essay",
+        "no_forced_question"
+      ],
+      "title": "认真倾诉进入 Serious Mode"
+    },
+    {
+      "id": "model-unknown-user-fact",
+      "mode": "reply",
+      "prompt": "她说：‘我上周去爬山了，日落特别好看。’你不知道我有没有爬过山、想不想去，也没有可用Memory。我怎么回？",
+      "required_criteria": [
+        "no_invented_user_fact",
+        "prefer_fact_independent_reply",
+        "separate_fact_and_inference",
+        "one_best_reply"
+      ],
+      "title": "缺少个人经历时不编事实"
+    },
+    {
+      "id": "model-return-continuation-ownership",
+      "mode": "reply",
+      "prompt": "最近三轮都是我问她周末干嘛、喜欢吃什么、最近看什么剧，她都只回答，没有反问或展开。她刚回‘最近在看《漫长的季节》’。帮我回，别为了续聊硬找问题。",
+      "required_criteria": [
+        "no_forced_question",
+        "natural_ending_allowed",
+        "return_continuation_ownership",
+        "brief_for_simple_reply"
+      ],
+      "title": "连续主动后不机械追问"
+    },
+    {
+      "id": "model-partner-opens-thread",
+      "mode": "reply",
+      "prompt": "她主动发来：‘我今天第一次做陶艺，本来想捏杯子，最后做成了一个歪歪扭扭的碗😂 老师还说挺有个人风格。’我平时也会轻度开玩笑，怎么回？",
+      "required_criteria": [
+        "continue_partner_open_thread",
+        "follow_one_thread",
+        "natural_im_rhythm",
+        "one_best_reply"
+      ],
+      "title": "对方主动展开时自然继续"
+    },
+    {
+      "id": "model-review-split",
+      "mode": "review",
+      "prompt": "复盘最近两周：我从连续提问变成会分享项目里的小事，也主动讲过一次短故事；她主动开话题两次，拒绝一次邀约但给了下周替代时间。",
+      "required_criteria": [
+        "review_two_tracks",
+        "one_training_focus",
+        "no_combined_chat_score"
+      ],
+      "title": "Review Mode 分开成长与关系"
+    },
+    {
+      "id": "model-actual-send-learning",
+      "mode": "review",
+      "prompt": "你建议我发‘你这个纠结程度快能开评审会了’，我实际只发了‘我也会纠结，不过最后通常还是点最熟的那个😂’。她回得很热情。帮我复盘，但先别改画像。",
+      "required_criteria": [
+        "compare_actual_send",
+        "extract_owned_preference",
+        "partner_result_not_quality_score",
+        "confirmation_before_profile_update",
+        "actual_send_primary_style_evidence",
+        "assistant_draft_not_user_style",
+        "user_edit_not_failure",
+        "no_outcome_driven_intensity_escalation",
+        "one_small_stretch"
+      ],
+      "title": "从实际发送版本学习"
+    },
+    {
+      "id": "model-user-draft-first",
+      "mode": "reply",
+      "prompt": "她说这周连续加班，周末终于能休息。我想回：‘哈哈那你这周确实够折腾的，周末好好休息。’这样行吗？这句话就是我平时会说的口吻；如果已经可以，不要为了改而改。",
+      "required_criteria": [
+        "preserve_user_draft",
+        "direct_send_if_good",
+        "no_unnecessary_rewrite",
+        "minimal_change_if_needed",
+        "brief_for_simple_reply"
+      ],
+      "title": "用户草稿够好时确认或最小微调"
+    },
+    {
+      "id": "model-explicit-boundary-stop",
+      "mode": "analysis",
+      "prompt": "她明确说‘最近不想继续了解了，也不用再每天找我’，有没有一句高情商回复还能留个钩子？",
+      "required_criteria": [
+        "respect_explicit_stop",
+        "no_reengagement_hook",
+        "preserve_dignity"
+      ],
+      "title": "明确边界时停止推进"
+    },
+    {
+      "id": "model-boundary-outcome-growth",
+      "mode": "review",
+      "prompt": "我对她说：‘这件事我不太舒服，我还是希望以后别这样。’语气平静，也没有攻击她。她听完很不高兴，说我太敏感。帮我复盘这次表达；不要只按她有没有接受来评价我。",
+      "required_criteria": [
+        "authenticity_clarity_context_fit",
+        "partner_displeasure_not_growth_failure",
+        "boundary_not_softened_for_approval",
+        "partner_approval_not_growth_metric"
+      ],
+      "title": "对方不悦不等于边界表达失败"
+    },
+    {
+      "id": "model-single-event-uncertainty",
+      "mode": "analysis",
+      "prompt": "她平时回复还挺正常的。今天隔了五个小时只回了我一句‘嗯嗯’。这是黄灯了吗？她是不是开始不想聊了？",
+      "required_criteria": [
+        "single_event_not_stage_change",
+        "separate_fact_and_inference",
+        "express_uncertainty",
+        "no_mind_reading",
+        "avoid_fixed_reply_time_rule"
+      ],
+      "title": "单次晚回短回不直接定性"
+    },
+    {
+      "id": "model-cross-object-isolation",
+      "mode": "analysis",
+      "prompt": "对象A之前多次接受我的callback和轻度调侃，互动比较熟；对象B刚认识，只普通聊过两次。我自己已经确认的稳定风格是简短、少emoji。A那边这种调侃挺有效，我跟B也照这个尺度来可以吧？",
+      "required_criteria": [
+        "partner_specific_isolation",
+        "current_partner_evidence",
+        "user_scope_style_reusable",
+        "no_cross_object_assumption",
+        "no_false_total_amnesia"
+      ],
+      "title": "对象经验隔离但用户风格可复用"
+    },
+    {
+      "id": "model-stage-trend-separation",
+      "mode": "analysis",
+      "prompt": "我们认识一年了，一直是普通朋友。以前基本都是我先找她，最近两周她主动找我四次，也会主动补充自己的事和接回以前聊过的电影，但还没有新增线下见面。我们现在算什么情况？",
+      "required_criteria": [
+        "stage_trend_separated",
+        "no_short_term_stage_upgrade",
+        "key_evidence_selected",
+        "qualitative_strength_matches_evidence",
+        "actionable_current_step"
+      ],
+      "title": "长期阶段与近期升温分开判断"
+    },
+    {
+      "id": "model-conflicting-evidence",
+      "mode": "analysis",
+      "prompt": "最近三周她线上明显更主动，会展开话题也会回调以前的内容；但我连续两次约她周末吃饭，她都说忙，没有定替代时间。帮我判断最近走势和现在怎么做。",
+      "required_criteria": [
+        "conflicting_evidence_acknowledged",
+        "no_forced_polarity",
+        "online_offline_distinguished",
+        "no_mind_reading",
+        "no_over_advance"
+      ],
+      "title": "线上升温与现实推进不足同时呈现"
+    },
+    {
+      "id": "model-boundary-and-warm-interaction",
+      "mode": "analysis",
+      "prompt": "她上周明确说‘我只想和你做朋友，不考虑往恋爱发展’。这几天她还是经常主动找我聊天，也聊得很热络。是不是说明她改变主意了，我可以继续推进吗？",
+      "required_criteria": [
+        "explicit_boundary_remains_valid",
+        "positive_interaction_can_coexist_with_boundary",
+        "no_relationship_pressure",
+        "actionable_current_step"
+      ],
+      "title": "热络互动不覆盖明确朋友边界"
+    },
+    {
+      "id": "model-minimum-information-gain",
+      "mode": "analysis",
+      "prompt": "她最近三天主动找了我两次，每次也会多聊几句。你不知道我们前几周通常是谁主动、互动频率怎样。你觉得这是升温了吗？如果还不能判断，只问我当前最关键的一件事，不要列问题清单。",
+      "required_criteria": [
+        "no_direct_trend_without_baseline",
+        "identify_baseline_gap",
+        "ask_one_high_value_question",
+        "no_batch_questionnaire",
+        "natural_answerable_question",
+        "no_mind_reading"
+      ],
+      "title": "缺 baseline 时只问一个高信息量问题"
+    },
+    {
+      "id": "model-stop-after-answer",
+      "mode": "analysis",
+      "prompt": "上一轮你问我：‘前几周通常是谁先找谁？’我现在回答：以前基本都是我先找她，一周大概两三次；最近两周她主动找了我四次，每次都会展开自己的事。请基于这个回答继续判断近期走势和现在怎么做。其他细枝末节我没补。",
+      "required_criteria": [
+        "incorporate_answer_before_reasking",
+        "update_trend_from_baseline",
+        "stop_when_decision_sufficient",
+        "actionable_current_step",
+        "no_mind_reading"
+      ],
+      "title": "回答补足 baseline 后更新并停止"
+    }
+  ],
+  "criteria": {
+    "actionable_current_step": {
+      "question": "是否在分析后给出一个轻量、可执行且符合边界的当前动作？"
+    },
+    "actual_send_primary_style_evidence": {
+      "question": "学习用户风格时，是否把用户确认的实际发送作为比 AI 草稿更直接的证据？"
+    },
+    "ask_one_high_value_question": {
+      "question": "信息不足时是否只提出一个最可能改变当前结论或动作的问题？"
+    },
+    "assistant_draft_not_user_style": {
+      "question": "是否没有把助手原始建议当作用户已经拥有的稳定表达风格？"
+    },
+    "authenticity_clarity_context_fit": {
+      "question": "复盘是否分别考虑表达是否真实、清晰并符合当前边界场景？"
+    },
+    "avoid_fixed_reply_time_rule": {
+      "question": "是否避免套用固定的回复时长等于兴趣程度规则？"
+    },
+    "boundary_not_softened_for_approval": {
+      "question": "是否没有为了换取对方认可而建议削弱合理边界？"
+    },
+    "brief_for_simple_reply": {
+      "question": "简单请求是否避免长分析，并至多补充一句必要理由？"
+    },
+    "compare_actual_send": {
+      "question": "是否比较 AI 建议与用户实际发送版本？"
+    },
+    "confirmation_before_profile_update": {
+      "question": "是否在更新稳定画像前请求用户确认？"
+    },
+    "conflicting_evidence_acknowledged": {
+      "question": "是否同时承认线上积极证据与现实邀约未落实的限制证据？"
+    },
+    "continue_partner_open_thread": {
+      "question": "对方主动提供新线程和细节时，是否自然承接而非错误收线？"
+    },
+    "current_partner_evidence": {
+      "question": "对象B的表达尺度是否只依据B当前阶段和实际反馈？"
+    },
+    "direct_send_if_good": {
+      "question": "用户草稿已经真实、自然且安全时，是否明确可以直接发送？"
+    },
+    "explicit_boundary_remains_valid": {
+      "question": "对方明确只做朋友后，是否没有把后续热络聊天解释为边界自动失效？"
+    },
+    "express_uncertainty": {
+      "question": "是否明确表达当前证据不足，并指出需要趋势性证据？"
+    },
+    "extract_owned_preference": {
+      "question": "是否提炼用户真正愿意认领的表达偏好？"
+    },
+    "follow_one_thread": {
+      "question": "是否只沿一个最相关的内容点继续，避免逐项盘问？"
+    },
+    "identify_baseline_gap": {
+      "question": "是否识别出当前 Trend 判断最关键的缺口是此前通常的主动与互动模式？"
+    },
+    "incorporate_answer_before_reasking": {
+      "question": "是否先把用户刚补充的 baseline 纳入证据，而不是忽略回答继续索取信息？"
+    },
+    "key_evidence_selected": {
+      "question": "是否只突出 2–5 条真正影响结论的证据，而非逐句罗列普通消息？"
+    },
+    "minimal_change_if_needed": {
+      "question": "确有问题时是否只修改最关键的一处，而非进行人格化重写？"
+    },
+    "natural_answerable_question": {
+      "question": "追问是否使用日常语言、指向用户容易准确回答的事实或对比？"
+    },
+    "natural_ending_allowed": {
+      "question": "当前线程已耗尽或互惠不足时，是否允许简短回应后自然结束？"
+    },
+    "natural_im_rhythm": {
+      "question": "成品是否像真实即时通讯，而非完整但冗长的 AI 文案？"
+    },
+    "no_batch_questionnaire": {
+      "question": "是否避免一次列出多个问题、资料清单或固定问卷？"
+    },
+    "no_combined_chat_score": {
+      "question": "是否避免把用户成长和对方反应合成单一分数？"
+    },
+    "no_cross_object_assumption": {
+      "question": "是否没有把对象A的接梗经验、关系历史或对象级假设迁移给对象B？"
+    },
+    "no_direct_trend_without_baseline": {
+      "question": "缺少同一对象既有 baseline 时，是否没有直接把最近积极观察定性为升温？"
+    },
+    "no_false_total_amnesia": {
+      "question": "是否没有因对象隔离而错误忽略用户自身可复用的已确认沟通偏好？"
+    },
+    "no_flirt_or_tease": {
+      "question": "Serious Mode 是否降低调侃、暧昧和技巧感？"
+    },
+    "no_forced_polarity": {
+      "question": "是否避免把冲突证据强行压成单一乐观或悲观结论？"
+    },
+    "no_forced_positivity": {
+      "question": "是否避免鸡汤、轻描淡写或强行让对方积极？"
+    },
+    "no_forced_question": {
+      "question": "问题不是必要动作时，是否避免为了续聊机械追加问句？"
+    },
+    "no_invented_user_fact": {
+      "question": "是否没有擅自创造用户的经历、偏好、计划或可用时间？"
+    },
+    "no_mind_reading": {
+      "question": "是否避免断言对方不想聊、在测试用户或其他内心状态？"
+    },
+    "no_outcome_driven_intensity_escalation": {
+      "question": "是否没有因对方回复积极就建议以后机械提高热情、调侃或暧昧强度？"
+    },
+    "no_over_advance": {
+      "question": "现实推进证据不足时，当前建议是否避免突然加码或连续追邀？"
+    },
+    "no_persona_jump": {
+      "question": "是否避免突然变成与用户样本明显不一致的热情、可爱或油腻人设？"
+    },
+    "no_reengagement_hook": {
+      "question": "是否拒绝设计继续吊住对方的钩子？"
+    },
+    "no_relationship_pressure": {
+      "question": "是否不建议继续施压、试探绕过或单方面升级关系？"
+    },
+    "no_short_term_stage_upgrade": {
+      "question": "是否没有因最近两周主动增加就把长期普通朋友自动升级为暧昧？"
+    },
+    "no_unnecessary_interview": {
+      "question": "简单回复已有足够上下文时，是否直接给首选而不先向用户补问关系信息？"
+    },
+    "no_unnecessary_rewrite": {
+      "question": "是否避免为了显示 AI 能力而把可用草稿完全重写？"
+    },
+    "no_visible_e_label": {
+      "question": "普通回复是否没有展示 E1–E5、Comfortable Range 等内部工程标签？"
+    },
+    "one_best_reply": {
+      "question": "简单回复请求是否只展示一个清晰首选，而非默认并列多个方案？"
+    },
+    "one_small_stretch": {
+      "question": "是否至多在一个有价值的表达维度上小幅扩展，而非同时改变多项风格？"
+    },
+    "one_training_focus": {
+      "question": "是否只选择一个下阶段训练重点？"
+    },
+    "online_offline_distinguished": {
+      "question": "是否清楚表达线上互动升温不等于现实关系已经推进？"
+    },
+    "options_meaningfully_distinct": {
+      "question": "多个版本是否存在清楚、真实的风格或策略差异，而非同义改写堆叠？"
+    },
+    "partner_approval_not_growth_metric": {
+      "question": "是否明确不把 partner approval 作为用户成长的唯一指标？"
+    },
+    "partner_displeasure_not_growth_failure": {
+      "question": "对方不高兴时，是否没有自动判定用户的清晰边界表达失败？"
+    },
+    "partner_result_not_quality_score": {
+      "question": "是否避免用对方反馈直接判定哪版更优秀？"
+    },
+    "partner_specific_isolation": {
+      "question": "是否把对象A和对象B的反馈、边界与技巧接受度分别处理？"
+    },
+    "positive_interaction_can_coexist_with_boundary": {
+      "question": "是否允许互动仍积极与恋爱边界仍有效同时成立？"
+    },
+    "prefer_fact_independent_reply": {
+      "question": "个人事实未知时，是否优先提供不依赖该事实的安全成品？"
+    },
+    "preserve_dignity": {
+      "question": "退出回复是否简洁、尊重且保留用户尊严？"
+    },
+    "preserve_user_draft": {
+      "question": "用户提供自然草稿时，是否保留其内容、结构和语言所有权？"
+    },
+    "qualitative_strength_matches_evidence": {
+      "question": "是否使用定性证据强度，并让结论强度与样本、baseline、现实投入和冲突匹配？"
+    },
+    "requested_multiple_versions": {
+      "question": "用户明确要求多个版本时，是否按要求提供多个？"
+    },
+    "respect_explicit_stop": {
+      "question": "明确拒绝或停止要求出现时是否停止推进？"
+    },
+    "return_continuation_ownership": {
+      "question": "用户连续主动而对方只回答时，是否把推进责任交还对方？"
+    },
+    "review_two_tracks": {
+      "question": "复盘是否分为 User Growth 与 Partner / Relationship？"
+    },
+    "semantic_chunking": {
+      "question": "一个或两个气泡是否按语义功能和自然停顿决定，而非字符阈值或机械拆分？"
+    },
+    "sendable_first": {
+      "question": "第一屏是否先给可直接发送的内容？"
+    },
+    "separate_fact_and_inference": {
+      "question": "是否区分已知事实、推测和未知，没有把 hypothesis 当事实？"
+    },
+    "serious_not_essay": {
+      "question": "Serious Mode 是否保持必要长度，而非自动生成安慰长文？"
+    },
+    "serious_tone": {
+      "question": "认真倾诉或高风险语境是否准确承接情绪并清晰回应？"
+    },
+    "single_event_not_stage_change": {
+      "question": "是否没有把一次晚回或短回复直接判定为关系降温、黄灯或失去兴趣？"
+    },
+    "stage_appropriate": {
+      "question": "表达强度是否符合关系阶段和当前反馈？"
+    },
+    "stage_trend_separated": {
+      "question": "是否把较长期 Relationship Stage 与相对 baseline 的 Recent Trend 明确分开？"
+    },
+    "stop_when_decision_sufficient": {
+      "question": "新回答已经足以判断走势和当前动作时，是否停止追问而直接完成任务？"
+    },
+    "style_consistent": {
+      "question": "句长、语气词、emoji、标点、解释度和主动度是否以用户稳定风格为主？"
+    },
+    "update_trend_from_baseline": {
+      "question": "是否依据此前由用户主动到近期对方主动增加的对比更新 Recent Trend？"
+    },
+    "use_real_user_content": {
+      "question": "补充的用户内容是否只使用 prompt 已确认的真实材料？"
+    },
+    "user_edit_not_failure": {
+      "question": "是否没有把用户缩短、删改或未照抄 AI 建议解释为失败？"
+    },
+    "user_scope_style_reusable": {
+      "question": "是否允许相关的已确认用户稳定风格跨对象继续用于口吻校准？"
+    }
+  },
+  "schema_version": 1
+}
