@@ -64,7 +64,12 @@ PROVIDER_TYPES = {
 }
 VERIFIED_PROVIDER_ORIGINS = {
     ("openai_responses", "OpenAI"): {"https://api.openai.com"},
-    ("openai_compatible_chat", "Moonshot AI"): {"https://api.moonshot.cn"},
+    ("openai_compatible_chat", "Moonshot AI"): {
+        "https://api.moonshot.cn",
+        "https://api.moonshot.ai",
+    },
+    ("openai_compatible_chat", "Google"): {"https://generativelanguage.googleapis.com"},
+    ("openai_compatible_chat", "DeepSeek"): {"https://api.deepseek.com"},
 }
 PROVENANCE_TYPES = {"verified_direct", "declared_relay", "unverified_relay", "user_reported"}
 STRUCTURED_OUTPUT_MODES = {"strict_json_schema", "json_object", "text_json_fallback"}
@@ -1011,6 +1016,37 @@ def endpoint_with_path(base_url: str, suffix: str) -> str:
     )
 
 
+def is_official_provider_origin(
+    protocol: str, vendor: str | None, origin: str | None
+) -> bool:
+    """Match an exact normalized origin, canonical vendor, and supported protocol."""
+    return (
+        isinstance(protocol, str)
+        and isinstance(vendor, str)
+        and isinstance(origin, str)
+        and origin in VERIFIED_PROVIDER_ORIGINS.get((protocol, vendor), set())
+    )
+
+
+def resolve_provider_provenance(
+    protocol: str,
+    vendor: str | None,
+    origin: str,
+    provenance_type: str | None,
+) -> str:
+    """Resolve new configurations only; never upgrade recorded artifact evidence."""
+    official = is_official_provider_origin(protocol, vendor, origin)
+    if provenance_type == "verified_direct" and not official:
+        raise ModelEvalError(
+            "verified_direct requires a built-in official provider protocol/vendor/origin match"
+        )
+    return provenance_type or (
+        "verified_direct"
+        if official
+        else ("declared_relay" if vendor else "unverified_relay")
+    )
+
+
 def normalize_usage(payload: Any, *, chat: bool = False) -> dict[str, int | None]:
     if not isinstance(payload, dict):
         return {
@@ -1340,19 +1376,11 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
         sleep: Callable[[float], None] | None = None,
     ) -> None:
         origin = endpoint_identity(base_url)["endpoint_origin"]
-        official = origin == "https://api.openai.com"
+        official = is_official_provider_origin(self.protocol, "OpenAI", origin)
         vendor = declared_upstream_vendor or ("OpenAI" if official else None)
-        selected_provenance = provenance_type or (
-            "verified_direct"
-            if official and vendor == "OpenAI"
-            else ("declared_relay" if declared_upstream_vendor else "unverified_relay")
+        selected_provenance = resolve_provider_provenance(
+            self.protocol, vendor, origin, provenance_type
         )
-        if selected_provenance == "verified_direct" and origin not in VERIFIED_PROVIDER_ORIGINS.get(
-            (self.provider_name, vendor), set()
-        ):
-            raise ModelEvalError(
-                "verified_direct requires the built-in official OpenAI vendor/origin match"
-            )
         super().__init__(
             api_key=api_key,
             model=model,
@@ -1560,16 +1588,10 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
         urlopen: Callable[..., Any] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
-        selected_provenance = provenance_type or (
-            "declared_relay" if declared_upstream_vendor else "unverified_relay"
-        )
         origin = endpoint_identity(base_url)["endpoint_origin"]
-        if selected_provenance == "verified_direct" and origin not in VERIFIED_PROVIDER_ORIGINS.get(
-            (self.provider_name, declared_upstream_vendor), set()
-        ):
-            raise ModelEvalError(
-                "verified_direct requires a built-in official provider/vendor origin match"
-            )
+        selected_provenance = resolve_provider_provenance(
+            self.protocol, declared_upstream_vendor, origin, provenance_type
+        )
         super().__init__(
             api_key=api_key,
             model=model,
@@ -3508,9 +3530,12 @@ def validate_provider_manifest(manifest: Any, label: str) -> None:
         or model_identity.get("status") not in {"UNVERIFIED", "USER_REPORTED"}
     ):
         raise ModelEvalError(f"{label} configured model identity is invalid")
-    if provenance == "verified_direct" and manifest.get("endpoint_origin") not in (
-        VERIFIED_PROVIDER_ORIGINS.get(
-            (manifest.get("provider"), manifest.get("declared_upstream_vendor")), set()
+    if provenance == "verified_direct" and (
+        manifest.get("provider") != manifest.get("protocol")
+        or not is_official_provider_origin(
+            manifest.get("protocol"),
+            manifest.get("declared_upstream_vendor"),
+            manifest.get("endpoint_origin"),
         )
     ):
         raise ModelEvalError(f"{label} verified provider origin is invalid")

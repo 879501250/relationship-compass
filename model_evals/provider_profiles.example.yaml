@@ -1,6 +1,118 @@
 {
   "version": 1,
   "profiles": {
+    "validation-gemini": {
+      "provider": "openai_compatible_chat",
+      "max_retries": 4,
+      "timeout_seconds": 120,
+      "api_key_env": "GEMINI_API_KEY",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "declared_upstream_vendor": "Google",
+      "provenance_type": "verified_direct",
+      "strict_model_identity": true,
+      "capabilities": {
+        "reasoning_effort_supported": true,
+        "allowed_reasoning_efforts": ["medium", "high"],
+        "structured_output_modes": ["strict_json_schema"],
+        "temperature_supported": false,
+        "top_p_supported": false,
+        "seed_supported": false,
+        "max_output_tokens_parameter": "max_tokens"
+      },
+      "target": {
+        "model_env": "GEMINI_TARGET_MODEL",
+        "reasoning_effort": "medium"
+      },
+      "judge": {
+        "model_env": "GEMINI_JUDGE_MODEL",
+        "reasoning_effort": "high",
+        "structured_output_mode": "strict_json_schema"
+      }
+    },
+    "reference-target-relay-openai": {
+      "provider": "openai_compatible_chat",
+      "api_key_env": "RELATIONSHIP_EVAL_TARGET_API_KEY",
+      "base_url_env": "RELATIONSHIP_EVAL_TARGET_BASE_URL",
+      "declared_upstream_vendor": "OpenAI",
+      "provenance_type": "declared_relay",
+      "strict_model_identity": true,
+      "capabilities": {
+        "reasoning_effort_supported": false,
+        "allowed_reasoning_efforts": [],
+        "structured_output_modes": [],
+        "temperature_supported": false,
+        "top_p_supported": false,
+        "seed_supported": false,
+        "max_output_tokens_parameter": "max_tokens"
+      },
+      "target": {
+        "model_env": "RELATIONSHIP_EVAL_TARGET_MODEL"
+      }
+    },
+    "reference-judge-kimi-official": {
+      "provider": "openai_compatible_chat",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "base_url": "https://api.moonshot.cn/v1",
+      "declared_upstream_vendor": "Moonshot AI",
+      "provenance_type": "verified_direct",
+      "strict_model_identity": true,
+      "capabilities": {
+        "reasoning_effort_supported": false,
+        "allowed_reasoning_efforts": [],
+        "structured_output_modes": ["text_json_fallback"],
+        "temperature_supported": false,
+        "top_p_supported": false,
+        "seed_supported": false,
+        "max_output_tokens_parameter": "max_tokens"
+      },
+      "judge": {
+        "model_env": "MOONSHOT_JUDGE_MODEL",
+        "structured_output_mode": "text_json_fallback"
+      }
+    },
+    "reference-judge-deepseek-official": {
+      "provider": "openai_compatible_chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "base_url": "https://api.deepseek.com",
+      "declared_upstream_vendor": "DeepSeek",
+      "provenance_type": "verified_direct",
+      "strict_model_identity": true,
+      "capabilities": {
+        "reasoning_effort_supported": false,
+        "allowed_reasoning_efforts": [],
+        "structured_output_modes": ["text_json_fallback"],
+        "temperature_supported": false,
+        "top_p_supported": false,
+        "seed_supported": false,
+        "max_output_tokens_parameter": "max_tokens"
+      },
+      "judge": {
+        "model_env": "DEEPSEEK_JUDGE_MODEL",
+        "structured_output_mode": "text_json_fallback"
+      }
+    },
+    "reference-judge-gemini-official": {
+      "provider": "openai_compatible_chat",
+      "api_key_env": "GEMINI_API_KEY",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "declared_upstream_vendor": "Google",
+      "provenance_type": "verified_direct",
+      "strict_model_identity": true,
+      "capabilities": {
+        "reasoning_effort_supported": true,
+        "allowed_reasoning_efforts": ["medium", "high"],
+        "structured_output_modes": ["strict_json_schema"],
+        "temperature_supported": false,
+        "top_p_supported": false,
+        "seed_supported": false,
+        "max_output_tokens_parameter": "max_tokens"
+      },
+      "judge": {
+        "model_env": "GEMINI_JUDGE_MODEL",
+        "reasoning_effort": "high",
+        "structured_output_mode": "strict_json_schema"
+      }
+    },
     "openai-direct": {
       "provider": "openai_responses",
       "api_key_env": "OPENAI_API_KEY",

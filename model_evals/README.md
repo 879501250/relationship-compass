@@ -60,7 +60,7 @@ ChatGPT Web 与 API 即使显示同一模型名，也可能因 system configurat
 | Provider | Transport | 用途 |
 | --- | --- | --- |
 | `openai_responses` | OpenAI Responses JSON | OpenAI 官方 endpoint 或显式声明的 Responses relay。 |
-| `openai_compatible_chat` | Chat Completions-compatible JSON | Moonshot 官方 compatible endpoint 或第三方 relay。 |
+| `openai_compatible_chat` | Chat Completions-compatible JSON | Google、DeepSeek、Moonshot 官方 compatible endpoint 或第三方 relay。 |
 | `chatgpt_web_manual` | manual copy/paste | 手工 Target、Judge 或显式 fallback。 |
 
 Target 和 Judge 各自独立记录 `provider_identity` 与 `model_identity`。Model status 为 `MATCHED / MISSING / MISMATCH / MULTIPLE / USER_REPORTED / UNVERIFIED`。API `reported_model` 只来自 provider response；ChatGPT Web 的标签保存为 `user_reported_model`，其 `requested_model` / `reported_model` 均为 `null`。
@@ -75,6 +75,30 @@ Endpoint provenance：
 - `user_reported`：ChatGPT Web / manual 标签由操作者报告。
 
 requested alias 相同不等于真实 upstream 可验证。Relay 可能动态路由、改写 system message、忽略参数、降级模型或不返回真实 model identity；其 Behavioral Reference 仍有价值，但 provenance 必须诚实记录。
+
+### Official Provider Provenance Registry
+
+集中 registry 按 `transport + canonical vendor + exact normalized origin` 联合匹配；这里的 transport 指 `provider_identity.transport` / manifest `protocol`，不是 vendor 名称。当前只登记以下组合：
+
+| Transport | Canonical vendor | Official HTTPS origin |
+| --- | --- | --- |
+| `openai_responses` | `OpenAI` | `https://api.openai.com` |
+| `openai_compatible_chat` | `Moonshot AI` | `https://api.moonshot.cn` |
+| `openai_compatible_chat` | `Moonshot AI` | `https://api.moonshot.ai` |
+| `openai_compatible_chat` | `Google` | `https://generativelanguage.googleapis.com` |
+| `openai_compatible_chat` | `DeepSeek` | `https://api.deepseek.com` |
+
+Origin 来自实际配置 URL 的 scheme + authority，小写归一化后精确匹配；不包含 `/v1` 等 path。HTTP、相似域名、子域名、额外端口、错误 vendor 或错误 transport 均不能通过，不使用 hostname contains / endswith。OpenAI 保留原有 Responses 官方支持，本轮未额外登记 OpenAI Chat；Anthropic 官方 Messages adapter 未实现，经 relay 使用 Anthropic 仍是 `declared_relay`。
+
+Moonshot 中国 `.cn` 与国际 `.ai` origin 在三条件匹配时均为 `verified_direct`；国际 base URL 见[官方 Quickstart](https://platform.kimi.ai/docs/overview)。单个 Behavioral Reference run 必须显式固定一个 endpoint，runner 不做 automatic region failover：失败只在原 endpoint retry/resume。CN ↔ Global 改动需要新 run，即使 vendor/model 相同，compare 也至少为 `PARTIALLY_COMPARABLE`。
+
+新配置未显式指定 provenance 时，命中上述组合得到 `verified_direct / endpoint_verified=true`；否则有 vendor 声明时为 `declared_relay`，无声明时为 `unverified_relay`。显式 `verified_direct` 必须命中 registry；显式保守声明 `declared_relay / unverified_relay` 不会被强行升级。OpenAI Responses 的既有官方默认 vendor 推断保持不变。
+
+Registry 验证的是**配置的接入路径**，不是模型权重版本或 capability：Google 模型经第三方 relay 仍不算 Google 官方直连；即使 requested/reported model 相同也不会升级。官方 endpoint 返回不同 model 时，`endpoint_verified=true` 与 `model_identity.status=MISMATCH` 可以同时存在，严格模式仍报 `MODEL_IDENTITY_MISMATCH`。
+
+Google 使用 [官方 OpenAI compatibility 文档](https://ai.google.dev/gemini-api/docs/openai)中的完整 base URL `https://generativelanguage.googleapis.com/v1beta/openai/`；DeepSeek 使用[官方 Chat/JSON 文档](https://api-docs.deepseek.com/guides/json_mode/)中的 base URL `https://api.deepseek.com`。本轮仅核对文档与本地测试，没有调用真实模型 API。
+
+Registry 扩展只影响新配置。历史 Google run 若记录为 `declared_relay / endpoint_verified=false`，仍按原始 evidence 校验和派生 Reference Quality；不会重写 run、response、judgment、summary、acceptance，也不会自动升级旧 reference。
 
 ## Sampling policy 与 capability preflight
 
@@ -95,6 +119,39 @@ Copy-Item model_evals/provider_profiles.example.yaml model_evals/provider_profil
 ```
 
 API key 只从最终解析出的环境变量名读取：CLI `--api-key-env` 优先于 profile，二者都没有时才使用 provider built-in env name。本地 profile 已被 Git 忽略；artifact 不保存 key、Authorization、path/query secret、hidden reasoning、thinking 或 analysis trace。价格只允许在 local profile 配置，不硬编码。
+
+### Purpose-oriented example profiles
+
+| Profile | 用途与配置边界 |
+| --- | --- |
+| `validation-gemini` | Google 官方开发验证；`GEMINI_API_KEY / GEMINI_TARGET_MODEL / GEMINI_JUDGE_MODEL`，Target medium + 普通文本，Judge high + strict JSON schema，`max_tokens`。 |
+| `reference-target-relay-openai` | 正式 Target 候选；endpoint/key/model 分别读取 `RELATIONSHIP_EVAL_TARGET_BASE_URL / RELATIONSHIP_EVAL_TARGET_API_KEY / RELATIONSHIP_EVAL_TARGET_MODEL`，upstream 声明 OpenAI，但保持 `declared_relay`。 |
+| `reference-judge-kimi-official` | Moonshot 官方 Judge 候选；`MOONSHOT_API_KEY / MOONSHOT_JUDGE_MODEL`，保守 text JSON fallback。 |
+| `reference-judge-deepseek-official` | DeepSeek 官方 Judge 候选；`DEEPSEEK_API_KEY / DEEPSEEK_JUDGE_MODEL`，保守 text JSON fallback。 |
+| `reference-judge-gemini-official` | Google 官方 Judge 候选或备用；`GEMINI_API_KEY / GEMINI_JUDGE_MODEL`，high + strict JSON schema。 |
+
+`reference-judge-kimi-official` 默认保留 `https://api.moonshot.cn/v1`。用户可在自己的 local profile 中将 `base_url` 显式改为 `https://api.moonshot.ai/v1`；如需环境变量选择，删除该静态 `base_url`，改用 `"base_url_env": "MOONSHOT_BASE_URL"` 并设置对应变量（这是显式配置，不是自动 fallback）。也可用 CLI `--base-url` 覆盖。两个平台的账号、key 和模型可用性需分别核对。本轮不修改私有 local profile。
+
+仅 `validation-gemini` 示例设为 `max_retries=4 / timeout_seconds=120`，用于用户报告的暂时性 500/503 容量错误；全局与其他 formal reference 示例仍沿用原默认值。两个 Gemini 示例均保持官方 provenance；旧 local Gemini profile 如仍显式写 `declared_relay`，请用户自行改为 `verified_direct` 或删除显式 provenance 让 registry 识别，仅用于后续新运行。旧 smoke/artifact 保留原样，不重写或升级。
+
+Gemini 配置依据**用户已报告的真实 smoke evidence**：同一 `gemini-3.7-flash` requested/reported model 为 MATCHED，Target medium、Judge high + strict_json_schema、`max_tokens` 已通过现有 adapter。本轮未重复 smoke；该结果不保证其他 Gemini alias、参数组合或未来服务版本也受支持，示例通过 model_env 选择具体模型。
+
+Kimi / DeepSeek 新示例尚未经本项目真实 smoke：不声明 reasoning、temperature、top_p、seed、native json_object 或 strict_json_schema；`text_json_fallback` 只要求文本返回后按 Judge schema 解析，不声称服务端保证 schema。`max_tokens` 是待 smoke 确认的最小 token 参数配置，不是已实测承诺；relay Target 的 token 参数也必须按实际服务核对。原 `moonshot-direct` 等兼容示例保留，不代表新增验证结论。正式使用任何 provider / model / capability 组合前都必须分别做 Target/Judge `provider-check` + `smoke`。
+
+### Validation Run 与 Behavioral Reference Run
+
+Validation Run 用于 runner smoke、provider compatibility、schema 校验和改动后的快速 runtime 回归。可在实际账户额度允许时用 Gemini 官方免费额度或低成本配置；是否免费以账户与服务当前政策为准。它不自动成为正式 Behavioral Reference。
+
+**Gemini Validation PASS 不等于正式 OpenAI relay Target PASS**：它只能证明当前基础设施和 runtime 能沿 Gemini 路径执行；不同 Target/model/execution identity 必须独立测试。
+
+Behavioral Reference Run 用于产品版本回归、长期比较和 Core/Stress 行为测量，要求固定 Target/模型、固定 Judge/模型、完整 provenance、固定 Eval Identity、Git clean、完整执行、Human Audit 与 Human Acceptance。`validation-* / reference-*` 只是示例用途名称，不参与 runner qualification 判断，也不绕过既有质量或 acceptance 规则。
+
+推荐长期流程：
+
+- 开发验证：Gemini Official → 两个 role 各自 provider-check → Target smoke → Judge smoke → 必要时完整 30-case validation。
+- 正式 reference：固定 Target provider/model → 固定 cross-vendor Judge → 两个 role 各自 provider-check + smoke → 30-case run → Report/Compare → Human Audit → Accept Reference。
+
+例如 relay OpenAI Target 搭配 Kimi official Judge，不合适时再单独测试 DeepSeek official 或 Gemini official。跨厂商只是降低同模型自评相关性风险的建议，不禁止 Target == Judge；保留 `CORRELATED_JUDGE_RISK / TARGET_JUDGE_IDENTITY_CORRELATED` 警告。备用/Secondary Judge 指独立人工安排的另一轮评估，本轮不提供 Multi-Judge 编排、投票或共识分数。Human Audit 应检查全部 FAIL、抽查 PASS，并复核 disagreement；profile 名称和单次 30/30 PASS 均不能代替人工接受。
 
 ## 共同准备、preflight 与 smoke
 
