@@ -10,6 +10,7 @@ Thumbs.db
 .idea/
 .vscode/
 .work/
+model_evals/provider_profiles.local.yaml
 knowledge-management/SOURCE_REGISTRY.local.json
 knowledge-management/raw/
 knowledge-management/private/

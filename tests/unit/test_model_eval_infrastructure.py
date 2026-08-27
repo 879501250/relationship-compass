@@ -46,11 +46,16 @@ class FakeProvider:
 def judgment_for(record: dict[str, Any], *, fail_first: bool = False) -> str:
     return json.dumps(
         {
+            "case_id": record["case_id"],
             "criteria": [
                 {
                     "criterion": item["criterion"],
                     "passed": not (fail_first and index == 0),
-                    "reason": "符合判据" if not (fail_first and index == 0) else "未满足判据",
+                    "reason": (
+                        "Target 原文给出了该项要求对应的可核对内容"
+                        if not (fail_first and index == 0)
+                        else "Target 原文缺少首项要求对应的必要内容"
+                    ),
                 }
                 for index, item in enumerate(record["criteria"])
             ]
@@ -83,6 +88,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             repository_sha="a" * 40,
             repository_dirty=repository_dirty,
             knowledge_pack_version="1.6.0",
+            allow_dirty_debug=repository_dirty is True,
         )
         return run_dir
 
@@ -105,14 +111,14 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
                 Path(temp_dir), FakeProvider([runner.ProviderError("provider unavailable")])
             )
             response = runner.load_jsonl(run_dir / "responses.jsonl")[0]
-            self.assertEqual(response["status"], "PROVIDER_ERROR")
+            self.assertEqual(response["status"], "TARGET_ERROR")
             self.assertIsNone(response["response"])
             metadata = runner.load_json_object(run_dir / "run.json")
-            self.assertEqual(metadata["status"], "FAILED")
+            self.assertEqual(metadata["status"], "TARGET_PARTIAL")
             self.assertIsNone(metadata["target_completed_at"])
-            self.assertIsNotNone(metadata["completed_at"])
+            self.assertIsNone(metadata["completed_at"])
             summary = runner.build_report(run_dir)
-            self.assertEqual(summary["completion_status"], "FAILED")
+            self.assertEqual(summary["completion_status"], "TARGET_PARTIAL")
 
     def test_timeout_and_invalid_response_have_distinct_statuses(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -121,13 +127,12 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
                 parent, FakeProvider([runner.ProviderTimeout("slow")]), name="timeout"
             )
             invalid_dir = self.run_target(parent, FakeProvider(["   "]), name="invalid")
-            self.assertEqual(
-                runner.load_jsonl(timeout_dir / "responses.jsonl")[0]["status"], "TIMEOUT"
-            )
-            self.assertEqual(
-                runner.load_jsonl(invalid_dir / "responses.jsonl")[0]["status"],
-                "INVALID_RESPONSE",
-            )
+            timeout = runner.load_jsonl(timeout_dir / "responses.jsonl")[0]
+            invalid = runner.load_jsonl(invalid_dir / "responses.jsonl")[0]
+            self.assertEqual(timeout["status"], "TARGET_ERROR")
+            self.assertEqual(timeout["error_code"], "TIMEOUT")
+            self.assertEqual(invalid["status"], "TARGET_ERROR")
+            self.assertEqual(invalid["error_code"], "EMPTY_RESPONSE")
 
     def test_judgment_pass_fail_and_aggregation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -432,7 +437,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             duplicate_dir = self.run_target(parent, FakeProvider(["回答"]), name="duplicate")
             responses = runner.load_jsonl(duplicate_dir / "responses.jsonl")
             runner.write_jsonl(duplicate_dir / "responses.jsonl", [*responses, responses[0]])
-            with self.assertRaisesRegex(runner.ModelEvalError, "duplicate case_id"):
+            with self.assertRaisesRegex(runner.ModelEvalError, "attempts are not append-only"):
                 runner.validate_result_artifacts(duplicate_dir)
 
             unknown_dir = self.run_target(parent, FakeProvider(["回答"]), name="unknown")
@@ -475,7 +480,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             self.assertEqual(metadata["runtime_profile"], runner.CHATGPT_RUNTIME_PROFILE)
             self.assertEqual(metadata["status"], "TARGET_PARTIAL")
             self.assertEqual(metadata["counts"]["model_response"], 1)
-            self.assertEqual(metadata["counts"]["not_run"], 18)
+            self.assertEqual(metadata["counts"]["not_run"], len(self.all_prepared) - 1)
             self.assertIsNotNone(metadata["target_started_at"])
             self.assertIsNone(metadata["target_completed_at"])
             self.assertIsNone(metadata["completed_at"])

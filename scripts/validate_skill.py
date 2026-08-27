@@ -173,6 +173,7 @@ def validate_inventory(runtime_only: bool) -> None:
         require("model_evals/cases.yaml")
         require("model_evals/rubric.yaml")
         require("model_evals/README.md")
+        require("model_evals/provider_profiles.example.yaml")
         require("model_evals/results/README.md")
         require("knowledge-management/KNOWLEDGE_GOVERNANCE.md")
         require("knowledge-management/SOURCE_REGISTRY.json")

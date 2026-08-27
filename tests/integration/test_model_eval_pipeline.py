@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,14 +43,28 @@ class RecordingFakeProvider:
                 "structured": response_schema is not None,
             }
         )
-        return runner.ProviderResult(self.outputs.pop(0))
+        return runner.ProviderResult(
+            self.outputs.pop(0),
+            reported_model=self.model,
+            usage={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "reasoning_tokens": 1,
+                "cached_tokens": 2,
+            },
+        )
 
 
 def all_pass(record: dict[str, Any]) -> str:
     return json.dumps(
         {
+            "case_id": record["case_id"],
             "criteria": [
-                {"criterion": item["criterion"], "passed": True, "reason": "满足"}
+                {
+                    "criterion": item["criterion"],
+                    "passed": True,
+                    "reason": "Target 原文给出了该项要求对应的可核对内容",
+                }
                 for item in record["criteria"]
             ]
         },
@@ -57,6 +73,67 @@ def all_pass(record: dict[str, Any]) -> str:
 
 
 class ModelEvalPipelineTests(unittest.TestCase):
+    def test_role_specific_relay_profiles_ignore_global_openai_base_url(self) -> None:
+        profile = {
+            "profiles": {
+                "split-relays": {
+                    "provider": "openai_compatible_chat",
+                    "capabilities": {
+                        "reasoning_effort_supported": False,
+                        "allowed_reasoning_efforts": [],
+                        "structured_output_modes": ["json_object"],
+                        "temperature_supported": False,
+                        "top_p_supported": False,
+                        "seed_supported": False,
+                        "max_output_tokens_parameter": "max_tokens",
+                    },
+                    "target": {
+                        "api_key_env": "TARGET_KEY",
+                        "base_url": "https://relay-a.example/v1",
+                        "model": "target-model",
+                    },
+                    "judge": {
+                        "api_key_env": "JUDGE_KEY",
+                        "base_url": "https://relay-b.example/v1",
+                        "model": "judge-model",
+                        "structured_output_mode": "json_object",
+                    },
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles = Path(temp_dir) / "profiles.json"
+            profiles.write_text(json.dumps(profile), encoding="utf-8")
+
+            def provider(role: str) -> runner.ModelProvider:
+                args = runner.build_parser().parse_args(
+                    [
+                        "provider-check",
+                        "--role",
+                        role,
+                        "--profile",
+                        "split-relays",
+                        "--profiles-file",
+                        str(profiles),
+                    ]
+                )
+                return runner.create_provider(args, role=role)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "TARGET_KEY": "target-value",
+                    "JUDGE_KEY": "judge-value",
+                    "OPENAI_BASE_URL": "https://global-third.example/v1",
+                },
+                clear=True,
+            ):
+                target = provider("target")
+                judge = provider("judge")
+        self.assertEqual(target.endpoint_origin, "https://relay-a.example")
+        self.assertEqual(judge.endpoint_origin, "https://relay-b.example")
+        self.assertNotEqual(target.endpoint_hash, judge.endpoint_hash)
+
     def test_two_case_fake_provider_pipeline(self) -> None:
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases(cases[:2], criteria)
@@ -91,6 +168,14 @@ class ModelEvalPipelineTests(unittest.TestCase):
             self.assertEqual(summary["behavioral_status"], "PASS")
             self.assertEqual(summary["runtime_profile"], runner.API_RUNTIME_PROFILE)
             self.assertFalse(summary["baseline"])
+            self.assertEqual(summary["execution"]["target"], "PURE_API")
+            self.assertEqual(summary["execution"]["judge"], "PURE_API")
+            self.assertEqual(
+                summary["provider_provenance"]["target"]["model_identity"]["status"],
+                "MATCHED",
+            )
+            self.assertEqual(summary["usage"]["target"]["cached_tokens"], 4)
+            self.assertIn("core", summary["suites"])
             for call, record in zip(target.calls, prepared, strict=True):
                 self.assertEqual(call["input"], runner.target_input(record))
                 self.assertNotIn(record["case_id"], call["input"])
@@ -136,7 +221,7 @@ class ModelEvalPipelineTests(unittest.TestCase):
             self.assertEqual(len(target_files), len(prepared))
             for path, record in zip(target_files, prepared, strict=True):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn(record["input"], text)
+                self.assertEqual(text, record["input"].rstrip() + "\n")
                 self.assertNotIn(record["case_id"], text)
                 self.assertNotIn("当前评测模式", text)
                 for criterion in record["criteria"]:
@@ -169,8 +254,10 @@ class ModelEvalPipelineTests(unittest.TestCase):
             first_judge_prompt = judge_files[0].read_text(encoding="utf-8")
             self.assertIn(prepared[0]["input"], first_judge_prompt)
             self.assertIn("回答-01", first_judge_prompt)
+            self.assertIn(runner.JUDGE_CALIBRATION, first_judge_prompt)
             for criterion in prepared[0]["criteria"]:
                 self.assertIn(criterion["criterion"], first_judge_prompt)
+                self.assertIn(criterion["question"], first_judge_prompt)
 
             judgment_file = root / "manual-judgments.jsonl"
             runner.write_jsonl(
@@ -198,6 +285,46 @@ class ModelEvalPipelineTests(unittest.TestCase):
             self.assertEqual(summary["behavioral_status"], "PASS")
             self.assertEqual(summary["runtime_profile"], runner.CHATGPT_RUNTIME_PROFILE)
             self.assertEqual(summary["counts"]["passed_cases"], len(prepared))
+            runner.validate_result_artifacts(run_dir)
+
+    def test_manual_target_can_use_independent_api_judge(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases(cases, criteria)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manual_dir = root / ".work" / "hybrid-target"
+            runner.export_manual_bundle(
+                prepared,
+                manual_dir,
+                run_id="hybrid-e2e",
+                target_model="chatgpt-user-reported",
+            )
+            response_file = root / "manual-responses.jsonl"
+            runner.write_jsonl(
+                response_file,
+                [
+                    {"case_id": record["case_id"], "response": f"回答-{index:02d}"}
+                    for index, record in enumerate(prepared, start=1)
+                ],
+            )
+            run_dir, _, _ = runner.import_manual_responses(
+                manual_dir, response_file, root / "results"
+            )
+            judge = RecordingFakeProvider([all_pass(record) for record in prepared])
+            counts = runner.execute_judge(run_dir, judge)
+            summary = runner.build_report(run_dir)
+
+            self.assertEqual(counts["judged"], len(prepared))
+            self.assertEqual(summary["completion_status"], "COMPLETED")
+            self.assertEqual(
+                summary["provider_manifest"]["target"]["provider"],
+                "chatgpt_web_manual",
+            )
+            self.assertEqual(summary["provider_manifest"]["judge"]["provider"], "fake-e2e")
+            self.assertNotEqual(
+                summary["provider_manifest"]["target"]["provider_config_hash"],
+                summary["provider_manifest"]["judge"]["provider_config_hash"],
+            )
             runner.validate_result_artifacts(run_dir)
 
 
