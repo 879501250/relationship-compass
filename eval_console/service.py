@@ -12,6 +12,7 @@ from typing import Any
 from .discovery import discover_evals, discover_provider_profiles, find_eval
 from .models import EvalRunRequest, RunOutcome, ValidationReport
 from .runner_adapter import runner
+from .secrets import SecretResolver
 
 
 ProgressCallback = Callable[[str, dict[str, Any], int, int], None]
@@ -28,8 +29,8 @@ class EvaluationInterrupted(EvalConsoleError):
     def __init__(self, run_dir: Path, completed_cases: int, total_cases: int) -> None:
         remaining_cases = max(0, total_cases - completed_cases)
         super().__init__(
-            f"Evaluation interrupted after {completed_cases}/{total_cases} target cases; "
-            f"{remaining_cases} remain. Partial results are in {run_dir}."
+            f"评测在 Target 完成 {completed_cases}/{total_cases} 个 Case 后中断；"
+            f"还剩 {remaining_cases} 个。部分结果位于 {run_dir}。"
         )
         self.run_dir = run_dir
         self.completed_cases = completed_cases
@@ -46,13 +47,13 @@ def validate_configuration(
     try:
         evals = discover_evals()
         case_count = sum(len(definition.cases) for definition in evals)
-        checks.append(f"evals: {len(evals)} discovered, {case_count} cases validated")
-        checks.append("case IDs: unique and runner schema validated")
+        checks.append(f"Eval：已发现 {len(evals)} 个，已校验 {case_count} 个 Cases")
+        checks.append("Case ID：唯一性与 runner schema 已校验")
     except (OSError, ValueError, runner.ModelEvalError) as exc:
-        errors.append(f"eval definitions: {exc}")
+        errors.append(f"Eval 定义：{exc}")
     if not profiles_file.is_file():
         warnings.append(
-            f"provider profiles: {profiles_file} was not found; copy the example before API runs"
+            f"Provider 配置：未找到 {profiles_file}；真实 API 运行前请使用控制台完成首次配置"
         )
     else:
         try:
@@ -60,25 +61,25 @@ def validate_configuration(
             target_count = sum(profile.supports_target for profile in profiles)
             judge_count = sum(profile.supports_judge for profile in profiles)
             checks.append(
-                f"provider profiles: {len(profiles)} found; target={target_count}, judge={judge_count}"
+                f"Provider 配置：找到 {len(profiles)} 个 Profile；Target={target_count}，Judge={judge_count}"
             )
             if not target_count or not judge_count:
-                warnings.append("profiles do not yet expose both a target and a judge role")
+                warnings.append("Profile 尚未同时提供 Target 与 Judge 角色")
         except (OSError, ValueError, runner.ModelEvalError) as exc:
-            errors.append(f"provider profiles: {exc}")
+            errors.append(f"Provider 配置：{exc}")
     output_path = (results_root or runner.RESULTS_BASE).expanduser()
     if output_path.exists() and not output_path.is_dir():
-        errors.append(f"result output: {output_path} is not a directory")
+        errors.append(f"结果输出目录：{output_path} 不是目录")
     else:
         writable_parent = output_path
         while not writable_parent.exists() and writable_parent != writable_parent.parent:
             writable_parent = writable_parent.parent
         if os.access(writable_parent, os.W_OK):
             checks.append(
-                f"result output: {output_path} can be created or updated"
+                f"结果输出目录：{output_path} 可创建或写入"
             )
         else:
-            errors.append(f"result output: {writable_parent} is not writable")
+            errors.append(f"结果输出目录：{writable_parent} 不可写")
     return ValidationReport(tuple(checks), tuple(warnings), tuple(errors))
 
 
@@ -90,16 +91,16 @@ def validate_request(request: EvalRunRequest) -> None:
         raise EvalConsoleError(str(exc)) from exc
     available_ids = {case.case_id for case in definition.cases}
     if not request.case_ids:
-        raise EvalConsoleError("Select at least one case before running an eval.")
+        raise EvalConsoleError("运行 Eval 前至少选择一个 Case。")
     unknown = [case_id for case_id in request.case_ids if case_id not in available_ids]
     if unknown:
         raise EvalConsoleError(
-            "Unknown selected case IDs: " + ", ".join(sorted(unknown)) + "."
+            "未知的 Case ID：" + ", ".join(sorted(unknown)) + "。"
         )
     if len(set(request.case_ids)) != len(request.case_ids):
-        raise EvalConsoleError("Each case can be selected only once.")
+        raise EvalConsoleError("每个 Case 只能选择一次。")
     if request.concurrency < 1 or request.concurrency > 32:
-        raise EvalConsoleError("Concurrency must be between 1 and 32.")
+        raise EvalConsoleError("并发数必须介于 1 到 32 之间。")
     profiles = {profile.name: profile for profile in discover_provider_profiles(request.profiles_file)}
     target = profiles.get(request.target_profile)
     judge = profiles.get(request.judge_profile)
@@ -112,17 +113,22 @@ def validate_request(request: EvalRunRequest) -> None:
             _missing_profile_message(request.judge_profile, request.profiles_file, profiles)
         )
     if not target.supports_target:
-        raise EvalConsoleError(f"Profile {target.name!r} does not define a target configuration.")
+        raise EvalConsoleError(f"Profile {target.name!r} 未定义 Target 配置。")
     if not judge.supports_judge:
-        raise EvalConsoleError(f"Profile {judge.name!r} does not define a judge configuration.")
+        raise EvalConsoleError(f"Profile {judge.name!r} 未定义 Judge 配置。")
 
 
 def preflight_request(request: EvalRunRequest) -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
     """Resolve both providers using existing runner preflight logic and no API calls."""
+    SecretResolver(runner.ROOT / ".env.local").prepare_environment()
     validate_request(request)
     try:
-        target = _create_profile_provider(request, "target", request.target_profile)
-        judge = _create_profile_provider(request, "judge", request.judge_profile)
+        target = _create_profile_provider(
+            request, "target", request.target_profile, request.target_model_override
+        )
+        judge = _create_profile_provider(
+            request, "judge", request.judge_profile, request.judge_model_override
+        )
         target_plan = runner.provider_execution_plan(
             target,
             role="target",
@@ -170,7 +176,7 @@ def execute_request(
     wanted = set(request.case_ids)
     selected_cases = [case for case in selected_cases if case["id"] in wanted]
     if len(selected_cases) != len(request.case_ids):
-        raise EvalConsoleError("Selected cases no longer match the current eval definition.")
+        raise EvalConsoleError("已选择的 Cases 与当前 Eval 定义不再匹配。")
     prepared = runner.prepare_cases(selected_cases, criteria)
     run_id = runner.validate_run_id(request.run_id or f"console-{runner.run_id_now()}")
     run_dir = (
@@ -210,7 +216,7 @@ def execute_request(
             run_dir,
             allow_dirty_debug=request.allow_dirty_debug,
             concurrency=request.concurrency,
-            continue_on_error=True,
+            continue_on_error=request.continue_on_error,
             metadata_extra=metadata_extra,
             on_case_start=lambda record, started, total: on_activity(
                 "TARGET", record, started, total
@@ -262,7 +268,7 @@ def failed_case_ids(run_dir: Path, mode: str) -> tuple[str, ...]:
 
     selected = next((item for item in discover_runs(run_dir.parents[2]) if item.run_dir == run_dir), None)
     if selected is None:
-        raise EvalConsoleError(f"Could not read a previous eval run at {run_dir}.")
+        raise EvalConsoleError(f"无法读取历史 Eval 运行：{run_dir}。")
     values: list[str] = []
     if mode in {"failed", "failed-and-errors"}:
         values.extend(selected.failed_case_ids)
@@ -272,7 +278,7 @@ def failed_case_ids(run_dir: Path, mode: str) -> tuple[str, ...]:
         values.extend(selected.incomplete_case_ids)
     resolved = tuple(dict.fromkeys(values))
     if not resolved:
-        raise EvalConsoleError("The selected run has no cases matching that retry choice.")
+        raise EvalConsoleError("所选历史运行没有符合该重跑范围的 Case。")
     return resolved
 
 
@@ -280,36 +286,41 @@ def friendly_error(error: BaseException) -> str:
     """Translate common runner failures into non-developer-oriented next actions."""
     message = str(error)
     if "provider profile" in message and "was not found" in message:
-        return message + " Choose one of the profiles listed by 'View evals' or create a local profile."
+        return message + " 请在“配置 Provider”中选择可用 Profile，或创建新的本地 Profile。"
     if "environment variable" in message and "is not set" in message:
-        return message + " Set that variable in your shell, then start the Console again."
+        return message + " 可在控制台中输入 API Key，或在 shell 中设置该环境变量后重新启动。"
     if "requires a clean Git worktree" in message:
-        return message + " Use --allow-dirty-debug only for a non-reference debug run."
+        return message + " 仅调试时可使用 --allow-dirty-debug；该运行不能作为正式参考。"
     return message
 
 
-def _create_profile_provider(request: EvalRunRequest, role: str, profile: str) -> Any:
-    args = runner.build_parser().parse_args(
-        [
-            "provider-check",
-            "--role",
-            role,
-            "--profile",
-            profile,
-            "--profiles-file",
-            str(request.profiles_file),
-        ]
-    )
+def _create_profile_provider(
+    request: EvalRunRequest, role: str, profile: str, model_override: str | None = None
+) -> Any:
+    arguments = [
+        "provider-check",
+        "--role",
+        role,
+        "--profile",
+        profile,
+        "--profiles-file",
+        str(request.profiles_file),
+    ]
+    if model_override:
+        arguments.extend(("--model", model_override))
+    args = runner.build_parser().parse_args(arguments)
     if role == "judge":
         args.model_env = "OPENAI_JUDGE_MODEL"
     return runner.create_provider(args, role=role)
 
 
 def _missing_profile_message(name: str, profiles_file: Path, profiles: dict[str, Any]) -> str:
-    available = ", ".join(sorted(profiles)) or "none"
+    available = ", ".join(sorted(profiles)) or "无"
     return (
-        f"Profile {name!r} was not found in {profiles_file}. "
-        f"Available profiles: {available}."
+        f"未找到 Provider Profile：{name!r}。\n"
+        f"配置文件：{profiles_file}\n"
+        f"可用 Profile：{available}\n"
+        "请选择一个有效 Profile。"
     )
 
 

@@ -60,7 +60,7 @@ def find_eval(eval_id: str) -> EvalDefinition:
     if eval_id in available:
         return available[eval_id]
     choices = ", ".join(sorted(available)) or "none"
-    raise ValueError(f"Eval {eval_id!r} was not found. Available evals: {choices}.")
+    raise ValueError(f"未找到 Eval：{eval_id!r}。可用 Eval：{choices}。")
 
 
 def discover_provider_profiles(profiles_file: Path) -> list[ProviderProfile]:
@@ -70,7 +70,7 @@ def discover_provider_profiles(profiles_file: Path) -> list[ProviderProfile]:
     data = runner.load_json_yaml(profiles_file)
     profiles = data.get("profiles")
     if not isinstance(profiles, dict):
-        raise ValueError(f"{profiles_file} must contain a 'profiles' object.")
+        raise ValueError(f"{profiles_file} 必须包含 'profiles' 对象。")
     discovered: list[ProviderProfile] = []
     for name, profile in profiles.items():
         if not isinstance(name, str) or not isinstance(profile, dict):
@@ -217,4 +217,3 @@ def _string(value: Any) -> str | None:
 def _summary(prompt: str) -> str:
     compact = " ".join(prompt.split())
     return compact if len(compact) <= 52 else compact[:49] + "..."
-

@@ -120,11 +120,11 @@ class CaseSelectionTests(unittest.TestCase):
 
     def test_invalid_duplicate_out_of_range_reversed_and_empty_are_friendly(self) -> None:
         for expression, message in (
-            ("", "empty"),
-            ("7", "outside"),
-            ("unknown", "Unknown"),
-            ("4-2", "reversed"),
-            ("1,1", "more than once"),
+            ("", "不能为空"),
+            ("7", "超出范围"),
+            ("unknown", "未知 Case"),
+            ("4-2", "起始编号不能大于结束编号"),
+            ("1,1", "重复选择"),
         ):
             with self.subTest(expression=expression):
                 with self.assertRaisesRegex(CaseSelectionError, message):
@@ -383,8 +383,8 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
                 1,
             )
             reporter.close()
-        self.assertIn("[START] RC-001 TARGET", output.getvalue())
-        self.assertIn("[DONE] RC-001 TARGET", output.getvalue())
+        self.assertIn("[开始] RC-001 Target", output.getvalue())
+        self.assertIn("[完成] RC-001 Target", output.getvalue())
 
     def test_malformed_judge_case_is_saved_as_error_and_later_cases_continue(self) -> None:
         cases, criteria = runner.load_definitions()

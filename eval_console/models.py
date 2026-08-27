@@ -53,6 +53,9 @@ class EvalRunRequest:
     allow_dirty_debug: bool = False
     concurrency: int = 1
     run_id: str | None = None
+    target_model_override: str | None = None
+    judge_model_override: str | None = None
+    continue_on_error: bool = True
 
 
 @dataclass(frozen=True)

@@ -225,37 +225,46 @@ python scripts/run_model_evals.py validate
 
 ### Eval Console（推荐入口）
 
-以后执行 Behavioral Eval，只需要记住这一条：
+#### 快速开始
+
+普通用户进入项目目录后只需要运行：
 
 ```text
 python -m eval_console
 ```
 
-首次运行前，请将 `model_evals/provider_profiles.example.yaml` 复制为 Git 忽略的 `model_evals/provider_profiles.local.yaml`，并通过环境变量配置该 profile 所需的凭证和模型。Console 不会显示或写入 API key。
+首次启动时，评测控制台会检查 Eval、结果目录和本地 Provider 配置。缺少 `model_evals/provider_profiles.local.yaml` 时，可以直接按照中文首次配置向导创建；不需要手工复制文件或编辑 YAML。之后可从菜单完成：运行自动化测试、配置 Target / Judge、选择 Case、Dry Run（不调用真实 API）或真实 API 运行。
 
-启动后按菜单选择：
+API key 输入始终隐藏。可选「仅本次 Console session 使用」或保存到 Git 忽略的 `.env.local`。密钥不写入 provider profile、运行日志、结果、summary 或 ZIP 包。
+
+推荐交互路径：
 
 ```text
-Run eval → Eval → Cases → Target profile → Judge profile → Start
+1. 启动评测控制台。
+2. 按首次配置向导配置 Target、Judge 与 API Key。
+3. 运行自动化测试。
+4. 使用 Dry Run 检查配置。
+5. 确认后执行真实 API 运行。
+6. 在“查看历史运行”中查看结果，或重跑 FAIL / ERROR / INCOMPLETE Cases。
 ```
 
-Console 会从当前 `model_evals/cases.yaml` 和本地 profile 自动发现 cases、provider/model 和 judge；正式调用 API 前会做完整的离线 preflight。执行过程中每个 case 均即时写入原有 JSONL artifact，终端会显示 Target/Judge 的活动状态；非交互输出使用 `[START]` / `[DONE]` 事件。`Ctrl+C` 后会显示已保存与剩余 case 数，已完成 case 保留在结果目录中。
+控制台会从当前 `model_evals/cases.yaml` 和本地 Profile 自动发现 Cases、Provider / 模型和 Judge；正式调用 API 前会做完整的离线预检查。执行过程中每个 Case 均即时写入原有 JSONL artifact，终端会显示 Target / Judge 的活动状态；非交互输出使用中文阶段提示和稳定的 `PASS` / `FAIL` / `ERROR` 状态。`Ctrl+C` 后会显示已保存与剩余 Case 数，已完成 Case 保留在结果目录中。
 
-#### 运行全部、单个或部分 cases
+#### 运行全部、单个或部分 Cases
 
-在 `Which cases do you want to run?` 中选择：
+在“请选择要运行的 Cases”中选择：
 
-- `All cases`：执行当前 eval 的全部 case。
-- `Single case`：输入 case position 或 case ID。
-- `Select multiple cases`：输入例如 `1,3,5-8`；输入 `all` 等同 Select all，输入 `clear` 可以清空并重新选择。
-- `Case range`：输入 `1-10`，或使用 case ID 范围 `first-case..last-case`。
-- `Failed cases from previous run`：默认执行此前的 FAIL / ERROR / INCOMPLETE case；Target 已成功但缺少 Judge 结果会显示为 INCOMPLETE。
+- `全部 Cases`：执行当前 Eval 的全部 Case。
+- `单个 Case`：输入 Case 位置或 Case ID。
+- `选择多个 Cases`：输入例如 `1,3,5-8`；输入 `all` 等同选择全部，输入 `clear` 可以清空并重新选择。
+- `Case 范围`：输入 `1-10`，或使用 Case ID 范围 `first-case..last-case`。
+- `上次运行失败的 Cases`：执行此前的 FAIL / ERROR / INCOMPLETE Case；Target 已成功但缺少 Judge 结果会显示为 INCOMPLETE。
 
 每次子集执行都会在 `run.json` 的 `console` metadata 中记录 `selected_case_ids`、`selected_cases` 和 `total_eval_cases`。统计分母是本次所选 case；未选择的 case 不会进入 prepared bundle，也不会调用 Target 或 Judge。
 
-#### 重新运行失败 case 与查看历史
+#### 重跑失败 Case 与查看历史
 
-主菜单的 `Re-run failed cases` 默认选择 `Failed + error + incomplete cases`，也可只选择其中任一状态。历史 run 会显示通过、失败、错误、未完成与总体状态。
+主菜单的“重跑失败 / 错误 / 未完成 Cases”默认选择 FAIL + ERROR + INCOMPLETE Cases，也可只选择其中任一状态。历史运行会显示通过、失败、错误、未完成与总体状态。
 
 非交互方式同样支持：
 
@@ -264,7 +273,27 @@ python -m eval_console history
 python -m eval_console rerun-failed --from-run model_evals/results/v<version>/api_canonical/<run-id> --mode failed-and-errors --target-profile <target-profile> --judge-profile <judge-profile>
 ```
 
-#### 自动化 / CLI 示例
+#### 自动化测试
+
+主菜单的“运行自动化测试”支持完整、Unit、Integration 或 Contract suite。也可在终端运行：
+
+```text
+python scripts/run_tests.py
+```
+
+TTY 会显示当前 suite、spinner 与耗时；CI/non-TTY 使用中文阶段提示及稳定的 `[PASS]` / `[FAIL]` / `[ERROR]` 状态，不伪造测试进度百分比。每个 Unit、Integration suite 只启动一个原生 `unittest discover` 子进程，并有宽松的 120 秒超时保护。
+
+#### 安全打包用于交付或验收
+
+需要把项目发送给 ChatGPT、Codex 或其他人进行验收时，请使用：
+
+```text
+python scripts/package_skill.py --output .work/relationship-compass.zip
+```
+
+不要直接压缩整个工作目录。该安全打包入口会排除 `.env.local` 和 `model_evals/provider_profiles.local.yaml`，并保留中文文件名。
+
+#### 高级 / 非交互 CLI
 
 先用下列命令查看当前实际 eval ID 与配置状态：
 
