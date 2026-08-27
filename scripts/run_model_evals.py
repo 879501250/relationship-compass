@@ -1921,6 +1921,8 @@ def derive_run_status(
     cases: list[dict[str, Any]],
     responses: list[dict[str, Any]],
     judgments: list[dict[str, Any]],
+    *,
+    judge_phase_completed: bool = False,
 ) -> str:
     total = len(cases)
     case_ids = {case["case_id"] for case in cases}
@@ -1930,24 +1932,32 @@ def derive_run_status(
     latest_judgments = index_judgment_attempts(judgments, case_ids) if judgments else {}
     if not responses:
         return "PREPARED"
-    if len(effective_responses) < total or any(
-        record.get("status") != "MODEL_RESPONSE"
-        for record in effective_responses.values()
-    ):
+    if len(effective_responses) < total:
         return "TARGET_PARTIAL"
-    if any(
-        record.get("status") == "JUDGE_ERROR" and record.get("retryable") is False
+    judgeable_ids = {
+        case_id
+        for case_id, record in effective_responses.items()
+        if record.get("status") == "MODEL_RESPONSE"
+    }
+    target_has_errors = len(judgeable_ids) != total
+    judge_complete = all(
+        latest_judgments.get(case_id, {}).get("status") in {"JUDGMENT", "JUDGE_ERROR"}
+        for case_id in judgeable_ids
+    )
+    if judgeable_ids and judge_complete:
+        judge_has_errors = any(
+            latest_judgments[case_id].get("status") == "JUDGE_ERROR"
+            for case_id in judgeable_ids
+        )
+        return "COMPLETED_WITH_ERRORS" if target_has_errors or judge_has_errors else "COMPLETED"
+    if not judgeable_ids and judge_phase_completed:
+        return "COMPLETED_WITH_ERRORS"
+    if judgeable_ids and any(
+        record.get("status") in {"JUDGMENT", "JUDGE_ERROR"}
         for record in latest_judgments.values()
     ):
-        return "FAILED"
-    judged = sum(record.get("status") == "JUDGMENT" for record in latest_judgments.values())
-    if judged == 0:
-        return "TARGET_COMPLETE"
-    if judged < total or any(
-        record.get("status") != "JUDGMENT" for record in latest_judgments.values()
-    ):
         return "JUDGE_PARTIAL"
-    return "COMPLETED"
+    return "TARGET_PARTIAL" if target_has_errors else "TARGET_COMPLETE"
 
 
 def target_execution_manifest(
@@ -2189,7 +2199,12 @@ def refresh_run_metadata(
         judgments,
         schema_version=metadata.get("schema_version", 2),
     )
-    metadata["status"] = derive_run_status(cases, responses, judgments)
+    metadata["status"] = derive_run_status(
+        cases,
+        responses,
+        judgments,
+        judge_phase_completed=metadata.get("judge_phase_completed") is True,
+    )
     if metadata.get("schema_version", 2) >= 3:
         case_ids = {case["case_id"] for case in cases}
         effective_responses = list(index_response_attempts(responses, case_ids).values())
@@ -2331,7 +2346,16 @@ def execute_run(
     retry_non_retryable: bool = False,
     allow_dirty_debug: bool = False,
     concurrency: int = 1,
+    continue_on_error: bool = False,
+    metadata_extra: dict[str, Any] | None = None,
+    on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
+    on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
 ) -> dict[str, Any]:
+    """Execute prepared target cases, optionally reporting each persisted result.
+
+    The optional arguments are orchestration hooks for the Eval Console.  They
+    preserve the original runner defaults for existing CLI and library callers.
+    """
     validate_prepared_records(prepared_records, require_all=False)
     if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 32:
         raise ModelEvalError("concurrency must be between 1 and 32")
@@ -2392,6 +2416,16 @@ def execute_run(
             repository_sha=repository_sha,
             repository_dirty=selected_dirty,
         )
+        if metadata_extra is not None:
+            if not isinstance(metadata_extra, dict):
+                raise ModelEvalError("run metadata extension must be an object")
+            protected = set(metadata_extra) & set(metadata)
+            if protected:
+                raise ModelEvalError(
+                    "run metadata extension cannot replace runner fields: "
+                    + ", ".join(sorted(protected))
+                )
+            metadata.update(metadata_extra)
         metadata["reference_mode"] = (
             "DIRTY_DEBUG" if selected_dirty is not False else "FORMAL_REFERENCE_CANDIDATE"
         )
@@ -2419,23 +2453,35 @@ def execute_run(
         return metadata
     with responses_path.open("a", encoding="utf-8", newline="\n") as handle:
         if concurrency == 1:
-            generated = (
-                target_attempt_record(record, provider, metadata, attempt)
-                for record, attempt in eligible
-            )
+            def generate_serially() -> Any:
+                for started, (record, attempt) in enumerate(eligible, start=1):
+                    if on_case_start is not None:
+                        on_case_start(record, started, len(eligible))
+                    yield target_attempt_record(record, provider, metadata, attempt)
+
+            generated = generate_serially()
         else:
             executor = ThreadPoolExecutor(max_workers=concurrency)
+            if on_case_start is not None:
+                for started, (record, _) in enumerate(eligible, start=1):
+                    on_case_start(record, started, len(eligible))
             generated = executor.map(
                 lambda item: target_attempt_record(item[0], provider, metadata, item[1]),
                 eligible,
             )
         try:
-            for response_record in generated:
+            for completed, response_record in enumerate(generated, start=1):
                 append_jsonl(handle, response_record)
                 saved_responses = load_jsonl(responses_path)
                 refresh_run_metadata(metadata, saved_responses, [])
                 write_json(run_dir / "run.json", metadata)
-                if concurrency == 1 and response_record["status"] != "MODEL_RESPONSE":
+                if on_case_complete is not None:
+                    on_case_complete(response_record, completed, len(eligible))
+                if (
+                    concurrency == 1
+                    and response_record["status"] != "MODEL_RESPONSE"
+                    and not continue_on_error
+                ):
                     break
         finally:
             if concurrency != 1:
@@ -2582,7 +2628,12 @@ def judge_execution_manifest(
 
 
 def execute_judge(
-    run_dir: Path, provider: ModelProvider, *, resume: bool = False
+    run_dir: Path,
+    provider: ModelProvider,
+    *,
+    resume: bool = False,
+    on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
+    on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
 ) -> dict[str, int]:
     validate_result_artifacts(run_dir)
     metadata = load_json_object(run_dir / "run.json")
@@ -2591,8 +2642,14 @@ def execute_judge(
     if metadata.get("eval_identity") != eval_identity_manifest(eval_definition_snapshot()):
         raise ModelEvalError("judge configuration mismatch: current Eval definition changed")
     original_status = metadata.get("status")
-    if original_status not in {"TARGET_COMPLETE", "JUDGE_PARTIAL", "COMPLETED"}:
-        raise ModelEvalError("judge requires a complete target phase")
+    if original_status not in {
+        "TARGET_COMPLETE",
+        "TARGET_PARTIAL",
+        "JUDGE_PARTIAL",
+        "COMPLETED",
+        "COMPLETED_WITH_ERRORS",
+    }:
+        raise ModelEvalError("judge requires at least one attempted target case")
     judgments_path = run_dir / "judgments.jsonl"
     cases = metadata.get("cases")
     if not isinstance(cases, list):
@@ -2627,7 +2684,8 @@ def execute_judge(
     eligible = [
         case["case_id"]
         for case in cases
-        if existing.get(case["case_id"], {}).get("status") != "JUDGMENT"
+        if responses.get(case["case_id"], {}).get("status") == "MODEL_RESPONSE"
+        and existing.get(case["case_id"], {}).get("status") != "JUDGMENT"
         and (
             existing.get(case["case_id"], {}).get("status") != "JUDGE_ERROR"
             or existing.get(case["case_id"], {}).get("retryable") is True
@@ -2641,8 +2699,11 @@ def execute_judge(
         }
     if metadata.get("judge_started_at") is None:
         metadata["judge_started_at"] = utc_now()
+    metadata["judge_phase_completed"] = False
     invalidate_report(run_dir, metadata)
     mode = "a" if judgments_path.exists() else "x"
+    started = 0
+    completed = 0
     with judgments_path.open(mode, encoding="utf-8", newline="\n") as handle:
         for case in cases:
             case_id = case["case_id"]
@@ -2655,6 +2716,9 @@ def execute_judge(
             target = responses.get(case_id)
             if not target or target.get("status") != "MODEL_RESPONSE":
                 continue
+            started += 1
+            if on_case_start is not None:
+                on_case_start(case, started, len(eligible))
             attempt = int(current.get("attempt", 1)) + 1 if current else 1
             record: dict[str, Any] = {
                 "schema_version": 3,
@@ -2682,6 +2746,7 @@ def execute_judge(
                 "request_envelope_hash": None,
                 "usage": None,
                 "evaluated_at": utc_now(),
+                "completed_at": None,
                 "error_code": None,
                 "retryable": None,
                 "error": None,
@@ -2741,8 +2806,12 @@ def execute_judge(
                         "retryable": False,
                     }
                 )
+            record["completed_at"] = utc_now()
             append_jsonl(handle, record)
             existing[case_id] = record
+            completed += 1
+            if on_case_complete is not None:
+                on_case_complete(record, completed, len(eligible))
     all_records = load_jsonl(judgments_path)
     latest = index_judgment_attempts(all_records, case_ids)
     counts = {
@@ -2755,13 +2824,12 @@ def execute_judge(
     metadata["judge_counts"] = counts
     if len(all_records) == len(existing_records) and original_status == "COMPLETED":
         return counts
+    metadata["judge_phase_completed"] = True
     refresh_run_metadata(metadata, list(responses.values()), all_records)
-    if metadata["status"] == "COMPLETED":
+    if metadata["status"] in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         finished_at = utc_now()
         metadata["judge_completed_at"] = finished_at
         metadata["completed_at"] = finished_at
-    elif metadata["status"] == "FAILED":
-        metadata["completed_at"] = utc_now()
     write_json(run_dir / "run.json", metadata)
     return counts
 
@@ -3038,7 +3106,12 @@ def aggregate_results(
             else ("FAIL" if values["failed_cases"] else "PASS")
         )
     judged_criteria = passed_criteria + failed_criteria
-    actual_status = derive_run_status(cases, response_records, judgment_records)
+    actual_status = derive_run_status(
+        cases,
+        response_records,
+        judgment_records,
+        judge_phase_completed=metadata.get("judge_phase_completed") is True,
+    )
     behavioral_status = (
         "NOT_EVALUABLE"
         if errored_cases or not_evaluable_cases
@@ -3830,15 +3903,16 @@ def validate_lifecycle(
         and len(response_view) == len(metadata["cases"])
         and all(record.get("status") == "MODEL_RESPONSE" for record in response_view)
     )
-    judge_started = any(
+    judge_phase_completed = metadata.get("judge_phase_completed") is True
+    judge_started = judge_phase_completed or any(
         record.get("status") in {"JUDGMENT", "JUDGE_ERROR"} for record in judgments
     )
     requirements = {
         "target_started_at": bool(responses),
         "target_completed_at": target_complete,
         "judge_started_at": judge_started,
-        "judge_completed_at": status == "COMPLETED",
-        "completed_at": status in {"COMPLETED", "FAILED"},
+        "judge_completed_at": status in {"COMPLETED", "COMPLETED_WITH_ERRORS"},
+        "completed_at": status in {"COMPLETED", "COMPLETED_WITH_ERRORS"},
     }
     for field, required in requirements.items():
         if (timestamps[field] is not None) != required:
@@ -4136,7 +4210,12 @@ def validate_result_artifacts(run_dir: Path) -> None:
     )
     if metadata.get("counts") != expected_counts:
         raise ModelEvalError(f"{run_dir}: run counts do not match artifacts")
-    expected_status = derive_run_status(cases, responses, judgments)
+    expected_status = derive_run_status(
+        cases,
+        responses,
+        judgments,
+        judge_phase_completed=metadata.get("judge_phase_completed") is True,
+    )
     if metadata.get("status") != expected_status:
         raise ModelEvalError(f"{run_dir}: run status does not match artifacts")
     if schema_version == 3:
@@ -4716,8 +4795,13 @@ def export_manual_judge(run_dir: Path, output_dir: Path) -> int:
     if output_dir.exists():
         raise ModelEvalError(f"refusing to overwrite existing judge export: {output_dir}")
     metadata = load_json_object(run_dir / "run.json")
-    if metadata.get("status") not in {"TARGET_COMPLETE", "JUDGE_PARTIAL"}:
-        raise ModelEvalError("manual judge export requires a complete target phase")
+    if metadata.get("status") not in {
+        "TARGET_COMPLETE",
+        "TARGET_PARTIAL",
+        "JUDGE_PARTIAL",
+        "COMPLETED_WITH_ERRORS",
+    }:
+        raise ModelEvalError("manual judge export requires at least one target response")
     responses = index_response_attempts(
         load_jsonl(run_dir / "responses.jsonl"),
         {case["case_id"] for case in metadata["cases"]},
@@ -4776,8 +4860,13 @@ def import_manual_judgments(
 ) -> tuple[dict[str, Any], int]:
     validate_result_artifacts(run_dir)
     metadata = load_json_object(run_dir / "run.json")
-    if metadata.get("status") not in {"TARGET_COMPLETE", "JUDGE_PARTIAL"}:
-        raise ModelEvalError("manual judgment import requires a complete target phase")
+    if metadata.get("status") not in {
+        "TARGET_COMPLETE",
+        "TARGET_PARTIAL",
+        "JUDGE_PARTIAL",
+        "COMPLETED_WITH_ERRORS",
+    }:
+        raise ModelEvalError("manual judgment import requires at least one target response")
     cases = metadata["cases"]
     case_ids = {case["case_id"] for case in cases}
     cases_by_id = {case["case_id"]: case for case in cases}
@@ -4900,7 +4989,7 @@ def import_manual_judgments(
     if metadata.get("judge_started_at") is None:
         metadata["judge_started_at"] = imported_at
     refresh_run_metadata(metadata, list(responses.values()), judgments)
-    if metadata["status"] == "COMPLETED":
+    if metadata["status"] in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         metadata["judge_completed_at"] = imported_at
         metadata["completed_at"] = imported_at
     invalidate_report(run_dir, metadata)

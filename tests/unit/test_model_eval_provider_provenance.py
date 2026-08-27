@@ -406,7 +406,7 @@ class ProviderProvenanceTests(unittest.TestCase):
             ),
             (
                 "reference-judge-kimi-official", "judge", "kimi-judge-test",
-                "verified_direct", "text_json_fallback", None,
+                "verified_direct", "json_object", None,
             ),
             (
                 "reference-judge-deepseek-official", "judge", "deepseek-judge-test",
@@ -448,7 +448,10 @@ class ProviderProvenanceTests(unittest.TestCase):
                 self.assertNotIn("max_completion_tokens", payload)
                 if role == "target" or mode == "text_json_fallback":
                     self.assertNotIn("response_format", payload)
+                elif mode == "json_object":
+                    self.assertEqual(payload["response_format"], {"type": "json_object"})
                 else:
+                    self.assertEqual(payload["response_format"]["type"], "json_schema")
                     self.assertTrue(payload["response_format"]["json_schema"]["strict"])
         self.network.assert_not_called()
 

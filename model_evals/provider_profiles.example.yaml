@@ -59,7 +59,7 @@
       "capabilities": {
         "reasoning_effort_supported": false,
         "allowed_reasoning_efforts": [],
-        "structured_output_modes": ["text_json_fallback"],
+        "structured_output_modes": ["json_object"],
         "temperature_supported": false,
         "top_p_supported": false,
         "seed_supported": false,
@@ -67,7 +67,7 @@
       },
       "judge": {
         "model_env": "MOONSHOT_JUDGE_MODEL",
-        "structured_output_mode": "text_json_fallback"
+        "structured_output_mode": "json_object"
       }
     },
     "reference-judge-deepseek-official": {

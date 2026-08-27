@@ -223,6 +223,74 @@ python scripts/run_model_evals.py validate
 
 只校验 Model Eval cases 与 criteria，并明确报告 `NOT RUN`；没有真实模型输出和独立 judge 结果时，不得报告行为评测通过。
 
+### Eval Console（推荐入口）
+
+以后执行 Behavioral Eval，只需要记住这一条：
+
+```text
+python -m eval_console
+```
+
+首次运行前，请将 `model_evals/provider_profiles.example.yaml` 复制为 Git 忽略的 `model_evals/provider_profiles.local.yaml`，并通过环境变量配置该 profile 所需的凭证和模型。Console 不会显示或写入 API key。
+
+启动后按菜单选择：
+
+```text
+Run eval → Eval → Cases → Target profile → Judge profile → Start
+```
+
+Console 会从当前 `model_evals/cases.yaml` 和本地 profile 自动发现 cases、provider/model 和 judge；正式调用 API 前会做完整的离线 preflight。执行过程中每个 case 均即时写入原有 JSONL artifact，终端会显示 Target/Judge 的活动状态；非交互输出使用 `[START]` / `[DONE]` 事件。`Ctrl+C` 后会显示已保存与剩余 case 数，已完成 case 保留在结果目录中。
+
+#### 运行全部、单个或部分 cases
+
+在 `Which cases do you want to run?` 中选择：
+
+- `All cases`：执行当前 eval 的全部 case。
+- `Single case`：输入 case position 或 case ID。
+- `Select multiple cases`：输入例如 `1,3,5-8`；输入 `all` 等同 Select all，输入 `clear` 可以清空并重新选择。
+- `Case range`：输入 `1-10`，或使用 case ID 范围 `first-case..last-case`。
+- `Failed cases from previous run`：默认执行此前的 FAIL / ERROR / INCOMPLETE case；Target 已成功但缺少 Judge 结果会显示为 INCOMPLETE。
+
+每次子集执行都会在 `run.json` 的 `console` metadata 中记录 `selected_case_ids`、`selected_cases` 和 `total_eval_cases`。统计分母是本次所选 case；未选择的 case 不会进入 prepared bundle，也不会调用 Target 或 Judge。
+
+#### 重新运行失败 case 与查看历史
+
+主菜单的 `Re-run failed cases` 默认选择 `Failed + error + incomplete cases`，也可只选择其中任一状态。历史 run 会显示通过、失败、错误、未完成与总体状态。
+
+非交互方式同样支持：
+
+```text
+python -m eval_console history
+python -m eval_console rerun-failed --from-run model_evals/results/v<version>/api_canonical/<run-id> --mode failed-and-errors --target-profile <target-profile> --judge-profile <judge-profile>
+```
+
+#### 自动化 / CLI 示例
+
+先用下列命令查看当前实际 eval ID 与配置状态：
+
+```text
+python -m eval_console interactive
+python -m eval_console validate
+python -m eval_console validate --target-profile <target-profile> --judge-profile <judge-profile>
+```
+
+不带 profile 的 `validate` 校验 eval、profile 文件结构和结果目录可写性；同时传入 Target/Judge profile 时还会离线 preflight 配置、模型与所需环境变量，不会发起 API 请求。当前仓库的 runner-backed eval ID 由 `model_evals/cases.yaml` 自动派生为 `model-evals-cases`：
+
+```text
+python -m eval_console run model-evals-cases --cases all --profile <configured-profile> --dry-run
+python -m eval_console run model-evals-cases --case model-realtime-one-best --profile <configured-profile> --dry-run
+python -m eval_console run model-evals-cases --cases model-realtime-one-best,model-serious-disclosure --profile <configured-profile> --dry-run
+python -m eval_console run model-evals-cases --cases 1,3,5-10 --target-profile <target-profile> --judge-profile <judge-profile>
+```
+
+`--dry-run` 会加载 definition、解析 selector、校验 provider/judge、解析 output path 并显示预期 API 调用数，但不会调用 API。`--debug` 才输出 traceback；正常模式只给可执行的错误提示。原 runner 对正式 API run 的 clean-worktree gate 保持有效；需要在脏工作区调试时，显式传 `--allow-dirty-debug`，该 run 不能作为 formal reference。
+
+如需生成可移植 ZIP 包（包含中文路径），使用：
+
+```text
+python scripts/package_skill.py --output .work/relationship-compass.zip
+```
+
 ### 执行 Model Behavioral Eval
 
 真实执行与完整 validator 分离。API 路径使用 `prepare → run → judge → report`；结果同时按 pack version 与 runtime profile 隔离：
@@ -249,6 +317,7 @@ scripts/                        Memory、Knowledge、构建与校验工具
 tests/                          单元与集成行为测试
 evals/                          精简后的 Contract Eval
 model_evals/                    高价值人工判断案例与 rubric
+eval_console/                   Eval Console 的发现、选择、校验与编排层
 knowledge-management/           来源、claim schema 与审批记录
 chatgpt-project/generated-knowledge/  由 references 构建的唯一 Knowledge 产物
 shared/                         Local / ChatGPT 共享政策
