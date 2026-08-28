@@ -376,6 +376,8 @@ class TerminalTestReporter:
 
 
 def _run_process(command: Sequence[str], root: Path, timeout_seconds: float) -> _SubprocessOutcome:
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     popen_kwargs: dict[str, object] = {
         "cwd": root,
         "stdout": subprocess.PIPE,
@@ -383,6 +385,7 @@ def _run_process(command: Sequence[str], root: Path, timeout_seconds: float) -> 
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
+        "env": environment,
     }
     if os.name == "nt":
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

@@ -359,7 +359,7 @@ class ModelProvider(Protocol):
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -1868,6 +1868,27 @@ def index_response_attempts(
     return effective
 
 
+def execution_scope(
+    case_ids: tuple[str, ...] | None,
+    available_case_ids: tuple[str, ...],
+    *,
+    label: str,
+) -> tuple[str, ...]:
+    """Validate the exact Case scope accepted by a stage executor."""
+    if case_ids is None:
+        return available_case_ids
+    if not case_ids:
+        raise ModelEvalError(f"{label} execution scope cannot be empty")
+    if len(set(case_ids)) != len(case_ids):
+        raise ModelEvalError(f"{label} execution scope contains duplicate case_id")
+    unknown = set(case_ids) - set(available_case_ids)
+    if unknown:
+        raise ModelEvalError(
+            f"{label} execution scope contains unknown case_id: {', '.join(sorted(unknown))}"
+        )
+    return case_ids
+
+
 def run_counts(
     cases: list[dict[str, Any]],
     responses: list[dict[str, Any]],
@@ -1923,7 +1944,10 @@ def derive_run_status(
     judgments: list[dict[str, Any]],
     *,
     judge_phase_completed: bool = False,
+    interrupted: bool = False,
 ) -> str:
+    if interrupted:
+        return "INTERRUPTED"
     total = len(cases)
     case_ids = {case["case_id"] for case in cases}
     effective_responses = (
@@ -1990,7 +2014,10 @@ def new_run_metadata(
     runtime_profile: str,
     repository_sha: str | None = None,
     repository_dirty: bool | None = None,
+    origin_mode: str = "FULL",
 ) -> dict[str, Any]:
+    if origin_mode not in {"FULL", "TARGET_ONLY", "JUDGE_ONLY"}:
+        raise ModelEvalError(f"invalid origin_mode: {origin_mode!r}")
     version = prepared_version(prepared_records)
     fingerprint = git_fingerprint()
     recorded_bundle_hash = bundle_hash(prepared_records, snapshots["runtime"])
@@ -2074,6 +2101,7 @@ def new_run_metadata(
         "pack_version": version,
         "version_directory": version_directory(version),
         "run_id": run_id,
+        "origin_mode": origin_mode,
         "status": "PREPARED",
         "baseline": False,
         "runtime_profile": runtime_profile,
@@ -2106,6 +2134,9 @@ def new_run_metadata(
             else "PURE_API",
             "judge": None,
         },
+        "api_calls": {"target": 0, "judge": 0},
+        "execution_history": [],
+        "interrupted": False,
         "created_at": utc_now(),
         "target_started_at": None,
         "target_completed_at": None,
@@ -2204,6 +2235,7 @@ def refresh_run_metadata(
         responses,
         judgments,
         judge_phase_completed=metadata.get("judge_phase_completed") is True,
+        interrupted=metadata.get("interrupted") is True,
     )
     if metadata.get("schema_version", 2) >= 3:
         case_ids = {case["case_id"] for case in cases}
@@ -2254,6 +2286,7 @@ def target_attempt_record(
     attempt: int,
 ) -> dict[str, Any]:
     prompt_identity = canonical_target_prompt_identity(record)
+    started_monotonic = time.perf_counter()
     response_record: dict[str, Any] = {
         "schema_version": 3,
         **artifact_binding(metadata),
@@ -2265,6 +2298,7 @@ def target_attempt_record(
         "execution_source": "api",
         "started_at": utc_now(),
         "completed_at": None,
+        "duration_seconds": None,
         "status": None,
         "response": None,
         "provider": provider.provider_name,
@@ -2331,6 +2365,7 @@ def target_attempt_record(
             }
         )
     response_record["completed_at"] = utc_now()
+    response_record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
     return response_record
 
 
@@ -2343,13 +2378,15 @@ def execute_run(
     repository_dirty: bool | None = None,
     knowledge_pack_version: str | None = None,
     resume: bool = False,
-    retry_non_retryable: bool = False,
     allow_dirty_debug: bool = False,
     concurrency: int = 1,
     continue_on_error: bool = False,
     metadata_extra: dict[str, Any] | None = None,
     on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
     on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    case_ids: tuple[str, ...] | None = None,
+    origin_mode: str = "FULL",
 ) -> dict[str, Any]:
     """Execute prepared target cases, optionally reporting each persisted result.
 
@@ -2395,6 +2432,7 @@ def execute_run(
                 "reasoning/sampling/max-output/runtime/SUT/Eval/prompt must match exactly"
             )
         invalidate_report(run_dir, metadata)
+        metadata["interrupted"] = False
     else:
         fingerprint = git_fingerprint()
         selected_dirty = (
@@ -2415,6 +2453,7 @@ def execute_run(
             runtime_profile=API_RUNTIME_PROFILE,
             repository_sha=repository_sha,
             repository_dirty=selected_dirty,
+            origin_mode=origin_mode,
         )
         if metadata_extra is not None:
             if not isinstance(metadata_extra, dict):
@@ -2436,25 +2475,44 @@ def execute_run(
         metadata["target_started_at"] = utc_now()
     responses_path = run_dir / "responses.jsonl"
     existing_records = load_jsonl(responses_path)
-    case_ids = {record["case_id"] for record in prepared_records}
-    latest = latest_response_attempts(existing_records, case_ids)
+    # A resumed Target stage may follow a partially completed Judge stage.  Keep
+    # those append-only Judge attempts in metadata refreshes; discarding them
+    # would make an otherwise valid checkpoint look like a fresh Target-only run.
+    existing_judgments = (
+        load_jsonl(run_dir / "judgments.jsonl")
+        if (run_dir / "judgments.jsonl").is_file()
+        else []
+    )
+    available_case_ids = tuple(record["case_id"] for record in prepared_records)
+    scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Target")
+    scoped_case_id_set = set(scoped_case_ids)
+    latest = latest_response_attempts(existing_records, set(available_case_ids))
     eligible: list[tuple[dict[str, Any], int]] = []
     for record in prepared_records:
+        if record["case_id"] not in scoped_case_id_set:
+            continue
         current = latest.get(record["case_id"])
         if current and current.get("status") == "MODEL_RESPONSE":
             continue
-        if current and current.get("status") == "TARGET_ERROR":
-            if current.get("retryable") is not True and not retry_non_retryable:
-                continue
         eligible.append((record, int(current.get("attempt", 0)) + 1 if current else 1))
+    if resume and eligible and existing_judgments:
+        # A newly executed Target attempt begins a new Judge stage.  Retain
+        # prior Judge attempts as evidence, while resetting aggregate stage
+        # timestamps so their timeline remains internally consistent.
+        metadata["judge_started_at"] = None
+        metadata["judge_completed_at"] = None
+        metadata["completed_at"] = None
+        metadata["judge_phase_completed"] = False
     if resume and not eligible:
-        refresh_run_metadata(metadata, existing_records, [])
+        refresh_run_metadata(metadata, existing_records, existing_judgments)
         write_json(run_dir / "run.json", metadata)
         return metadata
     with responses_path.open("a", encoding="utf-8", newline="\n") as handle:
         if concurrency == 1:
             def generate_serially() -> Any:
                 for started, (record, attempt) in enumerate(eligible, start=1):
+                    if should_stop is not None and should_stop():
+                        break
                     if on_case_start is not None:
                         on_case_start(record, started, len(eligible))
                     yield target_attempt_record(record, provider, metadata, attempt)
@@ -2472,8 +2530,9 @@ def execute_run(
         try:
             for completed, response_record in enumerate(generated, start=1):
                 append_jsonl(handle, response_record)
+                metadata.setdefault("api_calls", {"target": 0, "judge": 0})["target"] += 1
                 saved_responses = load_jsonl(responses_path)
-                refresh_run_metadata(metadata, saved_responses, [])
+                refresh_run_metadata(metadata, saved_responses, existing_judgments)
                 write_json(run_dir / "run.json", metadata)
                 if on_case_complete is not None:
                     on_case_complete(response_record, completed, len(eligible))
@@ -2483,14 +2542,30 @@ def execute_run(
                     and not continue_on_error
                 ):
                     break
+                if concurrency == 1 and should_stop is not None and should_stop():
+                    break
         finally:
             if concurrency != 1:
                 executor.shutdown(wait=True)
     saved_responses = load_jsonl(responses_path)
-    refresh_run_metadata(metadata, saved_responses, [])
+    refresh_run_metadata(metadata, saved_responses, existing_judgments)
     finished_at = utc_now()
-    if metadata["status"] == "TARGET_COMPLETE":
+    effective_responses = index_response_attempts(
+        saved_responses, set(available_case_ids)
+    )
+    if (
+        len(effective_responses) == len(prepared_records)
+        and all(record.get("status") == "MODEL_RESPONSE" for record in effective_responses.values())
+    ):
         metadata["target_completed_at"] = finished_at
+        if resume and any(
+            record.get("status") in {"JUDGMENT", "JUDGE_ERROR"}
+            for record in existing_judgments
+        ):
+            # The resumed Target stage invalidates the aggregate Judge phase.
+            # Its next checkpoint starts immediately after Target completion;
+            # individual Judge attempts remain append-only below it.
+            metadata["judge_started_at"] = finished_at
     write_json(run_dir / "run.json", metadata)
     return metadata
 
@@ -2606,6 +2681,44 @@ def parse_judgment(
     return [indexed[criterion] for criterion in expected]
 
 
+def judge_error_diagnostics(
+    result: ProviderResult | None,
+    *,
+    parse_error: str | None = None,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    """Persist bounded, secret-safe evidence for judge execution failures."""
+    diagnostics: dict[str, Any] = {
+        "parse_error": parse_error,
+        "error_code": error_code,
+        "response_id": result.response_id if result is not None else None,
+        "reported_model": result.reported_model if result is not None else None,
+        "finish_reason": result.finish_reason if result is not None else None,
+        "usage": result.usage if result is not None else None,
+        "content_present": bool(result and result.text),
+        "content_length": len(result.text) if result is not None else 0,
+        "reasoning_present": bool(
+            result
+            and isinstance(result.provider_metadata, dict)
+            and result.provider_metadata.get("reasoning")
+        ),
+    }
+    if result is not None and parse_error is not None:
+        diagnostics["raw_excerpt"] = _sanitize_diagnostic_excerpt(result.text)
+    return diagnostics
+
+
+def _sanitize_diagnostic_excerpt(value: str, limit: int = 800) -> str:
+    excerpt = value[:limit]
+    excerpt = re.sub(
+        r"(?i)(authorization|api[_ -]?key|token|secret)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        excerpt,
+    )
+    excerpt = re.sub(r"(?i)\b(?:sk|rk)-[A-Za-z0-9_-]+", "[REDACTED]", excerpt)
+    return re.sub(r"(?i)\b[\w-]*api[-_]?key[\w-]*\b", "[REDACTED]", excerpt)
+
+
 def judge_execution_manifest(
     metadata: dict[str, Any], judge_metadata: dict[str, Any]
 ) -> dict[str, Any]:
@@ -2634,13 +2747,13 @@ def execute_judge(
     resume: bool = False,
     on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
     on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    case_ids: tuple[str, ...] | None = None,
 ) -> dict[str, int]:
     validate_result_artifacts(run_dir)
     metadata = load_json_object(run_dir / "run.json")
     if metadata.get("schema_version") != 3:
         raise ModelEvalError("API judge execution requires a schema v3 run")
-    if metadata.get("eval_identity") != eval_identity_manifest(eval_definition_snapshot()):
-        raise ModelEvalError("judge configuration mismatch: current Eval definition changed")
     original_status = metadata.get("status")
     if original_status not in {
         "TARGET_COMPLETE",
@@ -2654,19 +2767,25 @@ def execute_judge(
     cases = metadata.get("cases")
     if not isinstance(cases, list):
         raise ModelEvalError("run.json is missing case snapshots")
-    case_ids = {case["case_id"] for case in cases}
+    available_case_ids = tuple(case["case_id"] for case in cases)
+    scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Judge")
+    scoped_case_id_set = set(scoped_case_ids)
+    scoped_cases = [case for case in cases if case["case_id"] in scoped_case_id_set]
+    all_response_records = load_jsonl(run_dir / "responses.jsonl")
     responses = index_response_attempts(
-        load_jsonl(run_dir / "responses.jsonl"), case_ids, "responses.jsonl"
+        all_response_records, set(available_case_ids), "responses.jsonl"
     )
     existing_records = load_jsonl(judgments_path) if judgments_path.exists() else []
-    existing = index_judgment_attempts(existing_records, case_ids)
+    existing = index_judgment_attempts(existing_records, set(available_case_ids))
     has_attempted_judgment = any(
         record.get("status") in {"JUDGMENT", "JUDGE_ERROR"}
-        for record in existing.values()
+        for case_id, record in existing.items()
+        if case_id in scoped_case_id_set
     )
     if has_attempted_judgment and not resume:
         raise ModelEvalError("existing judge attempts require judge --resume")
     judge_metadata = provider_metadata(provider)
+    metadata["interrupted"] = False
     execution = judge_execution_manifest(metadata, judge_metadata)
     if metadata.get("judge") is None:
         metadata["judge"] = judge_metadata
@@ -2683,13 +2802,9 @@ def execute_judge(
         )
     eligible = [
         case["case_id"]
-        for case in cases
+        for case in scoped_cases
         if responses.get(case["case_id"], {}).get("status") == "MODEL_RESPONSE"
         and existing.get(case["case_id"], {}).get("status") != "JUDGMENT"
-        and (
-            existing.get(case["case_id"], {}).get("status") != "JUDGE_ERROR"
-            or existing.get(case["case_id"], {}).get("retryable") is True
-        )
     ]
     if original_status == "COMPLETED" and not eligible:
         return {
@@ -2705,14 +2820,13 @@ def execute_judge(
     started = 0
     completed = 0
     with judgments_path.open(mode, encoding="utf-8", newline="\n") as handle:
-        for case in cases:
+        for case in scoped_cases:
+            if should_stop is not None and should_stop():
+                break
             case_id = case["case_id"]
             current = existing.get(case_id)
             if current and current.get("status") == "JUDGMENT":
                 continue
-            if current and current.get("status") == "JUDGE_ERROR":
-                if not resume or current.get("retryable") is not True:
-                    continue
             target = responses.get(case_id)
             if not target or target.get("status") != "MODEL_RESPONSE":
                 continue
@@ -2747,10 +2861,12 @@ def execute_judge(
                 "usage": None,
                 "evaluated_at": utc_now(),
                 "completed_at": None,
+                "duration_seconds": None,
                 "error_code": None,
                 "retryable": None,
                 "error": None,
             }
+            started_monotonic = time.perf_counter()
             try:
                 builder = getattr(provider, "build_request_payload", None)
                 if callable(builder):
@@ -2767,53 +2883,74 @@ def execute_judge(
                     input_text=judge_input(case, target["response"]),
                     response_schema=judgment_schema(case["criteria"], case_id),
                 )
-                record.update(
-                    {
-                        "status": "JUDGMENT",
-                        "criteria": parse_judgment(
-                            result.text,
-                            case["criteria"],
-                            expected_case_id=case_id,
-                        ),
-                        "provider_response_id": result.response_id,
-                        "request_id": result.response_id,
-                        "usage": result.usage,
-                        "reported_model": result.reported_model,
-                        "finish_reason": result.finish_reason,
-                        "provider_created_at": result.created_at,
-                        "system_fingerprint": result.system_fingerprint,
-                        "provider_metadata": result.provider_metadata,
-                        "request_envelope_hash": result.request_envelope_hash
-                        or record["request_envelope_hash"],
-                    }
-                )
+                try:
+                    criteria = parse_judgment(
+                        result.text,
+                        case["criteria"],
+                        expected_case_id=case_id,
+                    )
+                except ModelEvalError as exc:
+                    record.update(
+                        {
+                            "status": "JUDGE_ERROR",
+                            "error": _sanitize_diagnostic_excerpt(str(exc)),
+                            "error_code": "INVALID_STRUCTURED_OUTPUT",
+                            "retryable": False,
+                            "diagnostics": judge_error_diagnostics(
+                                result, parse_error=str(exc)
+                            ),
+                        }
+                    )
+                else:
+                    record.update(
+                        {
+                            "status": "JUDGMENT",
+                            "criteria": criteria,
+                            "provider_response_id": result.response_id,
+                            "request_id": result.response_id,
+                            "usage": result.usage,
+                            "reported_model": result.reported_model,
+                            "finish_reason": result.finish_reason,
+                            "provider_created_at": result.created_at,
+                            "system_fingerprint": result.system_fingerprint,
+                            "provider_metadata": result.provider_metadata,
+                            "request_envelope_hash": result.request_envelope_hash
+                            or record["request_envelope_hash"],
+                        }
+                    )
             except ProviderError as exc:
                 record.update(
                     {
                         "status": "JUDGE_ERROR",
-                        "error": str(exc),
+                        "error": _sanitize_diagnostic_excerpt(str(exc)),
                         "error_code": exc.code,
                         "retryable": exc.retryable,
                         "reported_model": exc.reported_model,
+                        "diagnostics": judge_error_diagnostics(None, error_code=exc.code),
                     }
                 )
             except ModelEvalError as exc:
                 record.update(
                     {
                         "status": "JUDGE_ERROR",
-                        "error": str(exc),
+                        "error": _sanitize_diagnostic_excerpt(str(exc)),
                         "error_code": "INVALID_STRUCTURED_OUTPUT",
                         "retryable": False,
                     }
                 )
             record["completed_at"] = utc_now()
+            record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
             append_jsonl(handle, record)
             existing[case_id] = record
+            metadata.setdefault("api_calls", {"target": 0, "judge": 0})["judge"] += 1
             completed += 1
+            all_records = load_jsonl(judgments_path)
+            refresh_run_metadata(metadata, all_response_records, all_records)
+            write_json(run_dir / "run.json", metadata)
             if on_case_complete is not None:
                 on_case_complete(record, completed, len(eligible))
     all_records = load_jsonl(judgments_path)
-    latest = index_judgment_attempts(all_records, case_ids)
+    latest = index_judgment_attempts(all_records, set(available_case_ids))
     counts = {
         "judged": sum(item.get("status") == "JUDGMENT" for item in latest.values()),
         "judge_error": sum(item.get("status") == "JUDGE_ERROR" for item in latest.values()),
@@ -2825,7 +2962,7 @@ def execute_judge(
     if len(all_records) == len(existing_records) and original_status == "COMPLETED":
         return counts
     metadata["judge_phase_completed"] = True
-    refresh_run_metadata(metadata, list(responses.values()), all_records)
+    refresh_run_metadata(metadata, all_response_records, all_records)
     if metadata["status"] in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         finished_at = utc_now()
         metadata["judge_completed_at"] = finished_at
@@ -3111,6 +3248,7 @@ def aggregate_results(
         response_records,
         judgment_records,
         judge_phase_completed=metadata.get("judge_phase_completed") is True,
+        interrupted=metadata.get("interrupted") is True,
     )
     behavioral_status = (
         "NOT_EVALUABLE"
@@ -3128,6 +3266,15 @@ def aggregate_results(
         "bundle_hash": metadata.get("bundle_hash"),
         "target": metadata.get("target"),
         "judge": metadata.get("judge"),
+        "origin_mode": metadata.get("origin_mode"),
+        "source_target_run_id": metadata.get("source_target_run_id"),
+        "api_calls": metadata.get("api_calls") or {"target": 0, "judge": 0},
+        "last_execution": (
+            metadata["execution_history"][-1]
+            if isinstance(metadata.get("execution_history"), list)
+            and metadata["execution_history"]
+            else None
+        ),
         "completion_status": actual_status,
         "behavioral_status": behavioral_status,
         "baseline": False,
@@ -3262,6 +3409,20 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
         "- Baseline: `false`（只能经人工复核后另行选择）",
         "",
     ]
+    if "mode" in summary:
+        markdown[4:4] = [
+            f"- Mode: `{summary['mode']}`",
+            (
+                f"- Target source: `{summary['source_target_run_id']}`"
+                if summary.get("source_target_run_id")
+                else "- Target source: current run"
+            ),
+            (
+                "- API calls: "
+                f"Target={summary.get('api_calls', {}).get('target', 0)}, "
+                f"Judge={summary.get('api_calls', {}).get('judge', 0)}"
+            ),
+        ]
     if summary.get("schema_version", 2) >= 3:
         provenance = summary["provider_provenance"]
         target_identity = provenance["target"].get("model_identity") or {}
@@ -3491,6 +3652,11 @@ def validate_response_record(record: dict[str, Any]) -> None:
     if status not in valid_statuses:
         raise ModelEvalError(f"invalid target response status: {status!r}")
     response = record.get("response")
+    duration = record.get("duration_seconds")
+    if duration is not None and (
+        isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0
+    ):
+        raise ModelEvalError(f"{record.get('case_id')}: duration_seconds must be a non-negative number")
     if status == "MODEL_RESPONSE":
         if not isinstance(response, str) or not response.strip():
             raise ModelEvalError(f"{record.get('case_id')}: MODEL_RESPONSE needs text")
@@ -4201,10 +4367,6 @@ def validate_result_artifacts(run_dir: Path) -> None:
             judgment.get("error"), str
         ):
             raise ModelEvalError(f"{run_dir}: invalid non-judgment evidence")
-    if judgments:
-        for case_id, response in response_index.items():
-            if response.get("status") == "MODEL_RESPONSE" and case_id not in judgment_index:
-                raise ModelEvalError(f"{run_dir}: {case_id} is missing explicit judgment status")
     expected_counts = run_counts(
         cases, responses, judgments, schema_version=schema_version
     )
@@ -4215,6 +4377,7 @@ def validate_result_artifacts(run_dir: Path) -> None:
         responses,
         judgments,
         judge_phase_completed=metadata.get("judge_phase_completed") is True,
+        interrupted=metadata.get("interrupted") is True,
     )
     if metadata.get("status") != expected_status:
         raise ModelEvalError(f"{run_dir}: run status does not match artifacts")
@@ -5602,7 +5765,6 @@ def command_run(args: argparse.Namespace) -> int:
         provider,
         candidate,
         resume=args.resume,
-        retry_non_retryable=args.retry_non_retryable,
         allow_dirty_debug=args.allow_dirty_debug,
         concurrency=args.concurrency,
     )
@@ -5819,7 +5981,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--results-root", default=str(RESULTS_BASE))
     run.add_argument("--run-id")
     run.add_argument("--resume", action="store_true")
-    run.add_argument("--retry-non-retryable", action="store_true")
     run.add_argument("--allow-dirty-debug", action="store_true")
     run.add_argument("--concurrency", type=int, default=1)
     run.add_argument("--dry-run", action="store_true")

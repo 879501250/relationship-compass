@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval_console.test_runner import TestSuiteRequest, TestSuiteRunner
+from eval_console.models import CURRENT_CONSOLE_SCHEMA_VERSION
 from date_utils import normalize_iso8601
 from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
@@ -545,8 +546,15 @@ def validate_model_eval_artifacts(runtime_only: bool) -> None:
                 continue
             for run_dir in sorted(path for path in profile_dir.iterdir() if path.is_dir()):
                 try:
+                    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+                    console = metadata.get("console") if isinstance(metadata, dict) else None
+                    if (
+                        not isinstance(console, dict)
+                        or console.get("schema_version") != CURRENT_CONSOLE_SCHEMA_VERSION
+                    ):
+                        continue
                     validate_result_artifacts(run_dir)
-                except (ModelEvalError, OSError) as exc:
+                except (json.JSONDecodeError, ModelEvalError, OSError) as exc:
                     ERRORS.append(f"model eval artifact validation failed: {exc}")
 
 

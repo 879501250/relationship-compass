@@ -447,7 +447,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.ModelEvalError, "unknown case_id"):
                 runner.validate_result_artifacts(unknown_dir)
 
-    def test_missing_judgment_consistency_is_detected(self) -> None:
+    def test_missing_judgment_is_a_resumable_incomplete_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = self.run_target(
                 Path(temp_dir), FakeProvider(["回答一", "回答二"]), count=2
@@ -458,8 +458,19 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             )
             judgments = runner.load_jsonl(run_dir / "judgments.jsonl")
             runner.write_jsonl(run_dir / "judgments.jsonl", judgments[:1])
-            with self.assertRaisesRegex(runner.ModelEvalError, "missing explicit judgment"):
-                runner.validate_result_artifacts(run_dir)
+            metadata = runner.load_json_object(run_dir / "run.json")
+            metadata["judge_phase_completed"] = False
+            metadata["judge_completed_at"] = None
+            metadata["completed_at"] = None
+            runner.refresh_run_metadata(
+                metadata,
+                runner.load_jsonl(run_dir / "responses.jsonl"),
+                judgments[:1],
+            )
+            runner.write_json(run_dir / "run.json", metadata)
+            runner.validate_result_artifacts(run_dir)
+            self.assertEqual(metadata["status"], "JUDGE_PARTIAL")
+            self.assertEqual(metadata["counts"]["not_judged"], 1)
 
     def test_manual_response_import_is_partial_and_rejects_duplicate(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -19,6 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as runner  # noqa: E402
+from eval_console.discovery import discover_runs  # noqa: E402
 
 
 HISTORICAL_RUN = (
@@ -157,14 +158,15 @@ class ModelEvalDefinitionTests(unittest.TestCase):
         self.assertIn("逐项独立判断", runner.JUDGE_CALIBRATION)
         self.assertIn("空泛 filler", runner.JUDGE_CALIBRATION)
 
-    def test_historical_run_is_compatible_and_validation_is_read_only(self) -> None:
+    def test_historical_run_is_excluded_from_current_console_history(self) -> None:
         self.assertTrue(HISTORICAL_RUN.is_dir())
         before = {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in HISTORICAL_RUN.iterdir()
             if path.is_file()
         }
-        runner.validate_result_artifacts(HISTORICAL_RUN)
+        discovered = discover_runs(HISTORICAL_RUN.parents[2])
+        self.assertNotIn(HISTORICAL_RUN, [item.run_dir for item in discovered])
         after = {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in HISTORICAL_RUN.iterdir()

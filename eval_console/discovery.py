@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .models import EvalCase, EvalDefinition, ProviderProfile
+from .models import (
+    CURRENT_CONSOLE_SCHEMA_VERSION,
+    EvalCase,
+    EvalDefinition,
+    ProviderProfile,
+)
 from .runner_adapter import ROOT, runner
 
 
@@ -27,6 +32,17 @@ class HistoricalRun:
     state: str
     target_profile: str | None
     judge_profile: str | None
+    mode: str
+    source_target_run_id: str | None
+    target_model: str | None
+    target_api_calls: int
+    judge_api_calls: int
+    target_successes: int
+    target_errors: int
+    target_missing: int
+    judge_completed: int
+    judge_errors: int
+    judge_missing: int
 
 
 def discover_evals() -> list[EvalDefinition]:
@@ -98,6 +114,19 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
     for metadata_path in results_root.glob("v*/**/run.json"):
         try:
             metadata = runner.load_json_object(metadata_path)
+            if metadata.get("schema_version") != 3 or metadata.get("origin_mode") not in {
+                "FULL",
+                "TARGET_ONLY",
+                "JUDGE_ONLY",
+            }:
+                continue
+            console = metadata.get("console")
+            if (
+                not isinstance(console, dict)
+                or console.get("schema_version") != CURRENT_CONSOLE_SCHEMA_VERSION
+                or console.get("origin_mode") != metadata.get("origin_mode")
+            ):
+                continue
             outcomes = run_case_outcomes(metadata_path.parent, metadata)
             failed = [case_id for case_id, state in outcomes.items() if state == "FAIL"]
             errors = [case_id for case_id, state in outcomes.items() if state == "ERROR"]
@@ -105,13 +134,16 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
                 case_id for case_id, state in outcomes.items() if state == "INCOMPLETE"
             ]
             console = metadata.get("console") if isinstance(metadata.get("console"), dict) else {}
+            api_calls = metadata.get("api_calls") if isinstance(metadata.get("api_calls"), dict) else {}
+            target_manifest = metadata.get("target") if isinstance(metadata.get("target"), dict) else {}
+            counts = metadata.get("counts") if isinstance(metadata.get("counts"), dict) else {}
             runs.append(
                 HistoricalRun(
                     run_dir=metadata_path.parent,
                     eval_id=_string(console.get("eval_id")),
                     run_id=str(metadata.get("run_id") or metadata_path.parent.name),
                     created_at=_string(metadata.get("created_at")),
-                    total_cases=int(metadata.get("counts", {}).get("total_cases", len(outcomes))),
+                    total_cases=int(counts.get("total_cases", len(outcomes))),
                     passed_cases=sum(state == "PASS" for state in outcomes.values()),
                     failed_case_ids=tuple(failed),
                     error_case_ids=tuple(errors),
@@ -119,6 +151,17 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
                     state=_run_state(incomplete, errors, failed),
                     target_profile=_string(console.get("target_profile")),
                     judge_profile=_string(console.get("judge_profile")),
+                    mode=_string(metadata.get("origin_mode")),
+                    source_target_run_id=_string(metadata.get("source_target_run_id")),
+                    target_model=_string(target_manifest.get("requested_model")),
+                    target_api_calls=_as_nonnegative_int(api_calls.get("target")),
+                    judge_api_calls=_as_nonnegative_int(api_calls.get("judge")),
+                    target_successes=_as_nonnegative_int(counts.get("model_response")),
+                    target_errors=_as_nonnegative_int(counts.get("target_error")),
+                    target_missing=_as_nonnegative_int(counts.get("not_run")),
+                    judge_completed=_as_nonnegative_int(counts.get("judged")),
+                    judge_errors=_as_nonnegative_int(counts.get("judge_error")),
+                    judge_missing=_as_nonnegative_int(counts.get("not_judged")),
                 )
             )
         except (OSError, ValueError, TypeError, runner.ModelEvalError):
@@ -212,6 +255,10 @@ def _model_label(config: dict[str, Any]) -> str | None:
 
 def _string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _as_nonnegative_int(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
 
 
 def _summary(prompt: str) -> str:

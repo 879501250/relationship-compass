@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import traceback
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, TypeVar
@@ -29,7 +31,14 @@ from .configuration import (
     update_role_configuration,
     validate_base_url,
 )
-from .models import EvalDefinition, EvalRunRequest, ProviderProfile
+from .models import (
+    CURRENT_CONSOLE_SCHEMA_VERSION,
+    EvalDefinition,
+    EvalExecutionMode,
+    EvalRunRequest,
+    JudgeCaseSelector,
+    ProviderProfile,
+)
 from .runner_adapter import runner
 from .secrets import SecretResolver
 from .selection import CaseSelectionError, parse_case_selection
@@ -37,7 +46,8 @@ from .service import (
     EvalConsoleError,
     EvaluationInterrupted,
     execute_request,
-    failed_case_ids,
+    judge_only_case_ids,
+    plan_stage_execution,
     preflight_request,
     validate_configuration,
 )
@@ -111,10 +121,38 @@ class _ActivityReporter:
             frame += 1
 
 
+class _GracefulStop:
+    """Treat the first Ctrl+C as a durable stop request and a second as force stop."""
+
+    def __init__(self, concurrency: int) -> None:
+        self.requested = False
+        self.concurrency = concurrency
+        self._previous: object | None = None
+
+    def __enter__(self) -> "_GracefulStop":
+        self._previous = signal.getsignal(signal.SIGINT)
+
+        def on_interrupt(_signum: int, _frame: object) -> None:
+            if self.requested:
+                raise KeyboardInterrupt
+            self.requested = True
+            message = "\n已收到停止请求；当前 Case 保存后不会启动新的 Case。再次按 Ctrl+C 可立即退出。"
+            if self.concurrency > 1:
+                message += " 并发数大于 1：已排队的 Case 仍可能完成；要严格停止请使用并发 1。"
+            print(message)
+
+        signal.signal(signal.SIGINT, on_interrupt)
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        if self._previous is not None:
+            signal.signal(signal.SIGINT, self._previous)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the small command surface; invoking no command opens the wizard."""
     parser = argparse.ArgumentParser(
-        description="Relationship Compass 评测控制台 V1.1",
+        description="Relationship Compass 评测控制台 V1.2A",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -123,15 +161,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_arguments(run)
     run.set_defaults(func=_command_run)
 
-    retry = subparsers.add_parser("rerun-failed", help="重跑历史运行中的失败、错误或未完成 Case")
-    retry.add_argument("--from-run", required=True, type=Path)
-    retry.add_argument(
-        "--mode",
-        choices=("failed-and-errors", "failed", "errors", "incomplete"),
-        default="failed-and-errors",
-    )
-    _add_run_arguments(retry, include_eval=False, include_cases=False)
-    retry.set_defaults(func=_command_rerun_failed)
+    resume = subparsers.add_parser("resume", help="按当前 Case/Stage 状态继续或重试历史运行")
+    resume.add_argument("--from-run", required=True, type=Path)
+    _add_run_arguments(resume, include_eval=False, include_execution_mode=False)
+    resume.set_defaults(func=_command_resume)
 
     validate = subparsers.add_parser("validate", help="检查 Eval、Provider 配置和输出目录")
     validate.add_argument("--profiles-file", type=Path, default=runner.DEFAULT_PROVIDER_PROFILES)
@@ -166,10 +199,10 @@ def main(argv: list[str] | None = None) -> int:
         print("\n评测已中断。")
         print(f"已保存部分结果：{exc.run_dir}")
         print(
-            f"Target 进度：已保存 {exc.completed_cases}/{exc.total_cases}；"
+            f"当前阶段：{_phase_label(exc.stage)}；已保存 {exc.completed_cases}/{exc.total_cases}；"
             f"剩余 {max(0, exc.total_cases - exc.completed_cases)}。"
         )
-        print("打开评测控制台并选择“重跑失败 / 错误 / 未完成 Cases”以继续。")
+        print("打开评测控制台并选择“继续 / 重试历史运行”，或使用 resume --from-run 继续。")
         return 130
     except (CaseSelectionError, EvalConsoleError, OSError, ValueError) as exc:
         print(f"\n无法继续：{exc}")
@@ -186,6 +219,7 @@ def _add_run_arguments(
     *,
     include_eval: bool = True,
     include_cases: bool = True,
+    include_execution_mode: bool = True,
 ) -> None:
     if include_eval:
         parser.add_argument("eval_id", help="可通过 'python -m eval_console interactive' 查看的 Eval ID")
@@ -193,6 +227,21 @@ def _add_run_arguments(
         cases = parser.add_mutually_exclusive_group()
         cases.add_argument("--case", action="append", help="一个 Case ID 或从 1 开始的位置；可重复")
         cases.add_argument("--cases", help="all、位置、ID、范围或组合，例如 1,3,5-8")
+    if include_execution_mode:
+        parser.add_argument(
+            "--mode",
+            dest="execution_mode",
+            choices=("full", "target-only", "judge-only"),
+            default="full",
+            help="执行 FULL、仅 Target 或仅 Judge",
+        )
+        parser.add_argument("--source-run", type=Path, help="Judge-only / Resume 的历史运行目录")
+        parser.add_argument(
+            "--judge-selector",
+            choices=("all-target", "judge-error", "judge-missing", "judge-error-or-missing", "selected"),
+            default="selected",
+            help="Judge-only 时从历史 Target 成功结果中选择 Case",
+        )
     parser.add_argument("--profile", help="Target 与 Judge 使用同一个已配置 Profile")
     parser.add_argument("--target-profile")
     parser.add_argument("--judge-profile")
@@ -210,25 +259,104 @@ def _add_run_arguments(
 
 def _command_run(args: argparse.Namespace) -> int:
     definition = find_eval(args.eval_id)
-    case_ids = _case_ids_from_args(args, definition)
+    mode = _execution_mode_from_args(args)
+    if (
+        mode in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME}
+        and args.source_run
+        and not args.case
+        and not args.cases
+    ):
+        source_metadata = runner.load_json_object(args.source_run.expanduser().resolve() / "run.json")
+        case_ids = [
+            record["case_id"] for record in source_metadata.get("cases", [])
+            if isinstance(record, dict) and isinstance(record.get("case_id"), str)
+        ]
+    else:
+        case_ids = _case_ids_from_args(args, definition)
     request = _request_from_args(args, definition.eval_id, case_ids)
     return _execute_and_print(request)
 
 
-def _command_rerun_failed(args: argparse.Namespace) -> int:
+def _command_resume(args: argparse.Namespace) -> int:
     run_dir = args.from_run.expanduser().resolve()
-    case_ids = failed_case_ids(run_dir, args.mode)
     metadata = runner.load_json_object(run_dir / "run.json")
+    _validate_resume_artifact(metadata)
     console = metadata.get("console") if isinstance(metadata.get("console"), dict) else {}
-    eval_id = console.get("eval_id") if isinstance(console.get("eval_id"), str) else discover_evals()[0].eval_id
-    args.target_profile = args.target_profile or args.profile or console.get("target_profile")
-    args.judge_profile = args.judge_profile or args.profile or console.get("judge_profile")
-    if not args.target_profile or not args.judge_profile:
-        raise EvalConsoleError(
-            "This historical run has no Console profile metadata. Supply --target-profile and --judge-profile."
-        )
+    eval_id = console.get("eval_id")
+    if not isinstance(eval_id, str):
+        raise EvalConsoleError("当前 schema 的历史 Run 缺少 eval_id，无法 Resume。")
+    definition = find_eval(eval_id)
+    if args.cases or args.case:
+        case_ids = _case_ids_from_args(args, definition)
+    else:
+        case_ids = [
+            record["case_id"] for record in metadata.get("cases", [])
+            if isinstance(record, dict) and isinstance(record.get("case_id"), str)
+        ]
+    args.source_run = run_dir
+    args.execution_mode = "resume"
     request = _request_from_args(args, eval_id, list(case_ids))
+    request = _resume_request_with_inherited_configuration(request, metadata)
     return _execute_and_print(request)
+
+
+def _validate_resume_artifact(metadata: dict[str, object]) -> None:
+    console = metadata.get("console")
+    if metadata.get("schema_version") != 3 or not isinstance(console, dict):
+        raise EvalConsoleError("Unsupported Run Artifact Version：仅支持当前 Console Run。")
+    if console.get("schema_version") != CURRENT_CONSOLE_SCHEMA_VERSION:
+        raise EvalConsoleError("Unsupported Run Artifact Version：Console artifact 版本不受支持。")
+    if console.get("origin_mode") != metadata.get("origin_mode"):
+        raise EvalConsoleError("Unsupported Run Artifact Version：origin_mode 不一致。")
+
+
+def _resume_request_with_inherited_configuration(
+    request: EvalRunRequest, metadata: dict[str, object]
+) -> EvalRunRequest:
+    """Use the persisted Console provider identities for same-Run Resume only."""
+    _validate_resume_artifact(metadata)
+    console = metadata["console"]
+    assert isinstance(console, dict)
+    expected = {
+        "Target": (
+            console.get("target_profile"),
+            console.get("target_model"),
+            request.target_profile,
+            request.target_model_override,
+        ),
+        "Judge": (
+            console.get("judge_profile"),
+            console.get("judge_model"),
+            request.judge_profile,
+            request.judge_model_override,
+        ),
+    }
+    inherited_profiles: dict[str, str | None] = {}
+    inherited_models: dict[str, str | None] = {}
+    for role, (profile, model, supplied_profile, supplied_model) in expected.items():
+        saved_profile = profile if isinstance(profile, str) else None
+        saved_model = model if isinstance(model, str) else None
+        if supplied_profile is not None and supplied_profile != saved_profile:
+            raise EvalConsoleError(
+                f"Resume configuration mismatch: 原 {role} Profile：{saved_profile or '未记录'}；"
+                f"当前指定：{supplied_profile}。Resume 必须继续使用原运行配置；"
+                "如需使用新的 Judge，请使用 JUDGE_ONLY。"
+            )
+        if supplied_model is not None and supplied_model != saved_model:
+            raise EvalConsoleError(
+                f"Resume configuration mismatch: 原 {role} Model：{saved_model or '未记录'}；"
+                f"当前指定：{supplied_model}。Resume 必须继续使用原运行配置；"
+                "如需使用新的 Judge，请使用 JUDGE_ONLY。"
+            )
+        inherited_profiles[role] = saved_profile
+        inherited_models[role] = saved_model
+    return replace(
+        request,
+        target_profile=inherited_profiles["Target"],
+        judge_profile=inherited_profiles["Judge"],
+        resume_target_model=inherited_models["Target"],
+        resume_judge_model=inherited_models["Judge"],
+    )
 
 
 def _command_validate(args: argparse.Namespace) -> int:
@@ -296,7 +424,9 @@ def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool 
             ("检查运行环境", lambda: _interactive_validate(profiles_file, results_root, debug)),
             ("配置 Provider", lambda: _configure_providers(profiles_file, resolver)),
             ("查看历史运行", lambda: _print_history(discover_runs(results_root))),
-            ("重跑失败 / 错误 / 未完成 Cases", lambda: _interactive_rerun_failed(profiles_file, results_root, debug)),
+            ("继续 / 重试历史运行", lambda: _interactive_history_stage(
+                evals, profiles_file, results_root, debug, resolver, EvalExecutionMode.RESUME
+            )),
             (
                 "查看 Eval 列表",
                 lambda: _print_evals(evals),
@@ -760,6 +890,24 @@ def _interactive_run(
         _setup_wizard(profiles_file, results_root, resolver)
         if not discover_provider_profiles(profiles_file):
             return 1
+    execution_mode = _choose(
+        "请选择评测方式",
+        [
+            ("完整运行（Target + Judge）", EvalExecutionMode.FULL),
+            ("仅运行 Target（保存回复，暂不 Judge）", EvalExecutionMode.TARGET_ONLY),
+            ("仅运行 Judge（复用历史 Target）", EvalExecutionMode.JUDGE_ONLY),
+            ("继续运行（按 Case 状态只补缺失阶段）", EvalExecutionMode.RESUME),
+            ("返回", None),
+        ],
+    )
+    if execution_mode is None:
+        return 0
+    if execution_mode is EvalExecutionMode.TARGET_ONLY:
+        return _interactive_target_only(evals, profiles_file, results_root, debug, resolver)
+    if execution_mode in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME}:
+        return _interactive_history_stage(
+            evals, profiles_file, results_root, debug, resolver, execution_mode
+        )
     definition = _choose("请选择 Eval", [(item.title, item) for item in evals])
     print(f"Cases：{len(definition.cases)}\n说明：{definition.description}")
     case_ids = _interactive_case_selection(definition, results_root)
@@ -812,6 +960,142 @@ def _interactive_run(
         print("未运行任何评测。")
         return 0
     return _execute_and_print(request)
+
+
+def _interactive_target_only(
+    evals: list[EvalDefinition], profiles_file: Path, results_root: Path, debug: bool,
+    resolver: SecretResolver,
+) -> int:
+    definition = _choose("请选择 Eval", [(item.title, item) for item in evals])
+    print(f"Cases：{len(definition.cases)}\n说明：{definition.description}")
+    case_ids = _interactive_case_selection(definition, results_root)
+    target = _interactive_profile(profiles_file, "target")
+    if not _ensure_role_ready(profiles_file, target, "target", resolver):
+        return 1
+    target = {item.name: item for item in discover_provider_profiles(profiles_file)}[target.name]
+    target_model = _interactive_model_override(target, "target")
+    dry_run = _choose("运行模式", [("Dry Run（不调用真实 API）", True), ("真实 API 运行", False)])
+    request = EvalRunRequest(
+        eval_id=definition.eval_id,
+        case_ids=tuple(case_ids),
+        target_profile=target.name,
+        judge_profile=None,
+        profiles_file=profiles_file,
+        results_root=results_root,
+        dry_run=dry_run,
+        debug=debug,
+        allow_dirty_debug=_yes_no("如有需要，允许在有未提交修改的工作区进行调试运行", default=False),
+        concurrency=_interactive_concurrency(),
+        target_model_override=target_model,
+        continue_on_error=_choose("单个 Case 出错时", [("继续运行剩余 Cases（推荐）", True), ("立即停止", False)]),
+        mode=EvalExecutionMode.TARGET_ONLY,
+    )
+    _print_stage_request_summary(definition, request, target, None, None)
+    if _choose("开始运行吗", [("开始", True), ("取消", False)]):
+        return _execute_and_print(request)
+    print("未运行任何评测。")
+    return 0
+
+
+def _interactive_history_stage(
+    evals: list[EvalDefinition], profiles_file: Path, results_root: Path, debug: bool,
+    resolver: SecretResolver, mode: EvalExecutionMode,
+) -> int:
+    candidates = discover_runs(results_root)
+    if not candidates:
+        print("尚未找到可复用的历史运行。")
+        return 0
+    source = _choose("请选择历史运行", [(_run_label(item), item) for item in candidates])
+    definition = find_eval(source.eval_id) if source.eval_id else _choose("请选择 Eval", [(item.title, item) for item in evals])
+    source_metadata = runner.load_json_object(source.run_dir / "run.json")
+    all_case_ids = [
+        record["case_id"] for record in source_metadata.get("cases", [])
+        if isinstance(record, dict) and isinstance(record.get("case_id"), str)
+    ]
+    if mode is EvalExecutionMode.JUDGE_ONLY:
+        selector = _choose(
+            "选择要 Judge 的历史 Target 回复",
+            [
+                ("全部成功 Target", JudgeCaseSelector.ALL_TARGET),
+                ("仅 Judge ERROR", JudgeCaseSelector.JUDGE_ERROR),
+                ("仅未 Judge", JudgeCaseSelector.JUDGE_MISSING),
+                ("Judge ERROR 或未 Judge", JudgeCaseSelector.JUDGE_ERROR_OR_MISSING),
+                ("手动选择 Case", JudgeCaseSelector.SELECTED),
+            ],
+        )
+        requested = all_case_ids
+        if selector is JudgeCaseSelector.SELECTED:
+            _print_cases(definition)
+            requested = parse_case_selection(
+                input("请输入位置、ID 或范围：").strip(), [case.case_id for case in definition.cases]
+            )
+        case_ids = list(judge_only_case_ids(source.run_dir, selector, tuple(requested)))
+        stage_plan = plan_stage_execution(source.run_dir, tuple(case_ids), mode)
+        target = None
+        judge = _interactive_profile(profiles_file, "judge")
+        if not _ensure_role_ready(profiles_file, judge, "judge", resolver):
+            return 1
+        judge = {item.name: item for item in discover_provider_profiles(profiles_file)}[judge.name]
+        target_model = None
+        judge_model = _interactive_model_override(judge, "judge")
+    else:
+        scope = _choose(
+            "选择继续范围",
+            [("自动继续全部未完成或 ERROR Case", "auto"), ("手动选择 Case", "selected")],
+        )
+        if scope == "selected":
+            _print_cases(definition)
+            case_ids = parse_case_selection(
+                input("请输入位置、ID 或范围：").strip(),
+                [case.case_id for case in definition.cases],
+            )
+        else:
+            case_ids = all_case_ids
+        stage_plan = plan_stage_execution(source.run_dir, tuple(case_ids), mode)
+        target = None
+        judge = None
+        target_model = None
+        judge_model = None
+        selector = JudgeCaseSelector.SELECTED
+    dry_run = _choose("运行模式", [("Dry Run（不调用真实 API）", True), ("真实 API 运行", False)])
+    request = EvalRunRequest(
+        eval_id=definition.eval_id,
+        case_ids=tuple(case_ids),
+        target_profile=target.name if target is not None else None,
+        judge_profile=judge.name if judge is not None else None,
+        profiles_file=profiles_file,
+        results_root=results_root,
+        dry_run=dry_run,
+        debug=debug,
+        allow_dirty_debug=_yes_no("如有需要，允许在有未提交修改的工作区进行调试运行", default=False),
+        target_model_override=target_model,
+        judge_model_override=judge_model,
+        mode=mode,
+        source_run_dir=source.run_dir,
+        judge_selector=selector,
+    )
+    if mode is EvalExecutionMode.RESUME:
+        request = _resume_request_with_inherited_configuration(request, source_metadata)
+        configured = {item.name: item for item in discover_provider_profiles(profiles_file)}
+        target = configured.get(request.target_profile) if stage_plan.target_cases else None
+        judge = configured.get(request.judge_profile) if stage_plan.judge_cases else None
+    _print_stage_request_summary(definition, request, target, judge, stage_plan)
+    if mode is EvalExecutionMode.RESUME:
+        while True:
+            action = _choose(
+                "继续运行吗",
+                [("继续运行", "start"), ("查看 Cases", "cases"), ("返回", "back"), ("取消", "cancel")],
+            )
+            if action == "cases":
+                _print_stage_plan(stage_plan)
+                continue
+            if action == "start":
+                return _execute_and_print(request)
+            return 0
+    if _choose("开始运行吗", [("开始", True), ("取消", False)]):
+        return _execute_and_print(request)
+    print("未运行任何评测。")
+    return 0
 
 
 def build_interactive_request(
@@ -875,6 +1159,8 @@ def _print_run_summary(
     print(f"Judge 模型：{judge_name}")
     print(f"Judge API 凭据：{'已配置' if isinstance(judge_key, str) and resolver.has(judge_key) else '缺失'}")
     print(f"并发数：{request.concurrency}")
+    if request.concurrency > 1:
+        print("停止提示：并发大于 1 时，已排队的 Case 仍可能完成；严格停止请使用并发 1。")
     print(f"错误处理：{'继续运行' if request.continue_on_error else '立即停止'}")
     print(f"运行模式：{'Dry Run（不调用真实 API）' if request.dry_run else '真实 API 运行'}")
     if request.dry_run:
@@ -885,29 +1171,81 @@ def _print_run_summary(
     print(f"输出位置：{request.results_root}")
 
 
+def _print_stage_request_summary(
+    definition: EvalDefinition,
+    request: EvalRunRequest,
+    target_profile: ProviderProfile | None,
+    judge_profile: ProviderProfile | None,
+    stage_plan: object | None,
+) -> None:
+    """Chinese confirmation for stage-scoped requests without hidden API work."""
+    labels = {
+        EvalExecutionMode.FULL: "完整运行（Target + Judge）",
+        EvalExecutionMode.TARGET_ONLY: "仅 Target",
+        EvalExecutionMode.JUDGE_ONLY: "仅 Judge（复用历史 Target）",
+        EvalExecutionMode.RESUME: "继续运行（仅补缺失阶段）",
+    }
+    target_count = len(request.case_ids)
+    judge_count = len(request.case_ids)
+    if stage_plan is not None:
+        target_count = len(getattr(stage_plan, "target_cases", ()))
+        judge_count = len(getattr(stage_plan, "judge_cases", ()))
+    elif request.mode is EvalExecutionMode.TARGET_ONLY:
+        judge_count = 0
+    print("\n运行确认\n" + "-" * 40)
+    print(f"方式：{labels[request.mode]}")
+    print(f"Eval：{definition.eval_id}")
+    print(f"Cases：{len(request.case_ids)} / {len(definition.cases)}")
+    if request.source_run_dir is not None:
+        print(f"来源运行：{request.source_run_dir}")
+    print(f"计划调用：Target {target_count}，Judge {judge_count}")
+    if target_count:
+        target_name = request.resume_target_model or (
+            target_profile.target_model if target_profile else None
+        ) or "将在预检查时解析"
+        print(f"Target：{target_profile.name if target_profile else request.target_profile}")
+        print(f"Target 模型：{target_name}")
+    else:
+        print("Target：已有结果，不调用 API")
+    if judge_count:
+        judge_name = request.resume_judge_model or (
+            judge_profile.judge_model if judge_profile else None
+        ) or "将在预检查时解析"
+        print(f"Judge：{judge_profile.name if judge_profile else request.judge_profile}")
+        print(f"Judge 模型：{judge_name}")
+    else:
+        print("Judge：无需执行")
+    if request.mode is EvalExecutionMode.RESUME:
+        print("Resume 将继续使用原运行的 Provider 配置；如需更换 Judge，请使用 JUDGE_ONLY。")
+    print(f"并发数：{request.concurrency}")
+    if request.concurrency > 1:
+        print("停止提示：并发大于 1 时，已排队的 Case 仍可能完成；严格停止请使用并发 1。")
+    print(f"运行模式：{'Dry Run（不调用真实 API）' if request.dry_run else '真实 API 运行'}")
+    print(f"输出位置：{request.results_root}")
+
+
+def _print_stage_plan(stage_plan: object) -> None:
+    print("\nCase 执行计划")
+    for item in getattr(stage_plan, "cases", ()):
+        if item.run_target:
+            action = "TARGET → JUDGE"
+        elif item.run_judge:
+            action = "JUDGE"
+        else:
+            action = "SKIP"
+        print(f"  {item.case_id}  {action} — {item.reason}")
+
+
 def _interactive_case_selection(definition: EvalDefinition, results_root: Path) -> list[str]:
     modes = [
         ("全部 Cases", "all"),
         ("单个 Case", "single"),
         ("选择多个 Cases", "multiple"),
         ("Case 范围", "range"),
-        ("上次运行失败的 Cases", "failed"),
-        ("上次运行错误的 Cases", "errors"),
-        ("上次运行未完成的 Cases", "incomplete"),
     ]
     mode = _choose("请选择要运行的 Cases", modes)
     if mode == "all":
         return [case.case_id for case in definition.cases]
-    if mode in {"failed", "errors", "incomplete"}:
-        candidates = [
-            run for run in discover_runs(results_root)
-            if run.eval_id in {None, definition.eval_id}
-            and (run.failed_case_ids or run.error_case_ids or run.incomplete_case_ids)
-        ]
-        if not candidates:
-            raise EvalConsoleError("该 Eval 没有包含 FAIL、ERROR 或 INCOMPLETE Case 的历史运行。")
-        run = _choose("请选择历史运行", [(_run_label(item), item) for item in candidates])
-        return list(failed_case_ids(run.run_dir, mode))
     _print_cases(definition)
     if mode == "single":
         value = input("\n请输入一个 Case 位置或 Case ID：").strip()
@@ -930,86 +1268,55 @@ def _interactive_case_selection(definition: EvalDefinition, results_root: Path) 
 
 
 def _interactive_profiles(profiles_file: Path) -> tuple[ProviderProfile, ProviderProfile]:
-    profiles = discover_provider_profiles(profiles_file)
-    targets = [profile for profile in profiles if profile.supports_target]
-    judges = [profile for profile in profiles if profile.supports_judge]
-    if not targets or not judges:
+    return _interactive_profile(profiles_file, "target"), _interactive_profile(profiles_file, "judge")
+
+
+def _interactive_profile(profiles_file: Path, role: str) -> ProviderProfile:
+    profiles = [
+        profile
+        for profile in discover_provider_profiles(profiles_file)
+        if (profile.supports_target if role == "target" else profile.supports_judge)
+    ]
+    if not profiles:
         raise EvalConsoleError(
-            f"未找到可用的 Target / Judge Profile：{profiles_file}。"
+            f"未找到可用的 {role.title()} Profile：{profiles_file}。"
             "请在控制台中选择“配置 Provider”。"
         )
-    target = _choose(
-        "请选择 Target 模型 / Provider",
-        [(_profile_label(profile, "target"), profile) for profile in targets],
-    )
-    judge = _choose(
-        "请选择 Judge",
-        [(_profile_label(profile, "judge"), profile) for profile in judges],
-    )
-    return target, judge
-
-
-def _interactive_rerun_failed(profiles_file: Path, results_root: Path, debug: bool) -> int:
-    candidates = [
-        run
-        for run in discover_runs(results_root)
-        if run.failed_case_ids or run.error_case_ids or run.incomplete_case_ids
-    ]
-    if not candidates:
-        print("未找到包含 FAIL、ERROR 或 INCOMPLETE Case 的历史运行。")
-        return 0
-    selected = _choose("请选择历史运行", [(_run_label(item), item) for item in candidates])
-    mode = _choose(
-        "重跑范围",
-        [
-            ("FAIL + ERROR + INCOMPLETE Cases", "failed-and-errors"),
-            ("仅 FAIL Cases", "failed"),
-            ("仅 ERROR Cases", "errors"),
-            ("仅 INCOMPLETE Cases", "incomplete"),
-        ],
-    )
-    case_ids = failed_case_ids(selected.run_dir, mode)
-    definition = find_eval(selected.eval_id or discover_evals()[0].eval_id)
-    target, judge = _interactive_profiles(profiles_file)
-    request = EvalRunRequest(
-        eval_id=definition.eval_id,
-        case_ids=case_ids,
-        target_profile=target.name,
-        judge_profile=judge.name,
-        profiles_file=profiles_file,
-        results_root=results_root,
-        allow_dirty_debug=_yes_no("如有需要，允许在有未提交修改的工作区进行调试运行", default=False),
-        debug=debug,
-    )
-    return _execute_and_print(request)
+    label = "请选择 Target 模型 / Provider" if role == "target" else "请选择 Judge"
+    return _choose(label, [(_profile_label(profile, role), profile) for profile in profiles])
 
 
 def _execute_and_print(request: EvalRunRequest) -> int:
     target, judge, target_plan, judge_plan = preflight_request(request)
     print("\n运行前检查")
-    print(f"  [通过] Target：{target_plan['provider']} / {target_plan['requested_model']}")
-    print(f"  [通过] Judge：{judge_plan['provider']} / {judge_plan['requested_model']}")
+    _print_stage_preflight("Target", target_plan)
+    _print_stage_preflight("Judge", judge_plan)
     print(f"  [通过] Cases：已选择 {len(request.case_ids)} 个")
     if request.dry_run:
         outcome = execute_request(request, target_provider=target, judge_provider=judge)
         print("\nDRY RUN 完成：配置有效，未调用真实 API。")
-        print(f"预计执行：{len(request.case_ids)} 个 Cases；真实运行预计约 {len(request.case_ids) * 2} 次 API 调用")
+        print(
+            "预计 API 调用：Target " + str(outcome.api_calls["target"])
+            + "，Judge " + str(outcome.api_calls["judge"])
+        )
         print(f"输出位置：{outcome.run_dir}")
         return 0
     print("\n正在运行……每个 Case 完成后都会保存进度。")
     activity = _ActivityReporter()
     try:
-        outcome = execute_request(
-            request,
-            target_provider=target,
-            judge_provider=judge,
-            progress=activity.finish,
-            activity=activity.start,
-        )
+        with _GracefulStop(request.concurrency) as stop:
+            outcome = execute_request(
+                request,
+                target_provider=target,
+                judge_provider=judge,
+                progress=activity.finish,
+                activity=activity.start,
+                should_stop=lambda: stop.requested,
+            )
     finally:
         activity.close()
     _print_outcome(outcome)
-    return 0 if outcome.summary and outcome.summary.get("completion_status") == "COMPLETED" else 2
+    return 0 if outcome.summary and outcome.summary.get("completion_status") in {"COMPLETED", "TARGET_COMPLETE"} else 2
 
 
 def _case_ids_from_args(args: argparse.Namespace, definition: EvalDefinition) -> list[str]:
@@ -1022,11 +1329,14 @@ def _case_ids_from_args(args: argparse.Namespace, definition: EvalDefinition) ->
 
 
 def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[str]) -> EvalRunRequest:
+    mode = _execution_mode_from_args(args)
     target_profile = args.target_profile or args.profile
     judge_profile = args.judge_profile or args.profile
-    if not target_profile or not judge_profile:
+    requires_target = mode in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY}
+    requires_judge = mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY}
+    if (requires_target and not target_profile) or (requires_judge and not judge_profile):
         raise EvalConsoleError(
-            "Choose profiles with --profile, or provide both --target-profile and --judge-profile."
+            "请使用 --profile，或按所选模式提供所需的 --target-profile / --judge-profile。"
         )
     return EvalRunRequest(
         eval_id=eval_id,
@@ -1043,7 +1353,42 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
         target_model_override=getattr(args, "target_model", None),
         judge_model_override=getattr(args, "judge_model", None),
         continue_on_error=not getattr(args, "stop_on_error", False),
+        mode=mode,
+        source_run_dir=(
+            args.source_run.expanduser().resolve()
+            if getattr(args, "source_run", None) is not None
+            else None
+        ),
+        judge_selector=_judge_selector_from_args(args),
     )
+
+
+def _execution_mode_from_args(args: argparse.Namespace) -> EvalExecutionMode:
+    value = getattr(args, "execution_mode", "full")
+    return {
+        "full": EvalExecutionMode.FULL,
+        "target-only": EvalExecutionMode.TARGET_ONLY,
+        "judge-only": EvalExecutionMode.JUDGE_ONLY,
+        "resume": EvalExecutionMode.RESUME,
+    }[value]
+
+
+def _judge_selector_from_args(args: argparse.Namespace) -> JudgeCaseSelector:
+    value = getattr(args, "judge_selector", "selected")
+    return {
+        "all-target": JudgeCaseSelector.ALL_TARGET,
+        "judge-error": JudgeCaseSelector.JUDGE_ERROR,
+        "judge-missing": JudgeCaseSelector.JUDGE_MISSING,
+        "judge-error-or-missing": JudgeCaseSelector.JUDGE_ERROR_OR_MISSING,
+        "selected": JudgeCaseSelector.SELECTED,
+    }[value]
+
+
+def _print_stage_preflight(label: str, plan: dict[str, object]) -> None:
+    if not plan.get("enabled"):
+        print(f"  [跳过] {label}：本次模式无需执行")
+        return
+    print(f"  [通过] {label}：{plan['provider']} / {plan['requested_model']}")
 
 
 def _result_label(phase: str, record: dict[str, object]) -> str:
@@ -1072,6 +1417,9 @@ def _chinese_error_message(error: BaseException) -> str:
 
 
 def _duration_seconds(record: dict[str, object]) -> float | None:
+    saved = record.get("duration_seconds")
+    if isinstance(saved, (int, float)) and not isinstance(saved, bool):
+        return float(saved)
     start = record.get("started_at") or record.get("evaluated_at")
     end = record.get("completed_at")
     if not isinstance(start, str) or not isinstance(end, str):
@@ -1150,6 +1498,16 @@ def _print_history(runs: list[HistoricalRun]) -> None:
             f"FAIL {len(run.failed_case_ids)}，ERROR {len(run.error_case_ids)}，"
             f"INCOMPLETE {len(run.incomplete_case_ids)} [{run.state}]"
         )
+        source = run.source_target_run_id or "当前 Run"
+        print(
+            f"     初始方式={run.mode}；来源 Target={source}；"
+            f"Target 模型={run.target_model or '未知'}；"
+            f"API 调用 Target={run.target_api_calls} / Judge={run.judge_api_calls}"
+        )
+        print(
+            f"     Target：{run.target_successes} SUCCESS / {run.target_errors} ERROR / {run.target_missing} MISSING；"
+            f"Judge：{run.judge_completed} DONE / {run.judge_errors} ERROR / {run.judge_missing} MISSING"
+        )
         print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
 
 
@@ -1184,7 +1542,7 @@ def _profile_label(profile: ProviderProfile, role: str) -> str:
 
 def _run_label(run: HistoricalRun) -> str:
     return (
-        f"{run.run_id}（FAIL {len(run.failed_case_ids)}，"
+        f"{run.run_id} [初始 {run.mode}]（FAIL {len(run.failed_case_ids)}，"
         f"ERROR {len(run.error_case_ids)}，INCOMPLETE {len(run.incomplete_case_ids)}）"
     )
 

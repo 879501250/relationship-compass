@@ -20,9 +20,9 @@ if str(SCRIPTS) not in sys.path:
 import run_model_evals as runner  # noqa: E402
 from eval_console.cli import _ActivityReporter, _result_label  # noqa: E402
 from eval_console.discovery import discover_evals, discover_provider_profiles, discover_runs  # noqa: E402
-from eval_console.models import EvalRunRequest  # noqa: E402
+from eval_console.models import CURRENT_CONSOLE_SCHEMA_VERSION, EvalRunRequest  # noqa: E402
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
-from eval_console.service import execute_request, failed_case_ids, validate_request  # noqa: E402
+from eval_console.service import execute_request, validate_request  # noqa: E402
 
 
 class RecordingProvider:
@@ -355,14 +355,26 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
                 repository_sha="a" * 40,
                 repository_dirty=False,
             )
+            self.assertEqual(discover_runs(results_root), [])
+            metadata = runner.load_json_object(run_dir / "run.json")
+            metadata["origin_mode"] = "FULL"
+            metadata["console"] = {
+                "schema_version": CURRENT_CONSOLE_SCHEMA_VERSION,
+                "origin_mode": "FULL",
+                "eval_id": discover_evals()[0].eval_id,
+                "selected_case_ids": [record["case_id"] for record in prepared],
+                "selected_cases": len(prepared),
+                "total_eval_cases": len(discover_evals()[0].cases),
+                "target_profile": "fake",
+                "judge_profile": "fake",
+                "target_model": metadata["target"]["requested_model"],
+                "judge_model": None,
+            }
+            runner.write_json(run_dir / "run.json", metadata)
             history = discover_runs(results_root)
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0].state, "INCOMPLETE")
             self.assertEqual(history[0].incomplete_case_ids, tuple(record["case_id"] for record in prepared))
-            self.assertEqual(
-                failed_case_ids(run_dir, "failed-and-errors"),
-                tuple(record["case_id"] for record in prepared),
-            )
 
     def test_console_labels_failed_judgment_and_non_tty_waits(self) -> None:
         self.assertEqual(
