@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -534,7 +536,8 @@ class StageDecouplingTests(unittest.TestCase):
             history = discover_runs(root / "results")
             self.assertEqual(len(history), 1)
             self.assertIsInstance(history[0], HistoricalRun)
-            with mock.patch(
+            output = io.StringIO()
+            with redirect_stdout(output), mock.patch(
                 "eval_console.cli._choose",
                 side_effect=[history[0], "auto", True, "start"],
             ), mock.patch(
@@ -552,6 +555,7 @@ class StageDecouplingTests(unittest.TestCase):
                     EvalExecutionMode.RESUME,
                 )
             self.assertEqual(result, 0)
+            self.assertIn("运行确认", output.getvalue())
             request = execute.call_args.args[0]
             self.assertEqual(request.target_profile, "fake")
             self.assertEqual(request.judge_profile, "fake")
@@ -664,8 +668,10 @@ class StageDecouplingTests(unittest.TestCase):
         self.assertEqual(_request_from_args(default_args, definition.eval_id, [definition.cases[0].case_id]).mode, EvalExecutionMode.FULL)
         resume_args = build_parser().parse_args(["resume", "--from-run", "C:/tmp/source"])
         self.assertEqual(resume_args.command, "resume")
-        with self.assertRaises(SystemExit):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
             build_parser().parse_args(["rerun-failed"])
+        self.assertIn("invalid choice", stderr.getvalue())
 
 
 if __name__ == "__main__":
