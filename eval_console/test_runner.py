@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -58,6 +60,8 @@ class TestSuiteResult:
     duration_seconds: float
     details: tuple[str, ...] = ()
     timed_out: bool = False
+    last_active_test: str | None = None
+    recent_output: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -162,7 +166,7 @@ class TestSuiteRunner:
             "--top-level-directory",
             ".",
         ]
-        return self._run_command(directory, label, command)
+        return self._run_command(directory, label, command, activity_suite=directory)
 
     def _run_contract(self) -> TestSuiteResult:
         if self.contract_main is not None:
@@ -210,20 +214,38 @@ class TestSuiteRunner:
         command: Sequence[str],
         *,
         completed_test_count: int | None = None,
+        activity_suite: str | None = None,
     ) -> TestSuiteResult:
         started = time.perf_counter()
         timeout_seconds = self.suite_timeouts[key]
+        last_active: str | None = None
         try:
-            outcome = _run_process(command, self.root, timeout_seconds)
+            if activity_suite is None:
+                outcome = _run_process(command, self.root, timeout_seconds)
+            else:
+                with tempfile.TemporaryDirectory(prefix="relationship-compass-test-") as directory:
+                    activity_file = Path(directory) / "activity.json"
+                    outcome = _run_process(
+                        [
+                            *command,
+                            "--activity-file",
+                            str(activity_file),
+                            "--suite",
+                            activity_suite,
+                        ],
+                        self.root,
+                        timeout_seconds,
+                    )
+                    last_active = _read_last_active_test(activity_file)
         except OSError as exc:
             return TestSuiteResult(
                 key, label, 0, 0, 1, time.perf_counter() - started,
                 (f"无法启动测试进程：{exc}",),
             )
         duration = time.perf_counter() - started
+        recent_output = _recent_output(outcome.output)
+        last_active = last_active or _last_active_test(outcome.output)
         if outcome.timed_out:
-            last_active = _last_active_test(outcome.output)
-            recent_output = _recent_output(outcome.output)
             diagnostics = [
                 f"测试超时：超过 {timeout_seconds:.0f} 秒仍未完成。",
                 f"清理等待：最多 {PROCESS_CLEANUP_GRACE_SECONDS:.0f} 秒。",
@@ -245,6 +267,8 @@ class TestSuiteRunner:
                 duration,
                 tuple(diagnostics),
                 timed_out=True,
+                last_active_test=last_active,
+                recent_output=recent_output,
             )
         reported = _reported_native_result(outcome.output)
         tests_run = reported[0] if reported is not None else _reported_test_count(outcome.output) or completed_test_count or 0
@@ -252,7 +276,17 @@ class TestSuiteRunner:
         if outcome.returncode and failures == 0 and errors == 0:
             errors = 1
         details = () if outcome.returncode == 0 else _subprocess_details(outcome.output)
-        return TestSuiteResult(key, label, tests_run, failures, errors, duration, details)
+        return TestSuiteResult(
+            key,
+            label,
+            tests_run,
+            failures,
+            errors,
+            duration,
+            details,
+            last_active_test=last_active,
+            recent_output=recent_output,
+        )
 
 
 class TerminalTestReporter:
@@ -359,7 +393,7 @@ def _run_process(command: Sequence[str], root: Path, timeout_seconds: float) -> 
         stdout, stderr = process.communicate(timeout=timeout_seconds)
         return _SubprocessOutcome(process.returncode or 0, _join_output(stdout, stderr), False)
     except subprocess.TimeoutExpired as exc:
-        _terminate_process_tree(process)
+        _terminate_managed_processes(process)
         output_parts: list[object] = [exc.stdout, exc.stderr]
         cleanup_incomplete = False
         try:
@@ -367,7 +401,7 @@ def _run_process(command: Sequence[str], root: Path, timeout_seconds: float) -> 
             output_parts.extend((stdout, stderr))
         except subprocess.TimeoutExpired as cleanup_exc:
             output_parts.extend((cleanup_exc.stdout, cleanup_exc.stderr))
-            _force_terminate_process_tree(process)
+            _force_terminate_managed_processes(process)
             try:
                 stdout, stderr = process.communicate(timeout=PROCESS_FINAL_DRAIN_SECONDS)
                 output_parts.extend((stdout, stderr))
@@ -382,17 +416,17 @@ def _run_process(command: Sequence[str], root: Path, timeout_seconds: float) -> 
             cleanup_incomplete,
         )
     except KeyboardInterrupt:
-        _terminate_process_tree(process)
+        _terminate_managed_processes(process)
         try:
             process.communicate(timeout=PROCESS_CLEANUP_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
-            _force_terminate_process_tree(process)
+            _force_terminate_managed_processes(process)
             _close_process_pipes(process)
         raise
 
 
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Request tree termination; output draining remains bounded by the caller."""
+def _terminate_managed_processes(process: subprocess.Popen[str]) -> None:
+    """Request cleanup for the managed process group or Windows process tree."""
     if process.poll() is not None:
         return
     if os.name == "nt":
@@ -402,8 +436,10 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-def _force_terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    """Escalate a tree shutdown without introducing an unbounded wait."""
+
+
+def _force_terminate_managed_processes(process: subprocess.Popen[str]) -> None:
+    """Escalate managed-process cleanup without introducing an unbounded wait."""
     if process.poll() is not None:
         return
     if os.name == "nt":
@@ -420,7 +456,7 @@ def _force_terminate_process_tree(process: subprocess.Popen[str]) -> None:
 
 
 def _run_taskkill(pid: int) -> None:
-    """Run Windows taskkill with the same bounded cleanup guarantees as suites."""
+    """Ask Windows taskkill to terminate the managed process tree within a bound."""
     taskkill = subprocess.Popen(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
         stdout=subprocess.DEVNULL,
@@ -479,6 +515,16 @@ def _reported_test_count(output: str) -> int | None:
 def _last_active_test(output: str) -> str | None:
     matches = re.findall(r"__RELATIONSHIP_COMPASS_TEST_ACTIVE__\s+(.+)", output)
     return matches[-1].strip() if matches else None
+
+
+def _read_last_active_test(activity_file: Path) -> str | None:
+    """Read the final activity marker without relying on suite stdout/stderr pipes."""
+    try:
+        payload = json.loads(activity_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    test_id = payload.get("test_id") if isinstance(payload, dict) else None
+    return test_id.strip() if isinstance(test_id, str) and test_id.strip() else None
 
 
 def _recent_output(output: str) -> str | None:

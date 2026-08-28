@@ -7,8 +7,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+
+from eval_console.test_runner import TestSuiteRunner
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,6 +76,65 @@ class EvalRunnerTests(unittest.TestCase):
             self.assertNotEqual(executed.returncode, 0)
             self.assertIn("behavioral evaluation NOT RUN", executed.stdout)
             self.assertFalse(results_root.exists())
+
+    def test_timeout_reports_activity_file_test_from_a_ready_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = ROOT / "tests" / "fixtures" / "process" / "hanging_activity_fixture.py"
+            ready_file = Path(temp_dir) / "ready.json"
+            release_file = Path(temp_dir) / "release"
+            result: dict[str, object] = {}
+            failures: list[BaseException] = []
+            runner = TestSuiteRunner(ROOT, suite_timeouts={"unit": 3})
+
+            def run_fixture() -> None:
+                try:
+                    result["suite"] = runner._run_command(
+                        "unit",
+                        "单元测试",
+                        [
+                            sys.executable,
+                            "-B",
+                            str(fixture),
+                            "--ready-file",
+                            str(ready_file),
+                            "--release-file",
+                            str(release_file),
+                        ],
+                        activity_suite="unit",
+                    )
+                except BaseException as exc:  # pragma: no cover - assertion below reports setup failure.
+                    failures.append(exc)
+
+            worker = threading.Thread(target=run_fixture, daemon=True)
+            worker.start()
+            try:
+                ready = self._wait_for_json(ready_file)
+                self.assertEqual(ready["test_id"], "fixtures.activity.HangTests.test_hang")
+                release_file.write_text("release", encoding="utf-8")
+                worker.join(timeout=8)
+                self.assertFalse(worker.is_alive(), "TEST FIXTURE SETUP FAILED: timeout harness did not return")
+                self.assertFalse(failures, f"TEST FIXTURE SETUP FAILED: {failures!r}")
+                timeout = result["suite"]
+            finally:
+                release_file.write_text("release", encoding="utf-8")
+                worker.join(timeout=8)
+
+        self.assertTrue(timeout.timed_out)
+        self.assertEqual(timeout.last_active_test, "fixtures.activity.HangTests.test_hang")
+        self.assertIn("HangTests.test_hang", "\n".join(timeout.details))
+
+    @staticmethod
+    def _wait_for_json(path: Path, timeout_seconds: float = 5.0) -> dict[str, object]:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(0.02)
+                continue
+            if isinstance(payload, dict):
+                return payload
+        raise AssertionError(f"TEST FIXTURE SETUP FAILED: did not receive ready marker at {path}")
 
 
 if __name__ == "__main__":

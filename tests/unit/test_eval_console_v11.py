@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -40,6 +41,7 @@ from eval_console.models import EvalRunRequest, ProviderProfile  # noqa: E402
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
 from eval_console.secrets import SecretResolver  # noqa: E402
 from eval_console.test_runner import (  # noqa: E402
+    DEFAULT_SUITE_TIMEOUTS,
     TerminalTestReporter,
     TestRunResult,
     TestSuiteRequest,
@@ -49,9 +51,10 @@ from eval_console.test_runner import (  # noqa: E402
     PROCESS_FINAL_DRAIN_SECONDS,
     _SubprocessOutcome,
     _run_process,
-    _terminate_process_tree,
+    _terminate_managed_processes,
 )
 from package_skill import build_zip, validate_package  # noqa: E402
+import validate_skill  # noqa: E402
 
 
 class FakeTestSuiteRunner(TestSuiteRunner):
@@ -129,6 +132,78 @@ class TestRunnerTests(unittest.TestCase):
         self.assertEqual(result.status, "ERROR")
         self.assertIn("test_knowledge_register", "\n".join(result.suites[0].details))
 
+    def test_timeout_prefers_activity_file_and_cleans_its_temporary_directory(self) -> None:
+        activity_paths: list[Path] = []
+
+        def timed_out_process(command: list[str], *unused: object) -> _SubprocessOutcome:
+            activity_file = Path(command[command.index("--activity-file") + 1])
+            activity_file.write_text(
+                json.dumps(
+                    {
+                        "suite": "unit",
+                        "test_id": "tests.unit.test_hang.ActivityTests.test_hang",
+                        "started_at": "2026-08-28T00:00:00Z",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            activity_paths.append(activity_file)
+            return _SubprocessOutcome(
+                1,
+                "__RELATIONSHIP_COMPASS_TEST_ACTIVE__ stdout-fallback-test\n",
+                True,
+            )
+
+        with mock.patch("eval_console.test_runner._run_process", side_effect=timed_out_process):
+            result = TestSuiteRunner(ROOT, suite_timeouts={"unit": 1}).run(
+                TestSuiteRequest(unit=True, integration=False, contract=False)
+            )
+
+        timed_out = result.suites[0]
+        self.assertTrue(timed_out.timed_out)
+        self.assertEqual(timed_out.last_active_test, "tests.unit.test_hang.ActivityTests.test_hang")
+        self.assertIn("ActivityTests.test_hang", "\n".join(timed_out.details))
+        self.assertEqual(len(activity_paths), 1)
+        self.assertFalse(activity_paths[0].parent.exists())
+
+    def test_unittest_wrapper_records_the_last_active_test_in_an_activity_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_root = Path(temp_dir)
+            (test_root / "test_activity.py").write_text(
+                "import unittest\n"
+                "class ActivityTests(unittest.TestCase):\n"
+                "    def test_fast(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            activity_file = test_root / "activity.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(ROOT / "scripts" / "run_unittest_suite.py"),
+                    "--start-directory",
+                    str(test_root),
+                    "--top-level-directory",
+                    str(test_root),
+                    "--activity-file",
+                    str(activity_file),
+                    "--suite",
+                    "unit",
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            activity = json.loads(activity_file.read_text(encoding="utf-8"))
+            self.assertEqual(activity["suite"], "unit")
+            self.assertEqual(activity["test_id"], "test_activity.ActivityTests.test_fast")
+            self.assertIn("started_at", activity)
+
     def test_process_timeout_terminates_the_child_process(self) -> None:
         process = mock.Mock()
         process.returncode = 1
@@ -137,7 +212,7 @@ class TestRunnerTests(unittest.TestCase):
             ("", ""),
         ]
         with mock.patch("eval_console.test_runner.subprocess.Popen", return_value=process), mock.patch(
-            "eval_console.test_runner._terminate_process_tree"
+            "eval_console.test_runner._terminate_managed_processes"
         ) as terminate:
             outcome = _run_process(["python", "-V"], ROOT, 0.1)
         self.assertTrue(outcome.timed_out)
@@ -149,44 +224,98 @@ class TestRunnerTests(unittest.TestCase):
 
     def test_timeout_cleanup_is_bounded_when_detached_descendant_holds_pipe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            descendant_pid = Path(temp_dir) / "descendant.pid"
-            child_code = (
-                "import os, sys, time\n"
-                "from pathlib import Path\n"
-                "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8')\n"
-                "time.sleep(30)\n"
-            )
-            parent_code = (
-                "import os, subprocess, sys, time\n"
-                f"child_code = {child_code!r}\n"
-                "kwargs = {}\n"
-                "if os.name == 'nt':\n"
-                "    kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP\n"
-                "else:\n"
-                "    kwargs['start_new_session'] = True\n"
-                f"subprocess.Popen([sys.executable, '-c', child_code, {str(descendant_pid)!r}], **kwargs)\n"
-                "time.sleep(0.2)\n"
-            )
-            started = time.perf_counter()
+            fixture = ROOT / "tests" / "fixtures" / "process" / "detached_pipe_holder.py"
+            pid_file = Path(temp_dir) / "descendant.json"
+            ready_file = Path(temp_dir) / "ready.json"
+            release_file = Path(temp_dir) / "release"
+            result: dict[str, _SubprocessOutcome] = {}
+            failures: list[BaseException] = []
+
+            def run_fixture() -> None:
+                try:
+                    result["outcome"] = _run_process(
+                        [
+                            sys.executable,
+                            "-B",
+                            str(fixture),
+                            "--pid-file",
+                            str(pid_file),
+                            "--ready-file",
+                            str(ready_file),
+                            "--release-file",
+                            str(release_file),
+                        ],
+                        ROOT,
+                        3.0,
+                    )
+                except BaseException as exc:  # pragma: no cover - assertion below reports setup failure.
+                    failures.append(exc)
+
+            worker = threading.Thread(target=run_fixture, daemon=True)
+            worker.start()
+            child_pid: int | None = None
             try:
-                outcome = _run_process([sys.executable, "-B", "-c", parent_code], ROOT, 1.0)
-                elapsed = time.perf_counter() - started
+                ready = self._wait_for_json(ready_file)
+                child_pid = int(ready["child_pid"])
+                self.assertEqual(json.loads(pid_file.read_text(encoding="utf-8")), ready)
+                release_file.write_text("release", encoding="utf-8")
+                worker.join(timeout=12)
+                self.assertFalse(worker.is_alive(), "TEST FIXTURE SETUP FAILED: timeout harness did not return")
+                self.assertFalse(failures, f"TEST FIXTURE SETUP FAILED: {failures!r}")
+                outcome = result["outcome"]
                 self.assertTrue(outcome.timed_out)
                 self.assertTrue(outcome.cleanup_incomplete)
-                self.assertLess(
-                    elapsed,
-                    1.0 + PROCESS_CLEANUP_GRACE_SECONDS + PROCESS_FINAL_DRAIN_SECONDS + 3.0,
-                )
-                self.assertLess(elapsed, 10.0)
-                self.assertTrue(descendant_pid.is_file())
             finally:
-                self._stop_detached_process(descendant_pid)
+                release_file.write_text("release", encoding="utf-8")
+                child_pid = child_pid or self._recorded_child_pid(pid_file)
+                if child_pid is not None:
+                    self._stop_detached_process(child_pid)
+                    self.assertFalse(self._process_is_alive(child_pid), "fixture child process still exists")
+                worker.join(timeout=8)
+                self.assertFalse(worker.is_alive(), "TEST FIXTURE SETUP FAILED: fixture parent did not exit")
 
     @staticmethod
-    def _stop_detached_process(pid_path: Path) -> None:
-        if not pid_path.is_file():
-            return
-        process_id = int(pid_path.read_text(encoding="utf-8"))
+    def _wait_for_json(path: Path, timeout_seconds: float = 5.0) -> dict[str, object]:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                time.sleep(0.02)
+                continue
+            if isinstance(payload, dict):
+                return payload
+        raise AssertionError(f"TEST FIXTURE SETUP FAILED: did not receive ready marker at {path}")
+
+    @staticmethod
+    def _recorded_child_pid(pid_file: Path) -> int | None:
+        try:
+            payload = json.loads(pid_file.read_text(encoding="utf-8"))
+            return int(payload["child_pid"])
+        except (KeyError, OSError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _process_is_alive(process_id: int) -> bool:
+        if os.name == "nt":
+            probe = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {process_id}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+            return probe.returncode == 0 and f'"{process_id}"' in probe.stdout
+        try:
+            os.kill(process_id, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @classmethod
+    def _stop_detached_process(cls, process_id: int) -> None:
         if os.name == "nt":
             try:
                 subprocess.run(
@@ -203,8 +332,11 @@ class TestRunnerTests(unittest.TestCase):
                 os.kill(process_id, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        deadline = time.monotonic() + 2.0
+        while cls._process_is_alive(process_id) and time.monotonic() < deadline:
+            time.sleep(0.02)
 
-    def test_windows_cleanup_uses_taskkill_for_the_process_tree(self) -> None:
+    def test_windows_cleanup_uses_taskkill_for_managed_processes(self) -> None:
         process = mock.Mock()
         process.poll.return_value = None
         process.pid = 1234
@@ -213,7 +345,7 @@ class TestRunnerTests(unittest.TestCase):
         with mock.patch("eval_console.test_runner.os.name", "nt"), mock.patch(
             "eval_console.test_runner.subprocess.Popen", return_value=taskkill_process
         ) as taskkill:
-            _terminate_process_tree(process)
+            _terminate_managed_processes(process)
         taskkill.assert_called_once_with(
             ["taskkill", "/PID", "1234", "/T", "/F"],
             stdout=subprocess.DEVNULL,
@@ -307,6 +439,61 @@ class ConfigurationAndSecretTests(unittest.TestCase):
                         archive.writestr(entry_name, "private")
                     with self.assertRaisesRegex(ValueError, "安全打包校验失败"):
                         validate_package(archive_path)
+
+
+class ValidationRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        validate_skill.ERRORS.clear()
+
+    def tearDown(self) -> None:
+        validate_skill.ERRORS.clear()
+
+    def test_validate_skill_uses_the_shared_test_suite_runner(self) -> None:
+        result = TestRunResult(
+            (
+                suite("unit"),
+                suite("integration"),
+                suite("contract"),
+            ),
+            0.1,
+        )
+        output = io.StringIO()
+        with mock.patch("validate_skill.TestSuiteRunner") as runner, mock.patch("sys.stdout", output):
+            runner.return_value.run.return_value = result
+            validate_skill.validate_automated_test_suites(False)
+        runner.assert_called_once_with(validate_skill.ROOT)
+        runner.return_value.run.assert_called_once_with(TestSuiteRequest())
+        self.assertIn("unit tests: PASS", output.getvalue())
+        self.assertIn("integration tests: PASS", output.getvalue())
+        self.assertIn("contract eval: PASS", output.getvalue())
+        self.assertEqual(validate_skill.ERRORS, [])
+
+    def test_automated_test_entrypoints_share_runner_type_and_timeout_defaults(self) -> None:
+        import run_tests
+
+        self.assertIs(run_tests.TestSuiteRunner, TestSuiteRunner)
+        self.assertIs(validate_skill.TestSuiteRunner, TestSuiteRunner)
+        self.assertEqual(TestSuiteRunner(ROOT).suite_timeouts, DEFAULT_SUITE_TIMEOUTS)
+
+    def test_validate_skill_reports_runner_timeout_with_activity_diagnostics(self) -> None:
+        timeout = TestSuiteResult(
+            "unit",
+            "单元测试",
+            0,
+            0,
+            1,
+            1.0,
+            ("测试超时：超过 1 秒仍未完成。",),
+            timed_out=True,
+            last_active_test="tests.unit.test_hang.ActivityTests.test_hang",
+        )
+        output = io.StringIO()
+        with mock.patch("validate_skill.TestSuiteRunner") as runner, mock.patch("sys.stdout", output):
+            runner.return_value.run.return_value = TestRunResult((timeout,), 1.0)
+            validate_skill.validate_automated_test_suites(False)
+        self.assertIn("unit tests: TIMEOUT", output.getvalue())
+        self.assertIn("last active test: tests.unit.test_hang", output.getvalue())
+        self.assertTrue(validate_skill.ERRORS)
 
 
 class InteractiveRequestTests(unittest.TestCase):

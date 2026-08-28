@@ -9,17 +9,20 @@ import io
 import re
 import json
 import sys
-import unittest
 from math import ceil
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from eval_console.test_runner import TestSuiteRequest, TestSuiteRunner
 from date_utils import normalize_iso8601
 from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
-from run_contract_evals import main as run_contract_evals
 from run_model_evals import (
     ModelEvalError,
     RUNTIME_PROFILES,
@@ -27,8 +30,6 @@ from run_model_evals import (
     validate_result_artifacts,
 )
 
-
-ROOT = Path(__file__).resolve().parents[1]
 ERRORS: list[str] = []
 SKILL_MAX_LINES = 150
 SKILL_MAX_CHARACTERS = 5_000
@@ -514,18 +515,6 @@ def validate_upstream_lock(runtime_only: bool) -> None:
         ERRORS.append("UPSTREAM_LOCK.json must not contain local absolute paths")
 
 
-def validate_evals(runtime_only: bool) -> None:
-    if runtime_only or not (ROOT / "scripts" / "run_contract_evals.py").is_file():
-        return
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output):
-        result = run_contract_evals()
-    if result:
-        ERRORS.append("contract eval validation failed: " + output.getvalue().strip())
-    else:
-        print("contract eval: PASS")
-
-
 def validate_model_eval_definitions(runtime_only: bool) -> None:
     if runtime_only or not (ROOT / "scripts" / "run_model_evals.py").is_file():
         return
@@ -561,19 +550,29 @@ def validate_model_eval_artifacts(runtime_only: bool) -> None:
                     ERRORS.append(f"model eval artifact validation failed: {exc}")
 
 
-def validate_test_suites(runtime_only: bool) -> None:
+def validate_automated_test_suites(runtime_only: bool) -> None:
+    """Run all formal suites through the repository's single bounded supervisor."""
     if runtime_only:
         return
-    for label, directory in (("unit tests", "unit"), ("integration tests", "integration")):
-        suite = unittest.defaultTestLoader.discover(
-            str(ROOT / "tests" / directory), top_level_dir=str(ROOT)
+    labels = {
+        "unit": "unit tests",
+        "integration": "integration tests",
+        "contract": "contract eval",
+    }
+    result = TestSuiteRunner(ROOT).run(TestSuiteRequest())
+    for suite in result.suites:
+        label = labels[suite.key]
+        if suite.passed:
+            print(f"{label}: PASS ({suite.tests_run})")
+            continue
+        print(f"{label}: {suite.status}")
+        if suite.last_active_test:
+            print(f"last active test: {suite.last_active_test}")
+        for detail in suite.details:
+            print(f"  {detail}")
+        ERRORS.append(
+            f"{label} {suite.status}: " + "; ".join(suite.details or ("no detail returned",))
         )
-        stream = io.StringIO()
-        result = unittest.TextTestRunner(stream=stream, verbosity=1).run(suite)
-        if not result.wasSuccessful():
-            ERRORS.append(f"{label} failed: {stream.getvalue().strip()}")
-        else:
-            print(f"{label}: PASS ({result.testsRun})")
 
 
 def validate_policy_parity(runtime_only: bool) -> None:
@@ -605,17 +604,18 @@ def validate_policy_parity(runtime_only: bool) -> None:
                     ERRORS.append(f"checkpoint missing structure: {heading}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
     supported = {"--runtime", "--convergence-only"}
-    unexpected = [arg for arg in sys.argv[1:] if arg not in supported]
+    unexpected = [arg for arg in arguments if arg not in supported]
     if unexpected:
         print(f"ERROR: unsupported arguments: {' '.join(unexpected)}")
         return 2
-    if "--runtime" in sys.argv[1:] and "--convergence-only" in sys.argv[1:]:
+    if "--runtime" in arguments and "--convergence-only" in arguments:
         print("ERROR: --runtime and --convergence-only are mutually exclusive")
         return 2
-    runtime_only = "--runtime" in sys.argv[1:]
-    convergence_only = "--convergence-only" in sys.argv[1:]
+    runtime_only = "--runtime" in arguments
+    convergence_only = "--convergence-only" in arguments
     validate_frontmatter()
     validate_repository_convergence(runtime_only)
     if convergence_only:
@@ -635,10 +635,9 @@ def main() -> int:
     validate_placeholders()
     validate_upstream_lock(runtime_only)
     validate_policy_parity(runtime_only)
-    validate_evals(runtime_only)
     validate_model_eval_definitions(runtime_only)
     validate_model_eval_artifacts(runtime_only)
-    validate_test_suites(runtime_only)
+    validate_automated_test_suites(runtime_only)
     if ERRORS:
         for error in ERRORS:
             print(f"ERROR: {error}")
