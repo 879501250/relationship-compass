@@ -63,11 +63,16 @@
         "temperature_supported": false,
         "top_p_supported": false,
         "seed_supported": false,
-        "max_output_tokens_parameter": "max_tokens"
+        "max_output_tokens_parameter": "max_completion_tokens",
+        "thinking_supported": true,
+        "allowed_thinking_types": ["enabled", "disabled"],
+        "thinking_parameter": "thinking"
       },
       "judge": {
         "model_env": "MOONSHOT_JUDGE_MODEL",
-        "structured_output_mode": "json_object"
+        "structured_output_mode": "json_object",
+        "thinking": "disabled",
+        "max_output_tokens": 4096
       }
     },
     "reference-judge-deepseek-official": {

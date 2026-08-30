@@ -444,8 +444,22 @@ class ProviderProvenanceTests(unittest.TestCase):
                     input_text="input",
                     response_schema={"type": "object"} if role == "judge" else None,
                 )
-                self.assertIn("max_tokens", payload)
-                self.assertNotIn("max_completion_tokens", payload)
+                token_parameter = (
+                    "max_completion_tokens"
+                    if name == "reference-judge-kimi-official"
+                    else "max_tokens"
+                )
+                self.assertIn(token_parameter, payload)
+                self.assertNotIn(
+                    "max_tokens" if token_parameter == "max_completion_tokens" else "max_completion_tokens",
+                    payload,
+                )
+                if name == "reference-judge-kimi-official":
+                    self.assertEqual(plan["thinking"], "disabled")
+                    self.assertEqual(payload["thinking"], {"type": "disabled"})
+                    self.assertEqual(payload[token_parameter], 4096)
+                else:
+                    self.assertNotIn("thinking", payload)
                 if role == "target" or mode == "text_json_fallback":
                     self.assertNotIn("response_format", payload)
                 elif mode == "json_object":

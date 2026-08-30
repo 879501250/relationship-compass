@@ -326,8 +326,45 @@ class ProviderInvalidResponse(ProviderError):
         message: str,
         *,
         code: str = "INVALID_RESPONSE",
+        reported_model: str | None = None,
+        safe_diagnostics: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(message, code=code, retryable=False)
+        super().__init__(
+            message,
+            code=code,
+            retryable=False,
+            reported_model=reported_model,
+        )
+        # This allowlist is deliberately metadata-only. It keeps hidden
+        # reasoning and provider response bodies out of artifacts and logs.
+        allowed = {
+            "http_status",
+            "response_id",
+            "reported_model",
+            "choices_count",
+            "choice_index",
+            "finish_reason",
+            "message_present",
+            "message_keys",
+            "content_present",
+            "content_is_null",
+            "content_type",
+            "content_length",
+            "reasoning_present",
+            "reasoning_length",
+            "usage_present",
+            "input_tokens",
+            "output_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+            "empty_response_reason",
+        }
+        self.safe_diagnostics = {
+            key: value
+            for key, value in (safe_diagnostics or {}).items()
+            if key in allowed
+        }
 
 
 @dataclass(frozen=True)
@@ -341,6 +378,14 @@ class ProviderResult:
     system_fingerprint: str | None = None
     provider_metadata: dict[str, Any] | None = None
     request_envelope_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class HTTPJSONResponse:
+    """A successful HTTP JSON envelope plus status-only transport evidence."""
+
+    payload: dict[str, Any]
+    http_status: int | None
 
 
 class ModelProvider(Protocol):
@@ -889,6 +934,7 @@ def provider_metadata(provider: ModelProvider) -> dict[str, Any]:
             "status": "UNVERIFIED",
         },
         "reasoning_effort": getattr(provider, "reasoning_effort", None),
+        "thinking": getattr(provider, "thinking", None),
         "structured_output_mode": getattr(
             provider, "structured_output_mode", "strict_json_schema"
         ),
@@ -914,6 +960,7 @@ def provider_metadata(provider: ModelProvider) -> dict[str, Any]:
                 "seed": None,
                 "n": 1,
                 "reasoning_effort": getattr(provider, "reasoning_effort", None),
+                "thinking": getattr(provider, "thinking", None),
                 "max_output_tokens": None,
             },
         ),
@@ -950,6 +997,7 @@ def manual_provider_metadata(
             "status": "USER_REPORTED" if model else "UNVERIFIED",
         },
         "reasoning_effort": None,
+        "thinking": None,
         "structured_output_mode": "text_json_fallback"
         if role == "judge"
         else None,
@@ -970,6 +1018,7 @@ def manual_provider_metadata(
             "seed": None,
             "n": 1,
             "reasoning_effort": None,
+            "thinking": None,
             "max_output_tokens": None,
         },
         "pricing": {
@@ -1060,6 +1109,8 @@ def normalize_usage(payload: Any, *, chat: bool = False) -> dict[str, int | None
     details_key = "completion_tokens_details" if chat else "output_tokens_details"
     details = payload.get(details_key)
     reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+    if not isinstance(reasoning, int):
+        reasoning = payload.get("reasoning_tokens")
     input_details_key = "prompt_tokens_details" if chat else "input_tokens_details"
     input_details = payload.get(input_details_key)
     cached = input_details.get("cached_tokens") if isinstance(input_details, dict) else None
@@ -1072,6 +1123,108 @@ def normalize_usage(payload: Any, *, chat: bool = False) -> dict[str, int | None
         else None,
         "reasoning_tokens": reasoning if isinstance(reasoning, int) else None,
         "cached_tokens": cached if isinstance(cached, int) else None,
+    }
+
+
+def _safe_value_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _safe_value_length(value: Any) -> int | None:
+    return len(value) if isinstance(value, (str, list, dict)) else None
+
+
+def chat_response_diagnostics(
+    response: dict[str, Any], *, http_status: int | None = None
+) -> dict[str, Any]:
+    """Extract response structure/usage only; never retain provider content."""
+    choices = response.get("choices")
+    choice_count = len(choices) if isinstance(choices, list) else None
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    message = choice.get("message") if isinstance(choice, dict) else None
+    content_present = "content" in message if isinstance(message, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    reasoning_value: Any = None
+    reasoning_key_present = False
+    if isinstance(message, dict):
+        for key in ("reasoning_content", "reasoning", "thinking"):
+            if key in message:
+                reasoning_key_present = True
+                reasoning_value = message[key]
+                break
+    usage_payload = response.get("usage")
+    usage = normalize_usage(usage_payload, chat=True)
+    return {
+        "http_status": http_status,
+        "response_id": response.get("id") if isinstance(response.get("id"), str) else None,
+        "reported_model": response.get("model") if isinstance(response.get("model"), str) else None,
+        "choices_count": choice_count,
+        "choice_index": 0 if isinstance(choices, list) and choices else None,
+        "finish_reason": (
+            choice.get("finish_reason")
+            if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str)
+            else None
+        ),
+        "message_present": "message" in choice if isinstance(choice, dict) else None,
+        "message_keys": sorted(message) if isinstance(message, dict) else None,
+        "content_present": content_present,
+        "content_is_null": content is None if content_present else None,
+        "content_type": _safe_value_type(content) if content_present else None,
+        "content_length": _safe_value_length(content) if content_present else None,
+        "reasoning_present": reasoning_key_present if isinstance(message, dict) else None,
+        "reasoning_length": _safe_value_length(reasoning_value)
+        if reasoning_key_present
+        else None,
+        "usage_present": isinstance(usage_payload, dict) if "usage" in response else None,
+        "input_tokens": usage["input_tokens"],
+        "output_tokens": usage["output_tokens"],
+        "completion_tokens": (
+            usage_payload.get("completion_tokens")
+            if isinstance(usage_payload, dict)
+            and isinstance(usage_payload.get("completion_tokens"), int)
+            else None
+        ),
+        "reasoning_tokens": usage["reasoning_tokens"],
+        "total_tokens": (
+            usage_payload.get("total_tokens")
+            if isinstance(usage_payload, dict)
+            and isinstance(usage_payload.get("total_tokens"), int)
+            else None
+        ),
+    }
+
+
+def provider_error_artifact_fields(error: ProviderError) -> dict[str, Any]:
+    """Map validated provider metadata to the existing attempt record fields."""
+    diagnostics = getattr(error, "safe_diagnostics", {})
+    if not isinstance(diagnostics, dict):
+        return {}
+    response_id = diagnostics.get("response_id")
+    return {
+        "provider_response_id": response_id,
+        "request_id": response_id,
+        "usage": {
+            "input_tokens": diagnostics.get("input_tokens"),
+            "output_tokens": diagnostics.get("output_tokens"),
+            "reasoning_tokens": diagnostics.get("reasoning_tokens"),
+            "cached_tokens": None,
+        }
+        if diagnostics.get("usage_present") is True
+        else None,
+        "reported_model": error.reported_model or diagnostics.get("reported_model"),
+        "finish_reason": diagnostics.get("finish_reason"),
     }
 
 
@@ -1096,6 +1249,7 @@ def classify_http_error(status: int, body: bytes = b"") -> tuple[str, bool]:
 class HTTPJSONProvider:
     transport = "https_json"
     allowed_max_output_tokens_parameters: frozenset[str] = frozenset()
+    allowed_thinking_parameters: frozenset[str] = frozenset()
 
     def __init__(
         self,
@@ -1108,6 +1262,7 @@ class HTTPJSONProvider:
         declared_upstream_vendor: str | None,
         provenance_type: str,
         reasoning_effort: str | None,
+        thinking: str | None,
         structured_output_mode: str | None,
         structured_output_required: bool,
         capabilities: dict[str, Any],
@@ -1164,6 +1319,21 @@ class HTTPJSONProvider:
                 raise ModelEvalError(
                     f"reasoning_effort {reasoning_effort!r} is not declared supported"
                 )
+        if thinking is not None:
+            if thinking not in {"provider-default", "enabled", "disabled"}:
+                raise ModelEvalError("thinking must be provider-default, enabled, or disabled")
+            if thinking != "provider-default":
+                allowed_thinking = capabilities.get("allowed_thinking_types")
+                if (
+                    capabilities.get("thinking_supported") is not True
+                    or not isinstance(allowed_thinking, list)
+                    or thinking not in allowed_thinking
+                    or capabilities.get("thinking_parameter")
+                    not in self.allowed_thinking_parameters
+                ):
+                    raise ModelEvalError(
+                        f"thinking {thinking!r} is configured but not declared supported"
+                    )
         sampling_values = {
             "temperature": temperature,
             "top_p": top_p,
@@ -1199,6 +1369,12 @@ class HTTPJSONProvider:
         self.declared_upstream_vendor = declared_upstream_vendor
         self.provenance_type = provenance_type
         self.reasoning_effort = reasoning_effort
+        self.thinking = thinking
+        self.thinking_parameter = (
+            capabilities.get("thinking_parameter")
+            if thinking in {"enabled", "disabled"}
+            else None
+        )
         self.structured_output_mode = (
             structured_output_mode if structured_output_required else None
         )
@@ -1225,6 +1401,7 @@ class HTTPJSONProvider:
             "seed": self.seed,
             "n": 1,
             "reasoning_effort": reasoning_effort,
+            "thinking": thinking,
             "max_output_tokens": max_output_tokens,
         }
         self.public_parameters = {
@@ -1232,6 +1409,7 @@ class HTTPJSONProvider:
             "max_retries": max_retries,
             "max_output_tokens": max_output_tokens,
             "max_output_tokens_parameter": max_tokens_parameter,
+            "thinking": thinking,
             "store": False,
             "single_sample": True,
             "strict_model_identity": strict_model_identity,
@@ -1262,6 +1440,7 @@ class HTTPJSONProvider:
                 "status": "UNVERIFIED",
             },
             "reasoning_effort": self.reasoning_effort,
+            "thinking": self.thinking,
             "structured_output_mode": self.structured_output_mode,
             "structured_output_required": self.structured_output_required,
             "capabilities": self.capabilities,
@@ -1280,7 +1459,7 @@ class HTTPJSONProvider:
     def request_envelope_hash(payload: dict[str, Any]) -> str:
         return sha256_bytes(canonical_json_bytes(payload))
 
-    def _request_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request_json(self, payload: dict[str, Any]) -> HTTPJSONResponse:
         request = urllib.request.Request(
             self._url,
             data=canonical_json_bytes(payload),
@@ -1294,13 +1473,20 @@ class HTTPJSONProvider:
             try:
                 with self._urlopen(request, timeout=self.timeout_seconds) as response:
                     body = response.read()
+                    status = getattr(response, "status", None)
+                    if not isinstance(status, int):
+                        getcode = getattr(response, "getcode", None)
+                        status = getcode() if callable(getcode) else None
                 try:
                     decoded = json.loads(body)
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise ProviderInvalidResponse("provider returned invalid JSON") from exc
                 if not isinstance(decoded, dict):
                     raise ProviderInvalidResponse("provider response envelope must be an object")
-                return decoded
+                return HTTPJSONResponse(
+                    payload=decoded,
+                    http_status=status if isinstance(status, int) else None,
+                )
             except urllib.error.HTTPError as exc:
                 body = exc.read(4096)
                 code, retryable = classify_http_error(exc.code, body)
@@ -1360,6 +1546,7 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
         declared_upstream_vendor: str | None = None,
         provenance_type: str | None = None,
         reasoning_effort: str | None = None,
+        thinking: str | None = None,
         structured_output_mode: str | None = "strict_json_schema",
         structured_output_required: bool = True,
         capabilities: dict[str, Any] | None = None,
@@ -1390,6 +1577,7 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
             declared_upstream_vendor=vendor,
             provenance_type=selected_provenance,
             reasoning_effort=reasoning_effort,
+            thinking=thinking,
             structured_output_mode=structured_output_mode,
             structured_output_required=structured_output_required,
             capabilities=capabilities
@@ -1413,6 +1601,8 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
                 "top_p_supported": True,
                 "seed_supported": False,
                 "max_output_tokens_parameter": "max_output_tokens",
+                "thinking_supported": False,
+                "allowed_thinking_types": [],
             },
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
@@ -1439,7 +1629,8 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
             input_text=input_text,
             response_schema=response_schema,
         )
-        result = self._parse_response(self._request_json(payload))
+        response = self._request_json(payload)
+        result = self._parse_response(response.payload, http_status=response.http_status)
         return ProviderResult(
             **{
                 field: getattr(result, field)
@@ -1490,7 +1681,9 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
             payload["seed"] = self.seed
         return payload
 
-    def _parse_response(self, payload: dict[str, Any]) -> ProviderResult:
+    def _parse_response(
+        self, payload: dict[str, Any], *, http_status: int | None = None
+    ) -> ProviderResult:
         if not isinstance(payload, dict):
             raise ProviderInvalidResponse("Responses payload must be an object")
         if payload.get("status") != "completed":
@@ -1562,6 +1755,7 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
     allowed_max_output_tokens_parameters = frozenset(
         {"max_tokens", "max_completion_tokens"}
     )
+    allowed_thinking_parameters = frozenset({"thinking"})
 
     def __init__(
         self,
@@ -1573,6 +1767,7 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
         declared_upstream_vendor: str | None = None,
         provenance_type: str | None = None,
         reasoning_effort: str | None = None,
+        thinking: str | None = None,
         structured_output_mode: str | None = "strict_json_schema",
         structured_output_required: bool = True,
         capabilities: dict[str, Any] | None = None,
@@ -1601,6 +1796,7 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
             declared_upstream_vendor=declared_upstream_vendor,
             provenance_type=selected_provenance,
             reasoning_effort=reasoning_effort,
+            thinking=thinking,
             structured_output_mode=structured_output_mode,
             structured_output_required=structured_output_required,
             capabilities=capabilities
@@ -1616,6 +1812,8 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
                 "top_p_supported": False,
                 "seed_supported": False,
                 "max_output_tokens_parameter": "max_tokens",
+                "thinking_supported": False,
+                "allowed_thinking_types": [],
             },
             timeout_seconds=timeout_seconds,
             max_retries=max_retries,
@@ -1643,7 +1841,7 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
             response_schema=response_schema,
         )
         response = self._request_json(payload)
-        result = self._parse_response(response)
+        result = self._parse_response(response.payload, http_status=response.http_status)
         return ProviderResult(
             **{
                 field: getattr(result, field)
@@ -1689,6 +1887,8 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
                 payload["response_format"] = {"type": "json_object"}
         if self.reasoning_effort is not None:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.thinking_parameter is not None:
+            payload[self.thinking_parameter] = {"type": self.thinking}
         if self.temperature is not None:
             payload["temperature"] = self.temperature
         if self.top_p is not None:
@@ -1697,15 +1897,53 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
             payload["seed"] = self.seed
         return payload
 
-    def _parse_response(self, response: dict[str, Any]) -> ProviderResult:
+    def _parse_response(
+        self, response: dict[str, Any], *, http_status: int | None = None
+    ) -> ProviderResult:
+        diagnostics = chat_response_diagnostics(response, http_status=http_status)
         choices = response.get("choices")
         choice = choices[0] if isinstance(choices, list) and choices else None
         if isinstance(choice, dict) and choice.get("finish_reason") == "content_filter":
             raise ProviderInvalidResponse(
-                "Chat response was blocked by a content filter", code="CONTENT_FILTER"
+                "Chat response was blocked by a content filter",
+                code="CONTENT_FILTER",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
+        if not isinstance(choices, list) or not choices:
+            diagnostics["empty_response_reason"] = "NO_CHOICES"
+            raise ProviderInvalidResponse(
+                "Chat payload has no choices",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
             )
         message = choice.get("message") if isinstance(choice, dict) else None
-        text = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(message, dict):
+            diagnostics["empty_response_reason"] = "MESSAGE_MISSING"
+            raise ProviderInvalidResponse(
+                "Chat payload has no assistant message",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
+        if "content" not in message:
+            diagnostics["empty_response_reason"] = "CONTENT_MISSING"
+            raise ProviderInvalidResponse(
+                "Chat payload has no assistant content",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
+        text = message["content"]
+        if text is None:
+            diagnostics["empty_response_reason"] = "CONTENT_NULL"
+            raise ProviderInvalidResponse(
+                "Chat payload content is null",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
         if isinstance(text, list):
             chunks: list[str] = []
             for block in text:
@@ -1713,16 +1951,32 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
                     "text",
                     "output_text",
                 } or not isinstance(block.get("text"), str):
+                    diagnostics["empty_response_reason"] = "CONTENT_NON_TEXT"
                     raise ProviderInvalidResponse(
-                        "Chat payload contains ambiguous assistant content blocks"
+                        "Chat payload contains non-text assistant content",
+                        code="EMPTY_RESPONSE",
+                        reported_model=diagnostics["reported_model"],
+                        safe_diagnostics=diagnostics,
                     )
                 chunks.append(block["text"])
             text = "".join(chunks)
-        if not isinstance(text, str) or not text.strip():
-            raise ProviderInvalidResponse("Chat payload has empty text output", code="EMPTY_RESPONSE")
-        reported_model = (
-            response.get("model") if isinstance(response.get("model"), str) else None
-        )
+        if not isinstance(text, str):
+            diagnostics["empty_response_reason"] = "CONTENT_NON_TEXT"
+            raise ProviderInvalidResponse(
+                "Chat payload content is not text",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
+        if not text.strip():
+            diagnostics["empty_response_reason"] = "CONTENT_EMPTY_STRING"
+            raise ProviderInvalidResponse(
+                "Chat payload has empty text output",
+                code="EMPTY_RESPONSE",
+                reported_model=diagnostics["reported_model"],
+                safe_diagnostics=diagnostics,
+            )
+        reported_model = diagnostics["reported_model"]
         self._check_reported_model(reported_model)
         return ProviderResult(
             text=text,
@@ -2364,6 +2618,7 @@ def target_attempt_record(
                 "reported_model": exc.reported_model,
             }
         )
+        response_record.update(provider_error_artifact_fields(exc))
     response_record["completed_at"] = utc_now()
     response_record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
     return response_record
@@ -2686,23 +2941,50 @@ def judge_error_diagnostics(
     *,
     parse_error: str | None = None,
     error_code: str | None = None,
+    provider_error: ProviderError | None = None,
 ) -> dict[str, Any]:
     """Persist bounded, secret-safe evidence for judge execution failures."""
     diagnostics: dict[str, Any] = {
-        "parse_error": parse_error,
-        "error_code": error_code,
+        "http_status": None,
         "response_id": result.response_id if result is not None else None,
         "reported_model": result.reported_model if result is not None else None,
+        "choices_count": None,
+        "choice_index": None,
         "finish_reason": result.finish_reason if result is not None else None,
-        "usage": result.usage if result is not None else None,
+        "message_present": None,
+        "message_keys": None,
         "content_present": bool(result and result.text),
-        "content_length": len(result.text) if result is not None else 0,
-        "reasoning_present": bool(
-            result
-            and isinstance(result.provider_metadata, dict)
-            and result.provider_metadata.get("reasoning")
-        ),
+        "content_is_null": None,
+        "content_type": "string" if result is not None else None,
+        "content_length": len(result.text) if result is not None else None,
+        "reasoning_present": None,
+        "reasoning_length": None,
+        "usage_present": result.usage is not None if result is not None else None,
+        "input_tokens": result.usage.get("input_tokens") if result and result.usage else None,
+        "output_tokens": result.usage.get("output_tokens") if result and result.usage else None,
+        "completion_tokens": result.usage.get("output_tokens") if result and result.usage else None,
+        "reasoning_tokens": result.usage.get("reasoning_tokens") if result and result.usage else None,
+        "total_tokens": None,
+        "parse_error": parse_error,
+        "error_code": error_code,
     }
+    if provider_error is not None:
+        safe = getattr(provider_error, "safe_diagnostics", {})
+        if isinstance(safe, dict):
+            diagnostics.update(safe)
+        diagnostics["reported_model"] = (
+            provider_error.reported_model or diagnostics["reported_model"]
+        )
+    diagnostics["usage"] = (
+        {
+            "input_tokens": diagnostics["input_tokens"],
+            "output_tokens": diagnostics["output_tokens"],
+            "reasoning_tokens": diagnostics["reasoning_tokens"],
+            "cached_tokens": None,
+        }
+        if diagnostics["usage_present"] is True
+        else None
+    )
     if result is not None and parse_error is not None:
         diagnostics["raw_excerpt"] = _sanitize_diagnostic_excerpt(result.text)
     return diagnostics
@@ -2711,7 +2993,7 @@ def judge_error_diagnostics(
 def _sanitize_diagnostic_excerpt(value: str, limit: int = 800) -> str:
     excerpt = value[:limit]
     excerpt = re.sub(
-        r"(?i)(authorization|api[_ -]?key|token|secret)\s*[:=]\s*[^\s,;]+",
+        r"(?i)(authorization|api[_ -]?key|token|secret|credential|reasoning(?:_content)?|thinking)\s*[:=]\s*[^\s,;]+",
         r"\1=[REDACTED]",
         excerpt,
     )
@@ -2736,6 +3018,9 @@ def judge_execution_manifest(
         "sut_bundle_hash": metadata.get("sut_bundle_hash", metadata.get("bundle_hash")),
         "sampling_policy": judge_metadata.get("sampling_policy"),
     }
+    # Keep historical artifacts valid while requiring new runs to bind thinking.
+    if "thinking" in judge_metadata:
+        manifest["thinking"] = judge_metadata.get("thinking")
     manifest["execution_hash"] = sha256_bytes(canonical_json_bytes(manifest))
     return manifest
 
@@ -2926,9 +3211,14 @@ def execute_judge(
                         "error_code": exc.code,
                         "retryable": exc.retryable,
                         "reported_model": exc.reported_model,
-                        "diagnostics": judge_error_diagnostics(None, error_code=exc.code),
+                        "diagnostics": judge_error_diagnostics(
+                            None,
+                            error_code=exc.code,
+                            provider_error=exc,
+                        ),
                     }
                 )
+                record.update(provider_error_artifact_fields(exc))
             except ModelEvalError as exc:
                 record.update(
                     {
@@ -3800,18 +4090,23 @@ def validate_provider_manifest(manifest: Any, label: str) -> None:
     ):
         raise ModelEvalError(f"{label} provider configuration is invalid")
     sampling = manifest.get("sampling_policy")
+    legacy_sampling_fields = {
+        "temperature",
+        "top_p",
+        "seed",
+        "n",
+        "reasoning_effort",
+        "max_output_tokens",
+    }
+    sampling_fields = frozenset(sampling) if isinstance(sampling, dict) else frozenset()
     if (
         not isinstance(sampling, dict)
-        or set(sampling)
-        != {
-            "temperature",
-            "top_p",
-            "seed",
-            "n",
-            "reasoning_effort",
-            "max_output_tokens",
+        or sampling_fields not in {
+            frozenset(legacy_sampling_fields),
+            frozenset(legacy_sampling_fields | {"thinking"}),
         }
         or sampling.get("n") != 1
+        or sampling.get("thinking") not in {None, "provider-default", "enabled", "disabled"}
     ):
         raise ModelEvalError(f"{label} sampling policy is invalid")
     recorded_hash = manifest.get("provider_config_hash")
@@ -5308,6 +5603,7 @@ def create_provider(args: argparse.Namespace, *, role: str) -> ModelProvider:
         or config.get("declared_upstream_vendor"),
         "provenance_type": args.provenance_type or config.get("provenance_type"),
         "reasoning_effort": args.reasoning_effort or config.get("reasoning_effort"),
+        "thinking": resolve_provider_setting(args.thinking, config.get("thinking"), None),
         "structured_output_mode": (
             args.structured_output_mode
             or config.get("structured_output_mode")
@@ -5614,6 +5910,7 @@ def provider_execution_plan(
         "max_retries": parameters.get("max_retries"),
         "max_output_tokens": parameters.get("max_output_tokens"),
         "reasoning_effort": manifest.get("reasoning_effort"),
+        "thinking": manifest.get("thinking"),
         "structured_output_mode": manifest.get("structured_output_mode"),
         "structured_output_required": manifest.get("structured_output_required"),
         "network_called": False,
@@ -5638,6 +5935,7 @@ def command_provider_check(args: argparse.Namespace) -> int:
         "model_present",
         "capabilities",
         "reasoning",
+        "thinking",
         "structured_output",
         "sampling",
     ]
@@ -5954,6 +6252,7 @@ def add_provider_arguments(parser: argparse.ArgumentParser, *, judge: bool) -> N
         choices=("verified_direct", "declared_relay", "unverified_relay"),
     )
     parser.add_argument("--reasoning-effort")
+    parser.add_argument("--thinking", choices=("provider-default", "enabled", "disabled"))
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--seed", type=int)

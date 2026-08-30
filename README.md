@@ -337,6 +337,8 @@ python scripts/run_model_evals.py report --run-dir model_evals/results/v<pack-ve
 
 OpenAI provider 从环境变量读取凭证与 target/judge model；缺失时明确 `NOT RUN`，不会伪造结果或 baseline。完整命令、隔离要求、artifact 和人工 baseline 规则见 [Model Behavioral Eval 说明](model_evals/README.md)。
 
+Moonshot Kimi K2.6 的官方 Judge Profile 使用 `json_object`、`thinking: disabled` 与 `4096` 的输出预算；Target 与 Judge 可独立设置 thinking。Runner 内部统一使用 `max_output_tokens`，由 Provider capability 映射到实际请求字段；Kimi Profile 映射为 `max_completion_tokens`，其他 OpenAI-compatible Profile 不会因此发送 Kimi 专有的 `thinking` 参数。
+
 ## 仓库结构
 
 ```text
