@@ -755,6 +755,47 @@ class StageDecouplingTests(unittest.TestCase):
             runner.run_responsive_provider_call(lambda: (_ for _ in ()).throw(expected))
         self.assertIs(raised.exception, expected)
 
+    def test_second_main_thread_interrupt_abandons_blocked_provider_without_waiting(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        output = io.StringIO()
+        stop = _GracefulStop(1, stream=output)
+        observed: dict[str, float] = {}
+
+        def blocking_call() -> runner.ProviderResult:
+            started.set()
+            release.wait(5)
+            return runner.ProviderResult("completed")
+
+        def interrupt_twice() -> None:
+            self.assertTrue(started.wait(1))
+            signal.raise_signal(signal.SIGINT)
+            deadline = time.monotonic() + 1
+            while not stop.requested and time.monotonic() < deadline:
+                time.sleep(0.01)
+            observed["force_sent_at"] = time.monotonic()
+            signal.raise_signal(signal.SIGINT)
+
+        notifier = threading.Thread(target=interrupt_twice, daemon=True)
+        notifier.start()
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                with stop:
+                    runner.run_responsive_provider_call(blocking_call, poll_interval=0.02)
+            self.assertTrue(stop.force_requested)
+            self.assertLess(time.monotonic() - observed["force_sent_at"], 1)
+            self.assertIn("再次收到 Ctrl+C", output.getvalue())
+            self.assertTrue(
+                any(
+                    thread.name == "eval-provider-call" and thread.is_alive()
+                    for thread in threading.enumerate()
+                )
+            )
+        finally:
+            release.set()
+        notifier.join(2)
+        self.assertFalse(notifier.is_alive())
+
     def test_old_console_version_is_rejected_and_diagnostics_are_secret_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
