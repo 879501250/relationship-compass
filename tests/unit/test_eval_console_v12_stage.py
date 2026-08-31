@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 from shutil import copytree
+import signal
 import sys
 import tempfile
 import threading
@@ -128,6 +129,33 @@ class BlockingJudgeProvider(StageProvider):
         self.started.set()
         if not self.release.wait(2):
             raise AssertionError("test did not release the in-flight Judge request")
+        return super().generate(
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+        )
+
+
+class BlockingTargetProvider(StageProvider):
+    """Deterministic in-flight Target fixture for responsive-call regressions."""
+
+    def __init__(self) -> None:
+        super().__init__(["completed target"])
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is not None:
+            raise AssertionError("blocking fixture only supports Target requests")
+        self.started.set()
+        if not self.release.wait(2):
+            raise AssertionError("test did not release the in-flight Target request")
         return super().generate(
             instructions=instructions,
             input_text=input_text,
@@ -581,7 +609,7 @@ class StageDecouplingTests(unittest.TestCase):
     def test_graceful_stop_acknowledges_before_inflight_judge_completes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            case_ids = self.case_ids(2)
+            case_ids = self.case_ids(3)
             source, _ = self.target_only_fast(
                 root, case_ids, run_id="blocking-judge"
             )
@@ -611,8 +639,17 @@ class StageDecouplingTests(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(judge.started.wait(3))
+                acknowledged_at = time.monotonic()
                 stop.handle_interrupt()
+                self.assertLess(time.monotonic() - acknowledged_at, 1)
                 self.assertIn("已收到停止请求", stop_output.getvalue())
+                self.assertTrue(worker.is_alive())
+                self.assertFalse((source.run_dir / "judgments.jsonl").exists())
+                force_started_at = time.monotonic()
+                with self.assertRaises(KeyboardInterrupt):
+                    stop.handle_interrupt()
+                self.assertLess(time.monotonic() - force_started_at, 1)
+                self.assertTrue(stop.force_requested)
                 self.assertTrue(worker.is_alive())
             finally:
                 judge.release.set()
@@ -623,6 +660,100 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(judge.judge_calls, 1)
             self.assertEqual(outcome.api_calls, {"target": 0, "judge": 1})
             self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
+            judgments = runner.load_jsonl(source.run_dir / "judgments.jsonl")
+            self.assertEqual(judgments[0]["status"], "JUDGMENT")
+            resumed_judge = StageProvider()
+            resumed = execute_request(
+                self.request(
+                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir
+                ),
+                judge_provider=resumed_judge,
+            )
+            self.assertEqual(resumed_judge.judge_calls, 2)
+            self.assertEqual(resumed.api_calls, {"target": 0, "judge": 2})
+            self.assertEqual(resumed.summary["completion_status"], "COMPLETED")
+            self.assertFalse(
+                any(thread.name == "eval-provider-call" and thread.is_alive() for thread in threading.enumerate())
+            )
+
+    def test_responsive_target_call_stops_after_current_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(2)
+            stop_output = io.StringIO()
+            stop = _GracefulStop(1, stream=stop_output)
+            target = BlockingTargetProvider()
+            result: dict[str, Any] = {}
+            errors: list[BaseException] = []
+
+            def execute() -> None:
+                try:
+                    result["outcome"] = execute_request(
+                        self.request(
+                            root, case_ids, mode=EvalExecutionMode.TARGET_ONLY, run_id="blocking-target"
+                        ),
+                        target_provider=target,
+                        activity=lambda phase, *_: stop.set_stage(phase),
+                        should_stop=lambda: stop.requested,
+                    )
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            worker = threading.Thread(target=execute)
+            worker.start()
+            try:
+                self.assertTrue(target.started.wait(3))
+                stop.handle_interrupt()
+                self.assertIn("已收到停止请求", stop_output.getvalue())
+                run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "blocking-target"
+                self.assertEqual(runner.load_jsonl(run_dir / "responses.jsonl"), [])
+            finally:
+                target.release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            outcome = result["outcome"]
+            self.assertEqual(target.target_calls, 1)
+            self.assertEqual(outcome.api_calls, {"target": 1, "judge": 0})
+            self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
+
+    def test_responsive_provider_call_handles_main_thread_signals_and_preserves_errors(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+        output = io.StringIO()
+        stop = _GracefulStop(1, stream=output)
+        observed: dict[str, float] = {}
+
+        def blocking_call() -> runner.ProviderResult:
+            started.set()
+            self.assertTrue(release.wait(2))
+            return runner.ProviderResult("completed")
+
+        def interrupt_once() -> None:
+            self.assertTrue(started.wait(1))
+            requested_at = time.monotonic()
+            signal.raise_signal(signal.SIGINT)
+            deadline = requested_at + 1
+            while not stop.requested and time.monotonic() < deadline:
+                time.sleep(0.01)
+            observed["delay"] = time.monotonic() - requested_at
+            release.set()
+
+        notifier = threading.Thread(target=interrupt_once, daemon=True)
+        notifier.start()
+        with stop:
+            result = runner.run_responsive_provider_call(blocking_call, poll_interval=0.02)
+        notifier.join(2)
+        self.assertFalse(notifier.is_alive())
+        self.assertEqual(result.text, "completed")
+        self.assertTrue(stop.requested)
+        self.assertLess(observed["delay"], 1)
+        self.assertIn("已收到停止请求", output.getvalue())
+
+        expected = runner.ProviderTimeout("timed out")
+        with self.assertRaises(runner.ProviderTimeout) as raised:
+            runner.run_responsive_provider_call(lambda: (_ for _ in ()).throw(expected))
+        self.assertIs(raised.exception, expected)
 
     def test_old_console_version_is_rejected_and_diagnostics_are_secret_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

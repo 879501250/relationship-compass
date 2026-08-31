@@ -8,15 +8,18 @@ import hashlib
 import json
 import math
 import os
+import queue
 import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,6 +85,7 @@ REFERENCE_QUALIFICATIONS = {
 COMPARABILITY_LEVELS = {"COMPARABLE", "PARTIALLY_COMPARABLE", "NOT_COMPARABLE"}
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
 MAX_RETRY_AFTER_SECONDS = 30.0
+RESPONSIVE_PROVIDER_POLL_SECONDS = 0.1
 PROVIDER_ROLE_DEFAULTS = {
     "target": {
         "timeout_seconds": 90.0,
@@ -2578,6 +2582,39 @@ def artifact_binding(metadata: dict[str, Any]) -> dict[str, str]:
     return binding
 
 
+def run_responsive_provider_call(
+    call: Callable[[], Any], *, poll_interval: float = RESPONSIVE_PROVIDER_POLL_SECONDS
+) -> Any:
+    """Run one blocking provider call off the orchestration thread.
+
+    The daemon worker owns only the synchronous provider call. Result handling,
+    exception re-raising, and every artifact mutation remain on the caller's
+    thread, which keeps Console signal handling responsive while a request or a
+    provider-owned retry backoff is in flight.
+    """
+    if poll_interval <= 0:
+        raise ValueError("responsive provider poll interval must be positive")
+    handoff: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            handoff.put((True, call()))
+        except BaseException as exc:
+            handoff.put((False, exc))
+
+    threading.Thread(target=invoke, name="eval-provider-call", daemon=True).start()
+    while True:
+        try:
+            succeeded, value = handoff.get(timeout=poll_interval)
+        except queue.Empty:
+            continue
+        if succeeded:
+            return value
+        if isinstance(value, BaseException):
+            raise value
+        raise ModelEvalError("responsive provider worker returned an invalid exception")
+
+
 def target_attempt_record(
     record: dict[str, Any],
     provider: ModelProvider,
@@ -2629,9 +2666,11 @@ def target_attempt_record(
             canonical_json_bytes(envelope)
         )
     try:
-        result = provider.generate(
-            instructions=TARGET_INSTRUCTIONS,
-            input_text=target_input(record),
+        result = run_responsive_provider_call(
+            lambda: provider.generate(
+                instructions=TARGET_INSTRUCTIONS,
+                input_text=target_input(record),
+            )
         )
         if not result.text.strip():
             raise ProviderInvalidResponse(
@@ -3191,10 +3230,9 @@ def execute_judge(
         metadata["judge_started_at"] = utc_now()
     metadata["judge_phase_completed"] = False
     invalidate_report(run_dir, metadata)
-    mode = "a" if judgments_path.exists() else "x"
     started = 0
     completed = 0
-    with judgments_path.open(mode, encoding="utf-8", newline="\n") as handle:
+    with nullcontext():
         for case in scoped_cases:
             if should_stop is not None and should_stop():
                 break
@@ -3254,10 +3292,12 @@ def execute_judge(
                     record["request_envelope_hash"] = sha256_bytes(
                         canonical_json_bytes(envelope)
                     )
-                result = provider.generate(
-                    instructions=JUDGE_INSTRUCTIONS,
-                    input_text=judge_input(case, target["response"]),
-                    response_schema=judgment_schema(case["criteria"], case_id),
+                result = run_responsive_provider_call(
+                    lambda: provider.generate(
+                        instructions=JUDGE_INSTRUCTIONS,
+                        input_text=judge_input(case, target["response"]),
+                        response_schema=judgment_schema(case["criteria"], case_id),
+                    )
                 )
                 normalized_text, normalization = normalize_structured_output_text(
                     result.text
@@ -3326,7 +3366,10 @@ def execute_judge(
                 )
             record["completed_at"] = utc_now()
             record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
-            append_jsonl(handle, record)
+            with judgments_path.open(
+                "a" if judgments_path.exists() else "x", encoding="utf-8", newline="\n"
+            ) as handle:
+                append_jsonl(handle, record)
             existing[case_id] = record
             metadata.setdefault("api_calls", {"target": 0, "judge": 0})["judge"] += 1
             completed += 1

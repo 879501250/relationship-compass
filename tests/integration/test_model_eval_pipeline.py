@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as runner  # noqa: E402
+from eval_console.discovery import discover_evals  # noqa: E402
+from eval_console.models import EvalExecutionMode, EvalRunRequest  # noqa: E402
+from eval_console.service import execute_request  # noqa: E402
 
 
 class RecordingFakeProvider:
@@ -55,6 +59,33 @@ class RecordingFakeProvider:
         )
 
 
+class BlockingFakeProvider(RecordingFakeProvider):
+    """One deterministic in-flight Target request for responsive Console coverage."""
+
+    def __init__(self) -> None:
+        super().__init__(["completed target"])
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is not None:
+            raise AssertionError("blocking integration fixture only supports Target")
+        self.started.set()
+        if not self.release.wait(2):
+            raise AssertionError("test did not release the in-flight provider call")
+        return super().generate(
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+        )
+
+
 def all_pass(record: dict[str, Any]) -> str:
     return json.dumps(
         {
@@ -73,6 +104,64 @@ def all_pass(record: dict[str, Any]) -> str:
 
 
 class ModelEvalPipelineTests(unittest.TestCase):
+    def test_console_responsive_target_stop_persists_only_completed_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profiles = root / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {"profiles": {"fake": {"provider": "openai_responses", "target": {"model": "fake-e2e-model"}}}}
+                ),
+                encoding="utf-8",
+            )
+            case_ids = tuple(case.case_id for case in discover_evals()[0].cases[:2])
+            request = EvalRunRequest(
+                eval_id=discover_evals()[0].eval_id,
+                case_ids=case_ids,
+                target_profile="fake",
+                judge_profile=None,
+                profiles_file=profiles,
+                results_root=root / "results",
+                allow_dirty_debug=True,
+                run_id="responsive-target-stop",
+                mode=EvalExecutionMode.TARGET_ONLY,
+            )
+            provider = BlockingFakeProvider()
+            stop_requested = {"value": False}
+            result: dict[str, Any] = {}
+            errors: list[BaseException] = []
+
+            def execute() -> None:
+                try:
+                    result["outcome"] = execute_request(
+                        request,
+                        target_provider=provider,
+                        should_stop=lambda: stop_requested["value"],
+                    )
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            with mock.patch.object(
+                runner, "git_fingerprint", return_value={"git_sha": "a" * 40, "git_dirty": False}
+            ):
+                worker = threading.Thread(target=execute)
+                worker.start()
+                try:
+                    self.assertTrue(provider.started.wait(3))
+                    run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / request.run_id
+                    self.assertEqual(runner.load_jsonl(run_dir / "responses.jsonl"), [])
+                    stop_requested["value"] = True
+                finally:
+                    provider.release.set()
+                    worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            outcome = result["outcome"]
+            self.assertEqual(provider.calls[0]["structured"], False)
+            self.assertEqual(outcome.api_calls, {"target": 1, "judge": 0})
+            self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
+            self.assertEqual(len(runner.load_jsonl(outcome.run_dir / "responses.jsonl")), 1)
+
     def test_role_specific_relay_profiles_ignore_global_openai_base_url(self) -> None:
         profile = {
             "profiles": {
