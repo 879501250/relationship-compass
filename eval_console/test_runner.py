@@ -19,7 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SUITE_TIMEOUTS: dict[str, float] = {
-    "unit": 120.0,
+    "unit": 180.0,
     "integration": 120.0,
     "contract": 120.0,
 }

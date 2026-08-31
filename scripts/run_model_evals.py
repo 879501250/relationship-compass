@@ -2707,7 +2707,13 @@ def execute_run(
         validate_result_artifacts(run_dir)
         metadata = load_json_object(run_dir / "run.json")
         snapshots = load_run_snapshots(run_dir)
-        if snapshots["prepared"] != prepared_records:
+        requested_case_ids = {record["case_id"] for record in prepared_records}
+        scoped_snapshot_records = [
+            record
+            for record in snapshots["prepared"]
+            if record["case_id"] in requested_case_ids
+        ]
+        if scoped_snapshot_records != prepared_records:
             raise ModelEvalError("target resume configuration mismatch: prepared Eval/SUT changed")
         if metadata.get("eval_identity") != eval_identity_manifest(
             eval_definition_snapshot()
@@ -2784,9 +2790,10 @@ def execute_run(
         else []
     )
     available_case_ids = tuple(record["case_id"] for record in prepared_records)
+    all_case_ids = tuple(record["case_id"] for record in snapshots["prepared"])
     scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Target")
     scoped_case_id_set = set(scoped_case_ids)
-    latest = latest_response_attempts(existing_records, set(available_case_ids))
+    latest = latest_response_attempts(existing_records, set(all_case_ids))
     eligible: list[tuple[dict[str, Any], int]] = []
     for record in prepared_records:
         if record["case_id"] not in scoped_case_id_set:
@@ -2851,10 +2858,10 @@ def execute_run(
     refresh_run_metadata(metadata, saved_responses, existing_judgments)
     finished_at = utc_now()
     effective_responses = index_response_attempts(
-        saved_responses, set(available_case_ids)
+        saved_responses, set(all_case_ids)
     )
     if (
-        len(effective_responses) == len(prepared_records)
+        len(effective_responses) == len(all_case_ids)
         and all(record.get("status") == "MODEL_RESPONSE" for record in effective_responses.values())
     ):
         metadata["target_completed_at"] = finished_at
@@ -3108,15 +3115,7 @@ def execute_judge(
     metadata = load_json_object(run_dir / "run.json")
     if metadata.get("schema_version") != 3:
         raise ModelEvalError("API judge execution requires a schema v3 run")
-    original_status = metadata.get("status")
-    if original_status not in {
-        "TARGET_COMPLETE",
-        "TARGET_PARTIAL",
-        "JUDGE_PARTIAL",
-        "COMPLETED",
-        "COMPLETED_WITH_ERRORS",
-    }:
-        raise ModelEvalError("judge requires at least one attempted target case")
+    was_completed = metadata.get("status") == "COMPLETED"
     judgments_path = run_dir / "judgments.jsonl"
     cases = metadata.get("cases")
     if not isinstance(cases, list):
@@ -3129,6 +3128,20 @@ def execute_judge(
     responses = index_response_attempts(
         all_response_records, set(available_case_ids), "responses.jsonl"
     )
+    missing_target_cases = [
+        case_id
+        for case_id in scoped_case_ids
+        if responses.get(case_id, {}).get("status") != "MODEL_RESPONSE"
+    ]
+    # Console stages always pass Planner-owned case_ids and therefore require
+    # every requested Case to have a successful effective Target response.
+    # Preserve the legacy unscoped API behavior for callers that intentionally
+    # ask the runner to judge every eligible Target in a partial run.
+    if case_ids is not None and missing_target_cases:
+        raise ModelEvalError(
+            "judge scope contains cases without successful target responses: "
+            + ", ".join(missing_target_cases)
+        )
     existing_records = load_jsonl(judgments_path) if judgments_path.exists() else []
     existing = index_judgment_attempts(existing_records, set(available_case_ids))
     has_attempted_judgment = any(
@@ -3160,11 +3173,19 @@ def execute_judge(
         if responses.get(case["case_id"], {}).get("status") == "MODEL_RESPONSE"
         and existing.get(case["case_id"], {}).get("status") != "JUDGMENT"
     ]
-    if original_status == "COMPLETED" and not eligible:
+    if not eligible and case_ids is not None:
+        judged = sum(
+            existing.get(case_id, {}).get("status") == "JUDGMENT"
+            for case_id in scoped_case_ids
+        )
+        judge_error = sum(
+            existing.get(case_id, {}).get("status") == "JUDGE_ERROR"
+            for case_id in scoped_case_ids
+        )
         return {
-            "judged": len(cases),
-            "judge_error": 0,
-            "not_judged": 0,
+            "judged": judged,
+            "judge_error": judge_error,
+            "not_judged": len(scoped_case_ids) - judged - judge_error,
         }
     if metadata.get("judge_started_at") is None:
         metadata["judge_started_at"] = utc_now()
@@ -3324,7 +3345,7 @@ def execute_judge(
         - len(latest),
     }
     metadata["judge_counts"] = counts
-    if len(all_records) == len(existing_records) and original_status == "COMPLETED":
+    if len(all_records) == len(existing_records) and was_completed:
         return counts
     metadata["judge_phase_completed"] = True
     refresh_run_metadata(metadata, all_response_records, all_records)

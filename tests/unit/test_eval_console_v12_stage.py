@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import io
 import json
+from shutil import copytree
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -23,6 +25,7 @@ if str(SCRIPTS) not in sys.path:
 import run_model_evals as runner  # noqa: E402
 from eval_console.discovery import HistoricalRun, discover_evals, discover_runs  # noqa: E402
 from eval_console.cli import (  # noqa: E402
+    _GracefulStop,
     _interactive_history_stage,
     _request_from_args,
     _resume_request_with_inherited_configuration,
@@ -36,6 +39,8 @@ from eval_console.models import (  # noqa: E402
 )
 from eval_console.service import (  # noqa: E402
     EvalConsoleError,
+    _mark_interrupted,
+    _prepared_records,
     execute_request,
     judge_only_case_ids,
     plan_stage_execution,
@@ -103,6 +108,33 @@ class StageProvider:
         return runner.ProviderResult(str(output), reported_model=self.model)
 
 
+class BlockingJudgeProvider(StageProvider):
+    """Deterministic in-flight Judge fixture for graceful-stop regression tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is None:
+            raise AssertionError("blocking fixture only supports Judge requests")
+        self.started.set()
+        if not self.release.wait(2):
+            raise AssertionError("test did not release the in-flight Judge request")
+        return super().generate(
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+        )
+
+
 class StageDecouplingTests(unittest.TestCase):
     def write_profiles(self, root: Path) -> Path:
         profiles = root / "profiles.json"
@@ -159,6 +191,14 @@ class StageDecouplingTests(unittest.TestCase):
             target_provider=target,
         )
         return outcome, target
+
+    def target_only_fast(
+        self, root: Path, case_ids: tuple[str, ...], *, run_id: str
+    ) -> tuple[Any, StageProvider]:
+        with mock.patch.object(
+            runner, "git_fingerprint", return_value={"git_sha": "a" * 40, "git_dirty": False}
+        ):
+            return self.target_only(root, case_ids, run_id=run_id)
 
     def full_with_judge_error(
         self, root: Path, case_ids: tuple[str, ...], *, run_id: str
@@ -355,6 +395,234 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(resumed_target.target_calls, 2)
             self.assertEqual(resumed_judge.judge_calls, 3)
             self.assertEqual(resumed.summary["completion_status"], "COMPLETED")
+
+    def test_interrupted_judge_resume_uses_only_missing_scoped_judgments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(3)
+            source, target = self.target_only_fast(
+                root, case_ids, run_id="interrupted-judge"
+            )
+            runner.execute_judge(
+                source.run_dir, StageProvider(), case_ids=(case_ids[0],)
+            )
+            _mark_interrupted(source.run_dir)
+            selected = (case_ids[2], case_ids[1])
+            prepared = _prepared_records(source.run_dir, selected)
+            self.assertEqual(
+                [record["case_id"] for record in prepared], [case_ids[1], case_ids[2]]
+            )
+            source_before = {
+                path.relative_to(source.run_dir): path.read_bytes()
+                for path in source.run_dir.rglob("*")
+                if path.is_file()
+            }
+            child_target = StageProvider(["must not be used"])
+            child_judge = StageProvider()
+            child_outcome = execute_request(
+                self.request(
+                    root,
+                    selected,
+                    mode=EvalExecutionMode.JUDGE_ONLY,
+                    run_id="interrupted-subset-child",
+                    source=source.run_dir,
+                ),
+                target_provider=child_target,
+                judge_provider=child_judge,
+            )
+            self.assertEqual(child_target.target_calls, 0)
+            self.assertEqual(child_judge.judge_calls, 2)
+            child_snapshots = runner.load_run_snapshots(child_outcome.run_dir)["prepared"]
+            self.assertEqual(
+                [record["case_id"] for record in child_snapshots], [case_ids[1], case_ids[2]]
+            )
+            child_metadata = runner.load_json_object(child_outcome.run_dir / "run.json")
+            self.assertEqual(
+                [record["case_id"] for record in child_metadata["cases"]],
+                [case_ids[1], case_ids[2]],
+            )
+            self.assertEqual(child_metadata["source_target_run_id"], "interrupted-judge")
+            self.assertEqual(
+                source_before,
+                {
+                    path.relative_to(source.run_dir): path.read_bytes()
+                    for path in source.run_dir.rglob("*")
+                    if path.is_file()
+                },
+            )
+            selected_run_dir = root / "selected-copy" / source.run_dir.relative_to(
+                root / "results"
+            )
+            copytree(source.run_dir, selected_run_dir)
+            before_c = [
+                record
+                for record in runner.load_jsonl(selected_run_dir / "judgments.jsonl")
+                if record["case_id"] == case_ids[2]
+            ]
+            selected_judge = StageProvider()
+            selected_outcome = execute_request(
+                self.request(
+                    root,
+                    (case_ids[1],),
+                    mode=EvalExecutionMode.RESUME,
+                    source=selected_run_dir,
+                ),
+                judge_provider=selected_judge,
+            )
+            self.assertEqual(selected_judge.judge_calls, 1)
+            self.assertEqual(selected_outcome.api_calls, {"target": 0, "judge": 1})
+            after_c = [
+                record
+                for record in runner.load_jsonl(selected_run_dir / "judgments.jsonl")
+                if record["case_id"] == case_ids[2]
+            ]
+            self.assertEqual(after_c, before_c)
+            plan = plan_stage_execution(
+                source.run_dir, case_ids, EvalExecutionMode.RESUME
+            )
+            self.assertEqual(plan.target_cases, ())
+            self.assertEqual(plan.judge_cases, case_ids[1:])
+            judge = StageProvider()
+            outcome = execute_request(
+                self.request(
+                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir
+                ),
+                judge_provider=judge,
+            )
+            self.assertEqual(target.target_calls, 3)
+            self.assertEqual(judge.judge_calls, 2)
+            self.assertEqual(outcome.api_calls, {"target": 0, "judge": 2})
+            self.assertEqual(outcome.summary["completion_status"], "COMPLETED")
+
+    def test_explicit_judge_scope_requires_successful_target_per_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(2)
+            prepared = [
+                record
+                for record in runner.prepare_cases(*runner.load_definitions())
+                if record["case_id"] in set(case_ids)
+            ]
+            run_dir = (
+                root / "v1.6.0" / runner.API_RUNTIME_PROFILE / "mixed-target"
+            )
+            with mock.patch.object(
+                runner, "git_fingerprint", return_value={"git_sha": "a" * 40, "git_dirty": False}
+            ):
+                runner.execute_run(
+                    prepared,
+                    StageProvider(
+                        ["available", runner.ProviderError("failed", code="NETWORK_ERROR")]
+                    ),
+                    run_dir,
+                    repository_sha="a" * 40,
+                    repository_dirty=False,
+                    continue_on_error=True,
+                )
+            _mark_interrupted(run_dir)
+            judge = StageProvider()
+            self.assertEqual(
+                runner.execute_judge(
+                    run_dir, judge, case_ids=(case_ids[0],)
+                )["judged"],
+                1,
+            )
+            with self.assertRaisesRegex(
+                runner.ModelEvalError,
+                "without successful target responses: " + case_ids[1],
+            ):
+                runner.execute_judge(
+                    run_dir, StageProvider(), case_ids=(case_ids[1],)
+                )
+            statuses = (
+                "TARGET_COMPLETE",
+                "TARGET_PARTIAL",
+                "JUDGE_PARTIAL",
+                "COMPLETED_WITH_ERRORS",
+                "INTERRUPTED",
+            )
+            for status in statuses:
+                with self.subTest(status=status):
+                    metadata = runner.load_json_object(run_dir / "run.json")
+                    metadata["status"] = status
+                    metadata["interrupted"] = status == "INTERRUPTED"
+                    runner.write_json(run_dir / "run.json", metadata)
+                    # The synthetic aggregate statuses deliberately do not match
+                    # the unchanged per-Case evidence. This isolates the
+                    # executor's eligibility decision from artifact lifecycle
+                    # validation, which is covered by the real fixtures above.
+                    with mock.patch.object(runner, "validate_result_artifacts"):
+                        result = runner.execute_judge(
+                            run_dir,
+                            StageProvider(),
+                            case_ids=(case_ids[0],),
+                            resume=True,
+                        )
+                self.assertEqual(result["judged"], 1)
+
+    def test_graceful_stop_acknowledges_once_and_force_stop_is_stage_aware(self) -> None:
+        for phase, label in (("TARGET", "Target"), ("JUDGE", "Judge")):
+            with self.subTest(phase=phase):
+                output = io.StringIO()
+                stop = _GracefulStop(1, stream=output)
+                stop.set_stage(phase)
+                stop.handle_interrupt()
+                self.assertTrue(stop.requested)
+                self.assertFalse(stop.force_requested)
+                self.assertIn("已收到停止请求", output.getvalue())
+                self.assertIn(label, output.getvalue())
+                with self.assertRaises(KeyboardInterrupt):
+                    stop.handle_interrupt()
+                self.assertTrue(stop.force_requested)
+                self.assertIn(
+                    f"正在强制终止当前 {label} 请求", output.getvalue()
+                )
+
+    def test_graceful_stop_acknowledges_before_inflight_judge_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(2)
+            source, _ = self.target_only_fast(
+                root, case_ids, run_id="blocking-judge"
+            )
+            stop_output = io.StringIO()
+            stop = _GracefulStop(1, stream=stop_output)
+            judge = BlockingJudgeProvider()
+            result: dict[str, Any] = {}
+            errors: list[BaseException] = []
+
+            def execute() -> None:
+                try:
+                    result["outcome"] = execute_request(
+                        self.request(
+                            root,
+                            case_ids,
+                            mode=EvalExecutionMode.RESUME,
+                            source=source.run_dir,
+                        ),
+                        judge_provider=judge,
+                        activity=lambda phase, *_: stop.set_stage(phase),
+                        should_stop=lambda: stop.requested,
+                    )
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            worker = threading.Thread(target=execute)
+            worker.start()
+            try:
+                self.assertTrue(judge.started.wait(3))
+                stop.handle_interrupt()
+                self.assertIn("已收到停止请求", stop_output.getvalue())
+                self.assertTrue(worker.is_alive())
+            finally:
+                judge.release.set()
+                worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            outcome = result["outcome"]
+            self.assertEqual(judge.judge_calls, 1)
+            self.assertEqual(outcome.api_calls, {"target": 0, "judge": 1})
+            self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
 
     def test_old_console_version_is_rejected_and_diagnostics_are_secret_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -317,15 +317,19 @@ def execute_request(
                 ),
             )
             if request.mode is EvalExecutionMode.FULL and not _stop_requested(should_stop):
+                judge_case_ids = _successful_target_case_ids(run_dir, stage_plan.judge_cases)
                 if judge_provider is None:
                     raise EvalConsoleError("完整运行缺少 Judge Provider。")
                 current_stage = "JUDGE"
-                current_stage_total = len(stage_plan.judge_cases)
+                current_stage_total = len(judge_case_ids)
                 current_stage_before_calls = _api_call_counts(run_dir)
-                _execute_judge_stage(
-                    run_dir, request, judge_provider, stage_plan.judge_cases,
-                    progress, activity, should_stop, resume=False
-                )
+                if judge_case_ids:
+                    _execute_judge_stage(
+                        run_dir, request, judge_provider, judge_case_ids,
+                        progress, activity, should_stop, resume=False
+                    )
+                else:
+                    _complete_empty_judge_stage(run_dir)
         interrupted = _stop_requested(should_stop)
         if interrupted:
             _mark_interrupted(run_dir)
@@ -483,7 +487,34 @@ def _prepared_records(run_dir: Path, case_ids: tuple[str, ...]) -> list[dict[str
     selected = [record for record in prepared if record.get("case_id") in set(case_ids)]
     if len(selected) != len(case_ids):
         raise EvalConsoleError("历史运行缺少所选 Case 的 immutable snapshot。")
-    return prepared
+    return selected
+
+
+def _successful_target_case_ids(run_dir: Path, case_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """Retain the current execution scope while excluding failed Target Cases."""
+    responses = runner.index_response_attempts(
+        runner.load_jsonl(run_dir / "responses.jsonl"), set(case_ids)
+    )
+    return tuple(
+        case_id
+        for case_id in case_ids
+        if responses.get(case_id, {}).get("status") == "MODEL_RESPONSE"
+    )
+
+
+def _complete_empty_judge_stage(run_dir: Path) -> None:
+    """Persist the completed no-op Judge phase for a FULL run with no Target success."""
+    metadata = runner.load_json_object(run_dir / "run.json")
+    responses = runner.load_jsonl(run_dir / "responses.jsonl")
+    judgments_path = run_dir / "judgments.jsonl"
+    judgments = runner.load_jsonl(judgments_path) if judgments_path.is_file() else []
+    completed_at = runner.utc_now()
+    metadata["judge_phase_completed"] = True
+    metadata["judge_started_at"] = completed_at
+    metadata["judge_completed_at"] = completed_at
+    metadata["completed_at"] = completed_at
+    runner.refresh_run_metadata(metadata, responses, judgments)
+    runner.write_json(run_dir / "run.json", metadata)
 
 
 def _judge_only_dry_run_dir(request: EvalRunRequest, source_dir: Path) -> Path:
@@ -847,6 +878,7 @@ def _mark_interrupted(run_dir: Path) -> None:
     metadata["interrupted_at"] = runner.utc_now()
     metadata["judge_completed_at"] = None
     metadata["completed_at"] = None
+    runner.invalidate_report(run_dir, metadata)
     runner.refresh_run_metadata(metadata, responses, judgments)
     runner.write_json(run_dir / "run.json", metadata)
 

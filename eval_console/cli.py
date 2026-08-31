@@ -14,7 +14,7 @@ import traceback
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import Callable, TextIO, TypeVar
 
 from .discovery import (
     HistoricalRun,
@@ -124,25 +124,45 @@ class _ActivityReporter:
 class _GracefulStop:
     """Treat the first Ctrl+C as a durable stop request and a second as force stop."""
 
-    def __init__(self, concurrency: int) -> None:
+    def __init__(self, concurrency: int, *, stream: TextIO | None = None) -> None:
         self.requested = False
+        self.force_requested = False
         self.concurrency = concurrency
+        self._stream = stream or sys.stderr
+        self._stage: str | None = None
         self._previous: object | None = None
 
     def __enter__(self) -> "_GracefulStop":
         self._previous = signal.getsignal(signal.SIGINT)
 
         def on_interrupt(_signum: int, _frame: object) -> None:
-            if self.requested:
-                raise KeyboardInterrupt
-            self.requested = True
-            message = "\n已收到停止请求；当前 Case 保存后不会启动新的 Case。再次按 Ctrl+C 可立即退出。"
-            if self.concurrency > 1:
-                message += " 并发数大于 1：已排队的 Case 仍可能完成；要严格停止请使用并发 1。"
-            print(message)
+            self.handle_interrupt()
 
         signal.signal(signal.SIGINT, on_interrupt)
         return self
+
+    def set_stage(self, stage: str) -> None:
+        self._stage = stage if stage in {"TARGET", "JUDGE"} else None
+
+    def handle_interrupt(self) -> None:
+        """Handle the lightweight signal transition without touching artifacts."""
+        stage = {"TARGET": "Target", "JUDGE": "Judge"}.get(self._stage, "当前")
+        if self.requested:
+            self.force_requested = True
+            print(
+                f"\n再次收到 Ctrl+C，正在强制终止当前 {stage} 请求……",
+                file=self._stream,
+                flush=True,
+            )
+            raise KeyboardInterrupt
+        self.requested = True
+        message = (
+            f"\n已收到停止请求：当前 {stage} 请求完成后停止并保存进度。"
+            "再次按 Ctrl+C 可强制退出。"
+        )
+        if self.concurrency > 1:
+            message += " 已请求停止；不会继续安排新的工作。已开始的请求可能仍会完成。"
+        print(message, file=self._stream, flush=True)
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
         if self._previous is not None:
@@ -1305,12 +1325,18 @@ def _execute_and_print(request: EvalRunRequest) -> int:
     activity = _ActivityReporter()
     try:
         with _GracefulStop(request.concurrency) as stop:
+            def on_activity(
+                phase: str, record: dict[str, object], started: int, total: int
+            ) -> None:
+                stop.set_stage(phase)
+                activity.start(phase, record, started, total)
+
             outcome = execute_request(
                 request,
                 target_provider=target,
                 judge_provider=judge,
                 progress=activity.finish,
-                activity=activity.start,
+                activity=on_activity,
                 should_stop=lambda: stop.requested,
             )
     finally:
