@@ -51,6 +51,7 @@
     },
     "reference-judge-kimi-official": {
       "provider": "openai_compatible_chat",
+      "max_retries": 2,
       "api_key_env": "MOONSHOT_API_KEY",
       "base_url": "https://api.moonshot.cn/v1",
       "declared_upstream_vendor": "Moonshot AI",

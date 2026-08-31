@@ -434,7 +434,12 @@ class ProviderProvenanceTests(unittest.TestCase):
                 self.assertEqual(plan["structured_output_mode"], mode)
                 self.assertIs(plan["structured_output_required"], role == "judge")
                 self.assertEqual(plan["reasoning_effort"], reasoning)
-                self.assertEqual(plan["max_retries"], 4 if name == "validation-gemini" else 1)
+                expected_retries = (
+                    4
+                    if name == "validation-gemini"
+                    else 2 if name == "reference-judge-kimi-official" else 1
+                )
+                self.assertEqual(plan["max_retries"], expected_retries)
                 self.assertEqual(plan["timeout_seconds"], 120 if name == "validation-gemini" else 90)
                 self.assertNotIn("test-only-", output.getvalue())
                 provider = runner.create_provider(args, role=role)

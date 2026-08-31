@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import socket
@@ -80,6 +81,7 @@ REFERENCE_QUALIFICATIONS = {
 }
 COMPARABILITY_LEVELS = {"COMPARABLE", "PARTIALLY_COMPARABLE", "NOT_COMPARABLE"}
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
+MAX_RETRY_AFTER_SECONDS = 30.0
 PROVIDER_ROLE_DEFAULTS = {
     "target": {
         "timeout_seconds": 90.0,
@@ -304,11 +306,47 @@ class ProviderError(RuntimeError):
         code: str = "NON_RETRYABLE_ERROR",
         retryable: bool = False,
         reported_model: str | None = None,
+        safe_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
         self.reported_model = reported_model
+        # This allowlist is deliberately metadata-only. It keeps hidden
+        # reasoning, provider response bodies, and response headers out of
+        # artifacts and logs.
+        allowed = {
+            "http_status",
+            "response_id",
+            "reported_model",
+            "choices_count",
+            "choice_index",
+            "finish_reason",
+            "message_present",
+            "message_keys",
+            "content_present",
+            "content_is_null",
+            "content_type",
+            "content_length",
+            "reasoning_present",
+            "reasoning_length",
+            "usage_present",
+            "input_tokens",
+            "output_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+            "empty_response_reason",
+            "retry_after_seconds",
+            "retry_attempt",
+            "max_retries",
+            "provider_http_attempts",
+        }
+        self.safe_diagnostics = {
+            key: value
+            for key, value in (safe_diagnostics or {}).items()
+            if key in allowed
+        }
 
 
 class ProviderTimeout(ProviderError):
@@ -334,37 +372,8 @@ class ProviderInvalidResponse(ProviderError):
             code=code,
             retryable=False,
             reported_model=reported_model,
+            safe_diagnostics=safe_diagnostics,
         )
-        # This allowlist is deliberately metadata-only. It keeps hidden
-        # reasoning and provider response bodies out of artifacts and logs.
-        allowed = {
-            "http_status",
-            "response_id",
-            "reported_model",
-            "choices_count",
-            "choice_index",
-            "finish_reason",
-            "message_present",
-            "message_keys",
-            "content_present",
-            "content_is_null",
-            "content_type",
-            "content_length",
-            "reasoning_present",
-            "reasoning_length",
-            "usage_present",
-            "input_tokens",
-            "output_tokens",
-            "completion_tokens",
-            "reasoning_tokens",
-            "total_tokens",
-            "empty_response_reason",
-        }
-        self.safe_diagnostics = {
-            key: value
-            for key, value in (safe_diagnostics or {}).items()
-            if key in allowed
-        }
 
 
 @dataclass(frozen=True)
@@ -1246,6 +1255,23 @@ def classify_http_error(status: int, body: bytes = b"") -> tuple[str, bool]:
     return "NON_RETRYABLE_ERROR", False
 
 
+def retry_after_seconds(headers: Any) -> float | None:
+    """Return a bounded numeric Retry-After delay without persisting headers."""
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    value = getter("Retry-After")
+    if value is None:
+        return None
+    try:
+        seconds = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
 class HTTPJSONProvider:
     transport = "https_json"
     allowed_max_output_tokens_parameters: frozenset[str] = frozenset()
@@ -1490,13 +1516,32 @@ class HTTPJSONProvider:
             except urllib.error.HTTPError as exc:
                 body = exc.read(4096)
                 code, retryable = classify_http_error(exc.code, body)
+                retry_after = (
+                    retry_after_seconds(exc.headers) if code == "RATE_LIMIT" else None
+                )
+                safe_diagnostics = {
+                    "http_status": exc.code,
+                    "retry_attempt": attempt + 1,
+                    "max_retries": self.max_retries,
+                    "provider_http_attempts": attempt + 1,
+                }
+                if retry_after is not None:
+                    safe_diagnostics["retry_after_seconds"] = retry_after
                 if attempt < self.max_retries and retryable:
-                    self._sleep(RETRY_DELAYS_SECONDS[attempt])
+                    delay = (
+                        retry_after
+                        if retry_after is not None
+                        else RETRY_DELAYS_SECONDS[attempt]
+                    )
+                    self._sleep(delay)
                     continue
                 if code == "TIMEOUT":
                     raise ProviderTimeout("provider HTTP request timed out") from exc
                 raise ProviderError(
-                    f"provider HTTP {exc.code}", code=code, retryable=retryable
+                    f"provider HTTP {exc.code}",
+                    code=code,
+                    retryable=retryable,
+                    safe_diagnostics=safe_diagnostics,
                 ) from exc
             except (TimeoutError, socket.timeout) as exc:
                 if attempt < self.max_retries:
@@ -2880,12 +2925,36 @@ def judge_input(case: dict[str, Any], response: str) -> str:
     )
 
 
+def normalize_structured_output_text(text: str) -> tuple[str, str]:
+    """Remove one whole-response JSON or generic Markdown fence, if present."""
+    stripped = text.strip()
+    match = re.fullmatch(
+        r"```(?P<language>[A-Za-z0-9_-]*)\r?\n(?P<body>.*?)\r?\n```",
+        stripped,
+        flags=re.DOTALL,
+    )
+    if match is None or match.group("language").casefold() not in {"", "json"}:
+        return text, "none"
+    body = match.group("body")
+    if re.search(r"(?m)^```", body):
+        return text, "none"
+    normalization = (
+        "markdown_json_fence"
+        if match.group("language").casefold() == "json"
+        else "markdown_code_fence"
+    )
+    return body, normalization
+
+
 def parse_judgment(
     text: str,
     criteria: list[dict[str, str]],
     *,
     expected_case_id: str | None = None,
+    normalize_outer_fence: bool = True,
 ) -> list[dict[str, Any]]:
+    if normalize_outer_fence:
+        text, _ = normalize_structured_output_text(text)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -3130,6 +3199,7 @@ def execute_judge(
                 "attempt": attempt,
                 "execution_source": "api",
                 "status": None,
+                "structured_output_normalization": "none",
                 "criteria": None,
                 "judge": {
                     "provider": provider.provider_name,
@@ -3168,11 +3238,16 @@ def execute_judge(
                     input_text=judge_input(case, target["response"]),
                     response_schema=judgment_schema(case["criteria"], case_id),
                 )
+                normalized_text, normalization = normalize_structured_output_text(
+                    result.text
+                )
+                record["structured_output_normalization"] = normalization
                 try:
                     criteria = parse_judgment(
-                        result.text,
+                        normalized_text,
                         case["criteria"],
                         expected_case_id=case_id,
+                        normalize_outer_fence=False,
                     )
                 except ModelEvalError as exc:
                     record.update(

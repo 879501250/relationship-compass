@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
+import urllib.error
 import unittest
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -105,6 +108,9 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
         model: str = "kimi-k2.6",
         thinking: str | None = "disabled",
         captured: list[dict[str, Any]] | None = None,
+        urlopen: Any | None = None,
+        sleep: Any | None = None,
+        max_retries: int = 1,
     ) -> runner.OpenAICompatibleChatProvider:
         def opener(request: Any, timeout: float) -> HTTPResponse:
             if captured is not None:
@@ -120,9 +126,234 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             structured_output_required=True,
             capabilities=self.kimi_capabilities(),
             max_output_tokens=4096,
+            max_retries=max_retries,
             thinking=thinking,
-            urlopen=opener,
+            urlopen=urlopen or opener,
+            sleep=sleep,
         )
+
+    @staticmethod
+    def rate_limit_error(retry_after: str | None = None) -> urllib.error.HTTPError:
+        headers = Message()
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+        return urllib.error.HTTPError(
+            "https://api.moonshot.cn/v1/chat/completions",
+            429,
+            "rate limit",
+            headers,
+            io.BytesIO(b'{"error":"rate limit"}'),
+        )
+
+    @staticmethod
+    def chat_payload(content: str) -> dict[str, Any]:
+        return {
+            "id": "kimi-response",
+            "model": "kimi-k2.6",
+            "choices": [{"finish_reason": "stop", "message": {"content": content}}],
+        }
+
+    @staticmethod
+    def judgment_payload(case: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "case_id": case["case_id"],
+            "criteria": [
+                {
+                    "criterion": item["criterion"],
+                    "passed": True,
+                    "reason": "Target 原文包含可核对的对应内容。",
+                }
+                for item in case["criteria"]
+            ],
+        }
+
+    @staticmethod
+    def opener_from_events(events: list[Any]) -> Any:
+        def opener(*_args: Any, **_kwargs: Any) -> Any:
+            event = events.pop(0)
+            if isinstance(event, BaseException):
+                raise event
+            return event
+
+        return opener
+
+    def test_single_outer_markdown_fence_normalization_is_strict(self) -> None:
+        criteria = [{"criterion": "criterion", "question": "question"}]
+        payload = {
+            "case_id": "case",
+            "criteria": [
+                {
+                    "criterion": "criterion",
+                    "passed": True,
+                    "reason": "Target 原文包含可核对的对应内容。",
+                }
+            ],
+        }
+        raw = json.dumps(payload, ensure_ascii=False)
+        cases = (
+            (raw, "none"),
+            (f"```json\n{raw}\n```", "markdown_json_fence"),
+            (f"```JSON\n{raw}\n```", "markdown_json_fence"),
+            (f"```\n{raw}\n```", "markdown_code_fence"),
+        )
+        for text, expected_normalization in cases:
+            with self.subTest(normalization=expected_normalization):
+                normalized, normalization = runner.normalize_structured_output_text(text)
+                self.assertEqual(normalization, expected_normalization)
+                self.assertEqual(
+                    runner.parse_judgment(
+                        normalized,
+                        criteria,
+                        expected_case_id="case",
+                        normalize_outer_fence=False,
+                    ),
+                    payload["criteria"],
+                )
+        invalid = (
+            f"Here is the result:\n```json\n{raw}\n```",
+            f"```json\n{raw}",
+            "```json\n{\"case_id\":\n```",
+            "```json\n{\"case_id\": \"case\", \"criteria\": []}\n```",
+            f"```json\n{raw}\n```\n```json\n{raw}\n```",
+        )
+        for text in invalid:
+            with self.subTest(text=text):
+                with self.assertRaises(runner.ModelEvalError):
+                    runner.parse_judgment(text, criteria, expected_case_id="case")
+
+    def test_judge_attempt_persists_structured_output_normalization(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases([cases[0]], criteria)
+        judgment = json.dumps(self.judgment_payload(prepared[0]), ensure_ascii=False)
+        fixtures = (
+            ("raw", judgment, "none"),
+            ("json-fence", f"```json\n{judgment}\n```", "markdown_json_fence"),
+            ("code-fence", f"```\n{judgment}\n```", "markdown_code_fence"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for run_id, content, expected_normalization in fixtures:
+                with self.subTest(normalization=expected_normalization):
+                    run_dir = (
+                        Path(temp_dir)
+                        / "v1.6.0"
+                        / runner.API_RUNTIME_PROFILE
+                        / run_id
+                    )
+                    runner.execute_run(
+                        prepared,
+                        ConsoleProvider(model="target", thinking="provider-default"),
+                        run_dir,
+                        repository_sha="a" * 40,
+                        repository_dirty=False,
+                    )
+                    judge = self.kimi_provider(self.chat_payload(content))
+                    self.assertEqual(runner.execute_judge(run_dir, judge)["judged"], 1)
+                    record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
+                    self.assertEqual(record["status"], "JUDGMENT")
+                    self.assertEqual(
+                        record["structured_output_normalization"], expected_normalization
+                    )
+                    self.assertNotIn("raw_excerpt", record)
+                    runner.validate_result_artifacts(run_dir)
+
+    def test_rate_limit_retry_after_uses_bounded_or_fallback_delay(self) -> None:
+        fixtures = (
+            ("5", 5.0),
+            (None, 1.0),
+            ("invalid", 1.0),
+            ("99999", runner.MAX_RETRY_AFTER_SECONDS),
+        )
+        for retry_after, expected_delay in fixtures:
+            with self.subTest(retry_after=retry_after):
+                events = [
+                    self.rate_limit_error(retry_after),
+                    HTTPResponse(self.chat_payload("ok")),
+                ]
+                sleeps: list[float] = []
+                provider = self.kimi_provider(
+                    {},
+                    urlopen=self.opener_from_events(events),
+                    sleep=sleeps.append,
+                    max_retries=1,
+                )
+                self.assertEqual(
+                    provider.generate(instructions="system", input_text="input").text,
+                    "ok",
+                )
+                self.assertEqual(sleeps, [expected_delay])
+                self.assertEqual(events, [])
+
+    def test_rate_limit_exhaustion_persists_safe_attempt_diagnostics(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases([cases[0]], criteria)
+        sleeps: list[float] = []
+        judge = self.kimi_provider(
+            {},
+            urlopen=self.opener_from_events(
+                [self.rate_limit_error("5") for _ in range(3)]
+            ),
+            sleep=sleeps.append,
+            max_retries=2,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "rate-limit"
+            runner.execute_run(
+                prepared,
+                ConsoleProvider(model="target", thinking="provider-default"),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            self.assertEqual(runner.execute_judge(run_dir, judge)["judge_error"], 1)
+            record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
+            self.assertEqual(record["status"], "JUDGE_ERROR")
+            self.assertEqual(record["error_code"], "RATE_LIMIT")
+            self.assertTrue(record["retryable"])
+            self.assertEqual(record["diagnostics"]["http_status"], 429)
+            self.assertEqual(record["diagnostics"]["retry_after_seconds"], 5.0)
+            self.assertEqual(record["diagnostics"]["retry_attempt"], 3)
+            self.assertEqual(record["diagnostics"]["max_retries"], 2)
+            self.assertEqual(record["diagnostics"]["provider_http_attempts"], 3)
+            self.assertEqual(sleeps, [5.0, 5.0])
+            metadata = runner.load_json_object(run_dir / "run.json")
+            self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
+            runner.validate_result_artifacts(run_dir)
+
+    def test_rate_limit_then_fenced_judgment_is_one_logical_judge_call(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases([cases[0]], criteria)
+        judgment = json.dumps(self.judgment_payload(prepared[0]), ensure_ascii=False)
+        sleeps: list[float] = []
+        judge = self.kimi_provider(
+            {},
+            urlopen=self.opener_from_events(
+                [
+                    self.rate_limit_error("5"),
+                    HTTPResponse(self.chat_payload(f"```json\n{judgment}\n```")),
+                ]
+            ),
+            sleep=sleeps.append,
+            max_retries=2,
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "retry-success"
+            runner.execute_run(
+                prepared,
+                ConsoleProvider(model="target", thinking="provider-default"),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            self.assertEqual(runner.execute_judge(run_dir, judge)["judged"], 1)
+            record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
+            self.assertEqual(record["status"], "JUDGMENT")
+            self.assertEqual(
+                record["structured_output_normalization"], "markdown_json_fence"
+            )
+            self.assertEqual(sleeps, [5.0])
+            metadata = runner.load_json_object(run_dir / "run.json")
+            self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
+            runner.validate_result_artifacts(run_dir)
 
     def test_empty_response_reason_codes_are_explicit_and_safe(self) -> None:
         cases = (
