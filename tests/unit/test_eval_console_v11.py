@@ -37,7 +37,7 @@ from eval_console.configuration import (  # noqa: E402
     role_configuration,
     update_role_configuration,
 )
-from eval_console.discovery import discover_evals  # noqa: E402
+from eval_console.discovery import HistoricalRun, discover_evals  # noqa: E402
 from eval_console.models import EvalExecutionMode, EvalRunRequest, ProviderProfile  # noqa: E402
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
 from eval_console.secrets import SecretResolver  # noqa: E402
@@ -716,6 +716,65 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                     )
             self.assertEqual(profiles_file.read_bytes(), before)
 
+    def test_profile_secret_mode_eof_does_not_write_configuration_or_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
+            before = profiles_file.read_bytes()
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            with mock.patch(
+                "builtins.input",
+                side_effect=["new-profile", "2", "https://api.example.com/v1", "judge-model", EOFError()],
+            ), mock.patch("eval_console.cli.getpass.getpass", return_value="secret-value"):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._create_profile_interactively(profiles_file, "judge", resolver)
+            self.assertEqual(profiles_file.read_bytes(), before)
+            self.assertFalse(resolver.has("RELATIONSHIP_EVAL_NEW_PROFILE_API_KEY"))
+
+    def test_history_selection_eof_does_not_read_or_mutate_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            historical_run = HistoricalRun(
+                run_dir=root / "existing-run",
+                eval_id="relationship_compass_behavioral_v1",
+                run_id="existing-run",
+                created_at=None,
+                total_cases=1,
+                passed_cases=0,
+                failed_case_ids=(),
+                error_case_ids=(),
+                incomplete_case_ids=("case-1",),
+                state="INTERRUPTED",
+                target_profile="target",
+                judge_profile="judge",
+                mode="FULL",
+                source_target_run_id=None,
+                target_model="model",
+                target_api_calls=1,
+                judge_api_calls=0,
+                target_successes=1,
+                target_errors=0,
+                target_missing=0,
+                judge_completed=0,
+                judge_errors=0,
+                judge_missing=1,
+            )
+            with mock.patch("eval_console.cli.discover_runs", return_value=[historical_run]), mock.patch(
+                "builtins.input", side_effect=EOFError
+            ), mock.patch("eval_console.cli.runner.load_json_object") as load_run, mock.patch(
+                "sys.stdout", io.StringIO()
+            ):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._interactive_history_stage(
+                        [],
+                        root / "profiles.json",
+                        root / "results",
+                        False,
+                        SecretResolver(root / ".env.local"),
+                        EvalExecutionMode.RESUME,
+                    )
+            load_run.assert_not_called()
+
     def test_partial_required_profile_setup_does_not_write_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             profiles_file = Path(temp_dir) / "profiles.json"
@@ -799,12 +858,13 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                                 "provider": "openai_compatible_chat",
                                 "api_key_env": "MOONSHOT_API_KEY",
                                 "base_url": "https://api.moonshot.cn/v1",
+                                "declared_upstream_vendor": "Moonshot AI",
                                 "max_retries": 2,
                                 "capabilities": {
                                     "max_output_tokens_parameter": "max_completion_tokens"
                                 },
                                 "judge": {
-                                    "model": "kimi-k2.6",
+                                    "model_env": "MOONSHOT_JUDGE_MODEL",
                                     "structured_output_mode": "json_object",
                                     "thinking": "disabled",
                                     "max_output_tokens": 4096,
@@ -818,18 +878,24 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
             resolver = SecretResolver(root / ".env.local")
             resolver.set_session("MOONSHOT_API_KEY", "secret-value")
             output = io.StringIO()
-            with mock.patch("sys.stdout", output):
+            with mock.patch.dict(os.environ, {"MOONSHOT_JUDGE_MODEL": "kimi-k2.6"}), mock.patch(
+                "sys.stdout", output
+            ):
                 console_cli._print_provider_configuration(profiles_file, resolver)
             rendered = output.getvalue()
             for expected in (
+                "Profile=kimi",
                 "Provider=openai_compatible_chat",
-                "模型=kimi-k2.6",
+                "Vendor=Moonshot AI",
+                "Model=kimi-k2.6",
                 "Structured Output=json_object",
                 "Thinking=disabled",
                 "Max Output Tokens=4096",
                 "Token Parameter=max_completion_tokens",
                 "Max Retries=2",
+                "Model Env=MOONSHOT_JUDGE_MODEL",
                 "API Key 环境变量=MOONSHOT_API_KEY",
+                "API Key 已配置=是",
             ):
                 self.assertIn(expected, rendered)
             self.assertNotIn("secret-value", rendered)

@@ -28,6 +28,7 @@ from .discovery import (
 from .configuration import (
     create_local_profile_config,
     create_profile,
+    profile_api_key_env,
     role_configuration,
     update_role_configuration,
     validate_base_url,
@@ -746,14 +747,14 @@ def _create_profile_interactively(
     )
     base_url = _prompt_url("API Base URL")
     model = _prompt_required("模型名称")
+    api_key_env = profile_api_key_env(name)
+    secret_configuration = _collect_secret_configuration(api_key_env)
     profile_name = create_profile(
         profiles_file, name=name, provider=provider, role=role, model=model, base_url=base_url
     )
     profile = next(item for item in discover_provider_profiles(profiles_file) if item.name == profile_name)
-    details = role_configuration(profiles_file, profile_name, role)
-    api_key_env = details.get("api_key_env")
-    if isinstance(api_key_env, str):
-        _configure_secret(resolver, api_key_env)
+    if secret_configuration is not None:
+        _store_secret(resolver, api_key_env, *secret_configuration)
     return profile
 
 
@@ -799,6 +800,12 @@ def _edit_profile_menu(
 
 
 def _configure_secret(resolver: SecretResolver, env_name: str) -> None:
+    configuration = _collect_secret_configuration(env_name)
+    if configuration is not None:
+        _store_secret(resolver, env_name, *configuration)
+
+
+def _collect_secret_configuration(env_name: str) -> tuple[str, str] | None:
     print(f"未检测到 API Key：{env_name}")
     print("请输入 API Key（输入内容不会显示）：")
     value = _read_interactive_secret("> ")
@@ -809,6 +816,10 @@ def _configure_secret(resolver: SecretResolver, env_name: str) -> None:
         "如何使用这个 API Key",
         [("仅本次会话使用", "session"), ("保存到本地，供以后使用", "local")],
     )
+    return value, mode
+
+
+def _store_secret(resolver: SecretResolver, env_name: str, value: str, mode: str) -> None:
     if mode == "local":
         resolver.save_local(env_name, value)
         print("API Key 已保存到 .env.local；该文件已被 Git 忽略，不会提交到仓库。")
@@ -821,7 +832,6 @@ def _print_provider_configuration(profiles_file: Path, resolver: SecretResolver)
     profiles = discover_provider_profiles(profiles_file)
     print("\n当前 Provider 配置")
     for profile in profiles:
-        print(f"  {profile.name}")
         for role, enabled in (("target", profile.supports_target), ("judge", profile.supports_judge)):
             if not enabled:
                 continue
@@ -834,24 +844,38 @@ def _print_provider_configuration(profiles_file: Path, resolver: SecretResolver)
                 else None
             )
             role_defaults = runner.PROVIDER_ROLE_DEFAULTS[role]
+            model_env = details.get("model_env")
+            configured_model = details.get("model")
+            resolved_model = configured_model or (
+                os.environ.get(model_env) if isinstance(model_env, str) else None
+            )
+            base_url_env = details.get("base_url_env")
+            configured_base_url = details.get("base_url")
+            resolved_base_url = configured_base_url or (
+                os.environ.get(base_url_env) if isinstance(base_url_env, str) else None
+            )
             structured_output = details.get("structured_output_mode")
             if structured_output is None:
                 structured_output = "不适用（Target 普通文本）" if role == "target" else "未声明"
             print(
-                f"    {role.title()}：Provider={details.get('provider') or '缺失'}，"
-                f"模型={details.get('model') or details.get('model_env') or '缺失'}，"
+                f"    {role.title()}：Profile={profile.name}，"
+                f"Provider={details.get('provider') or '缺失'}，"
+                f"Vendor={details.get('declared_upstream_vendor') or '未声明'}，"
+                f"Model={resolved_model or '未解析'}，"
                 f"Structured Output={structured_output}，"
                 f"Thinking={details.get('thinking') or 'provider-default'}"
             )
             print(
                 f"      Max Output Tokens={details.get('max_output_tokens') or role_defaults['max_output_tokens']}，"
                 f"Token Parameter={token_parameter or '未声明'}，"
-                f"Max Retries={details.get('max_retries') or role_defaults['max_retries']}"
+                f"Max Retries={details.get('max_retries') or role_defaults['max_retries']}，"
+                f"Model Env={model_env or '未声明'}"
             )
             print(
-                f"      API Base URL={details.get('base_url') or details.get('base_url_env') or '缺失'}，"
-                f"API Key 环境变量={details.get('api_key_env') or '缺失'}"
-                f"（{'已配置' if configured else '缺失'}）"
+                f"      API Base URL={resolved_base_url or '未解析'}，"
+                f"Base URL Env={base_url_env or '未声明'}，"
+                f"API Key 环境变量={details.get('api_key_env') or '缺失'}，"
+                f"API Key 已配置={'是' if configured else '否'}"
             )
 
 

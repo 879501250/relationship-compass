@@ -132,11 +132,11 @@ API key 只从最终解析出的环境变量名读取：CLI `--api-key-env` 优�
 
 `reference-judge-kimi-official` 默认保留 `https://api.moonshot.cn/v1`。用户可在自己的 local profile 中将 `base_url` 显式改为 `https://api.moonshot.ai/v1`；如需环境变量选择，删除该静态 `base_url`，改用 `"base_url_env": "MOONSHOT_BASE_URL"` 并设置对应变量（这是显式配置，不是自动 fallback）。也可用 CLI `--base-url` 覆盖。两个平台的账号、key 和模型可用性需分别核对。本轮不修改私有 local profile。
 
-仅 `validation-gemini` 示例设为 `max_retries=4 / timeout_seconds=120`，用于用户报告的暂时性 500/503 容量错误；全局与其他 formal reference 示例仍沿用原默认值。两个 Gemini 示例均保持官方 provenance；旧 local Gemini profile 如仍显式写 `declared_relay`，请用户自行改为 `verified_direct` 或删除显式 provenance 让 registry 识别，仅用于后续新运行。旧 smoke/artifact 保留原样，不重写或升级。
+`validation-gemini` 示例设为 `max_retries=4 / timeout_seconds=120`，用于用户报告的暂时性 500/503 容量错误；`reference-judge-kimi-official` 明确设为 `max_retries=2`，其他未显式覆盖的 profile 使用 role 默认值。两个 Gemini 示例均保持官方 provenance；旧 local Gemini profile 如仍显式写 `declared_relay`，请用户自行改为 `verified_direct` 或删除显式 provenance 让 registry 识别，仅用于后续新运行。旧 smoke/artifact 保留原样，不重写或升级。
 
 Gemini 配置依据**用户已报告的真实 smoke evidence**：同一 `gemini-3.7-flash` requested/reported model 为 MATCHED，Target medium、Judge high + strict_json_schema、`max_tokens` 已通过现有 adapter。本轮未重复 smoke；该结果不保证其他 Gemini alias、参数组合或未来服务版本也受支持，示例通过 model_env 选择具体模型。
 
-`reference-judge-kimi-official` 的 Judge payload 使用 `json_object`（`response_format: {"type": "json_object"}`）、`thinking=disabled` 与 `max_completion_tokens=4096`；Markdown JSON fence 会在解析前规范化，HTTP 429 会遵守 `Retry-After` 并按 `max_retries=2` 有界重试。DeepSeek 仍使用 `text_json_fallback`，只要求文本返回后按 Judge schema 解析，不声称服务端保证 schema。两者均不声明 reasoning、temperature、top_p 或 seed。`max_tokens` 是其他 compatible profile 待 smoke 确认的最小 token 参数配置，不是已实测承诺；relay Target 的 token 参数也必须按实际服务核对。原 `moonshot-direct` 等兼容示例保留，不代表新增验证结论。正式使用任何 provider / model / capability 组合前都必须分别做 Target/Judge `provider-check` + `smoke`。
+`reference-judge-kimi-official` 的 Judge payload 使用 `json_object`（`response_format: {"type": "json_object"}`）、`thinking=disabled` 与 `max_completion_tokens=4096`；Kimi 偶发的完整响应 Markdown JSON 外层 fence 仅会移除一层，解析器不做模糊修复或内容猜测。HTTP 429 会遵守 `Retry-After`，并严格按 `max_retries=2` 有界重试。DeepSeek 仍使用 `text_json_fallback`，只要求文本返回后按 Judge schema 解析，不声称服务端保证 schema。两者均不声明 reasoning、temperature、top_p 或 seed。`max_tokens` 是其他 compatible profile 待 smoke 确认的最小 token 参数配置，不是已实测承诺；relay Target 的 token 参数也必须按实际服务核对。正式使用任何 provider / model / capability 组合前都必须分别做 Target/Judge `provider-check` + `smoke`。
 
 ### Validation Run 与 Behavioral Reference Run
 

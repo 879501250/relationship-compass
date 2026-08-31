@@ -149,34 +149,6 @@
         "output_per_million_tokens": null
       }
     },
-    "moonshot-direct": {
-      "provider": "openai_compatible_chat",
-      "api_key_env": "MOONSHOT_API_KEY",
-      "base_url": "https://api.moonshot.cn/v1",
-      "declared_upstream_vendor": "Moonshot AI",
-      "provenance_type": "verified_direct",
-      "strict_model_identity": true,
-      "capabilities": {
-        "reasoning_effort_supported": false,
-        "allowed_reasoning_efforts": [],
-        "structured_output_modes": ["json_object", "text_json_fallback"],
-        "temperature_supported": false,
-        "top_p_supported": false,
-        "seed_supported": false,
-        "max_output_tokens_parameter": "max_tokens"
-      },
-      "target": {
-        "model_env": "MOONSHOT_MODEL"
-      },
-      "judge": {
-        "model_env": "MOONSHOT_JUDGE_MODEL",
-        "structured_output_mode": "json_object"
-      },
-      "pricing": {
-        "input_per_million_tokens": null,
-        "output_per_million_tokens": null
-      }
-    },
     "compatible-relay": {
       "provider": "openai_compatible_chat",
       "api_key_env": "RELATIONSHIP_EVAL_RELAY_API_KEY",

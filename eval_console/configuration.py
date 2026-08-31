@@ -30,6 +30,7 @@ def role_configuration(path: Path, profile_name: str, role: str) -> dict[str, An
     profile = runner.load_provider_profile(path, profile_name, role)
     return {
         "provider": profile.get("provider"),
+        "declared_upstream_vendor": profile.get("declared_upstream_vendor"),
         "model": profile.get("model"),
         "model_env": profile.get("model_env"),
         "base_url": profile.get("base_url"),
@@ -85,7 +86,6 @@ def create_profile(
         raise ValueError(f"Profile {normalized!r} 已存在。")
     if provider not in runner.PROVIDER_TYPES - {"chatgpt_web_manual"}:
         raise ValueError(f"不支持的 Provider 类型：{provider}")
-    env_prefix = "".join(char if char.isalnum() else "_" for char in normalized.upper())
     structured_mode = "strict_json_schema" if provider == "openai_responses" else "json_object"
     capabilities = {
         "reasoning_effort_supported": provider == "openai_responses",
@@ -104,7 +104,7 @@ def create_profile(
     }
     profiles[normalized] = {
         "provider": provider,
-        "api_key_env": f"RELATIONSHIP_EVAL_{env_prefix}_API_KEY",
+        "api_key_env": profile_api_key_env(normalized),
         "base_url": validate_base_url(base_url),
         "declared_upstream_vendor": "configure-locally",
         "provenance_type": "declared_relay",
@@ -117,6 +117,13 @@ def create_profile(
     }
     _write_json_atomically(path, data)
     return normalized
+
+
+def profile_api_key_env(name: str) -> str:
+    """Derive the local profile's deterministic API-key environment variable name."""
+    normalized = _required(name, "Profile name")
+    env_prefix = "".join(char if char.isalnum() else "_" for char in normalized.upper())
+    return f"RELATIONSHIP_EVAL_{env_prefix}_API_KEY"
 
 
 def validate_base_url(value: str) -> str:
