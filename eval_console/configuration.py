@@ -36,6 +36,10 @@ def role_configuration(path: Path, profile_name: str, role: str) -> dict[str, An
         "base_url_env": profile.get("base_url_env"),
         "api_key_env": profile.get("api_key_env"),
         "structured_output_mode": profile.get("structured_output_mode"),
+        "thinking": profile.get("thinking"),
+        "max_output_tokens": profile.get("max_output_tokens"),
+        "max_retries": profile.get("max_retries"),
+        "capabilities": profile.get("capabilities"),
     }
 
 

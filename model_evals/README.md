@@ -126,7 +126,7 @@ API key 只从最终解析出的环境变量名读取：CLI `--api-key-env` 优�
 | --- | --- |
 | `validation-gemini` | Google 官方开发验证；`GEMINI_API_KEY / GEMINI_TARGET_MODEL / GEMINI_JUDGE_MODEL`，Target medium + 普通文本，Judge high + strict JSON schema，`max_tokens`。 |
 | `reference-target-relay-openai` | 正式 Target 候选；endpoint/key/model 分别读取 `RELATIONSHIP_EVAL_TARGET_BASE_URL / RELATIONSHIP_EVAL_TARGET_API_KEY / RELATIONSHIP_EVAL_TARGET_MODEL`，upstream 声明 OpenAI，但保持 `declared_relay`。 |
-| `reference-judge-kimi-official` | Moonshot 官方 Judge 候选；`MOONSHOT_API_KEY / MOONSHOT_JUDGE_MODEL`，`json_object`。 |
+| `reference-judge-kimi-official` | Moonshot 官方 Judge 候选；`MOONSHOT_API_KEY / MOONSHOT_JUDGE_MODEL`，`json_object`、`thinking=disabled`、`max_completion_tokens=4096`、`max_retries=2`。 |
 | `reference-judge-deepseek-official` | DeepSeek 官方 Judge 候选；`DEEPSEEK_API_KEY / DEEPSEEK_JUDGE_MODEL`，保守 text JSON fallback。 |
 | `reference-judge-gemini-official` | Google 官方 Judge 候选或备用；`GEMINI_API_KEY / GEMINI_JUDGE_MODEL`，high + strict JSON schema。 |
 
@@ -136,7 +136,7 @@ API key 只从最终解析出的环境变量名读取：CLI `--api-key-env` 优�
 
 Gemini 配置依据**用户已报告的真实 smoke evidence**：同一 `gemini-3.7-flash` requested/reported model 为 MATCHED，Target medium、Judge high + strict_json_schema、`max_tokens` 已通过现有 adapter。本轮未重复 smoke；该结果不保证其他 Gemini alias、参数组合或未来服务版本也受支持，示例通过 model_env 选择具体模型。
 
-Kimi 示例的 Judge payload 使用 `json_object`（`response_format: {"type": "json_object"}`）；DeepSeek 仍使用 `text_json_fallback`，只要求文本返回后按 Judge schema 解析，不声称服务端保证 schema。两者均不声明 reasoning、temperature、top_p 或 seed。`max_tokens` 是待 smoke 确认的最小 token 参数配置，不是已实测承诺；relay Target 的 token 参数也必须按实际服务核对。原 `moonshot-direct` 等兼容示例保留，不代表新增验证结论。正式使用任何 provider / model / capability 组合前都必须分别做 Target/Judge `provider-check` + `smoke`。
+`reference-judge-kimi-official` 的 Judge payload 使用 `json_object`（`response_format: {"type": "json_object"}`）、`thinking=disabled` 与 `max_completion_tokens=4096`；Markdown JSON fence 会在解析前规范化，HTTP 429 会遵守 `Retry-After` 并按 `max_retries=2` 有界重试。DeepSeek 仍使用 `text_json_fallback`，只要求文本返回后按 Judge schema 解析，不声称服务端保证 schema。两者均不声明 reasoning、temperature、top_p 或 seed。`max_tokens` 是其他 compatible profile 待 smoke 确认的最小 token 参数配置，不是已实测承诺；relay Target 的 token 参数也必须按实际服务核对。原 `moonshot-direct` 等兼容示例保留，不代表新增验证结论。正式使用任何 provider / model / capability 组合前都必须分别做 Target/Judge `provider-check` + `smoke`。
 
 ### Validation Run 与 Behavioral Reference Run
 

@@ -30,6 +30,7 @@ from eval_console.cli import (  # noqa: E402
     build_interactive_request,
     build_parser,
 )
+import eval_console.cli as console_cli  # noqa: E402
 from eval_console.configuration import (  # noqa: E402
     create_local_profile_config,
     create_profile,
@@ -37,7 +38,7 @@ from eval_console.configuration import (  # noqa: E402
     update_role_configuration,
 )
 from eval_console.discovery import discover_evals  # noqa: E402
-from eval_console.models import EvalRunRequest, ProviderProfile  # noqa: E402
+from eval_console.models import EvalExecutionMode, EvalRunRequest, ProviderProfile  # noqa: E402
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
 from eval_console.secrets import SecretResolver  # noqa: E402
 from eval_console.test_runner import (  # noqa: E402
@@ -632,6 +633,206 @@ class InteractiveRequestTests(unittest.TestCase):
         self.assertTrue(request.dry_run)
         self.assertEqual(request.concurrency, 1)
         self.assertTrue(request.continue_on_error)
+
+
+class InteractiveInputRobustnessTests(unittest.TestCase):
+    def test_choose_and_confirmation_convert_eof_to_one_console_exception(self) -> None:
+        with mock.patch("builtins.input", side_effect=EOFError):
+            with self.assertRaises(console_cli.InteractiveInputClosed):
+                console_cli._choose("选择", [("一", 1)])
+        with mock.patch("builtins.input", side_effect=EOFError):
+            with self.assertRaises(console_cli.InteractiveInputClosed):
+                console_cli._yes_no("继续吗", default=False)
+
+    def test_top_menu_eof_exits_cleanly_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = io.StringIO()
+            with mock.patch("eval_console.cli.discover_evals", return_value=[]), mock.patch(
+                "eval_console.cli.discover_provider_profiles", return_value=[]
+            ), mock.patch("eval_console.cli._print_environment_summary"), mock.patch(
+                "eval_console.cli._setup_required", return_value=False
+            ), mock.patch("sys.stdin", io.StringIO("")), mock.patch("sys.stdout", output):
+                result = console_cli.interactive_console(root / "profiles.json", root / "results")
+            self.assertEqual(result, 0)
+            self.assertIn("检测到输入流已关闭", output.getvalue())
+            self.assertNotIn("Traceback", output.getvalue())
+
+    def test_top_menu_keyboard_interrupt_exits_cleanly(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = io.StringIO()
+            with mock.patch("eval_console.cli.discover_evals", return_value=[]), mock.patch(
+                "eval_console.cli.discover_provider_profiles", return_value=[]
+            ), mock.patch("eval_console.cli._print_environment_summary"), mock.patch(
+                "eval_console.cli._setup_required", return_value=False
+            ), mock.patch("builtins.input", side_effect=KeyboardInterrupt), mock.patch("sys.stdout", output):
+                result = console_cli.interactive_console(root / "profiles.json", root / "results")
+            self.assertEqual(result, 0)
+            self.assertIn("已取消操作，Eval Console 已退出", output.getvalue())
+            self.assertNotIn("Traceback", output.getvalue())
+
+    def test_submenu_keyboard_interrupt_returns_to_the_main_menu(self) -> None:
+        profile = ProviderProfile("target", "openai_responses", "target-model", None, True, False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = io.StringIO()
+            with mock.patch("eval_console.cli.discover_evals", return_value=[]), mock.patch(
+                "eval_console.cli.discover_provider_profiles", return_value=[profile]
+            ), mock.patch("eval_console.cli._print_environment_summary"), mock.patch(
+                "eval_console.cli._setup_required", return_value=False
+            ), mock.patch(
+                "builtins.input", side_effect=["4", KeyboardInterrupt(), "8"]
+            ), mock.patch("sys.stdout", output):
+                result = console_cli.interactive_console(root / "profiles.json", root / "results")
+            self.assertEqual(result, 0)
+            self.assertIn("操作已取消，正在返回主菜单", output.getvalue())
+            self.assertNotIn("Traceback", output.getvalue())
+
+    def test_secret_eof_is_safe_and_does_not_echo_secret_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = io.StringIO()
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            with mock.patch("eval_console.cli.getpass.getpass", side_effect=EOFError), mock.patch(
+                "sys.stdout", output
+            ):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._configure_secret(resolver, "TEST_API_KEY")
+            self.assertNotIn("secret-value", output.getvalue())
+            self.assertFalse(resolver.has("TEST_API_KEY"))
+
+    def test_partial_profile_creation_does_not_write_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
+            before = profiles_file.read_bytes()
+            with mock.patch(
+                "builtins.input",
+                side_effect=["new-profile", "2", "https://api.example.com/v1", EOFError()],
+            ):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._create_profile_interactively(
+                        profiles_file, "judge", SecretResolver(Path(temp_dir) / ".env.local")
+                    )
+            self.assertEqual(profiles_file.read_bytes(), before)
+
+    def test_partial_required_profile_setup_does_not_write_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "target": {
+                                "provider": "openai_responses",
+                                "api_key_env": "TARGET_API_KEY",
+                                "target": {},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = profiles_file.read_bytes()
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            resolver.set_session("TARGET_API_KEY", "session-only")
+            profile = ProviderProfile("target", "openai_responses", None, None, True, False)
+            with mock.patch(
+                "builtins.input", side_effect=["target-model", EOFError()]
+            ):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._ensure_role_ready(profiles_file, profile, "target", resolver)
+            self.assertEqual(profiles_file.read_bytes(), before)
+
+    def test_partial_eval_setup_does_not_create_run_or_call_provider(self) -> None:
+        definition = discover_evals()[0]
+        profile = ProviderProfile("target", "openai_responses", "target-model", None, True, False)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            results_root = root / "results"
+            with mock.patch(
+                "eval_console.cli.discover_provider_profiles", return_value=[profile]
+            ), mock.patch(
+                "eval_console.cli._choose",
+                side_effect=[EvalExecutionMode.FULL, definition, "single"],
+            ), mock.patch("builtins.input", side_effect=EOFError), mock.patch(
+                "eval_console.cli.execute_request"
+            ) as execute_request:
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._interactive_run(
+                        [definition],
+                        root / "profiles.json",
+                        results_root,
+                        False,
+                        SecretResolver(root / ".env.local"),
+                    )
+            execute_request.assert_not_called()
+            self.assertFalse(results_root.exists())
+
+    def test_raw_running_interrupt_is_not_reclassified_as_menu_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def select_run(_prompt: str, _choices: object) -> tuple[str, object]:
+                def raise_running_interrupt() -> int:
+                    raise KeyboardInterrupt
+
+                return "运行行为评测", raise_running_interrupt
+
+            with mock.patch("eval_console.cli.discover_evals", return_value=[]), mock.patch(
+                "eval_console.cli.discover_provider_profiles", return_value=[]
+            ), mock.patch("eval_console.cli._print_environment_summary"), mock.patch(
+                "eval_console.cli._setup_required", return_value=False
+            ), mock.patch("eval_console.cli._choose", side_effect=select_run):
+                with self.assertRaises(KeyboardInterrupt):
+                    console_cli.interactive_console(root / "profiles.json", root / "results")
+
+    def test_provider_configuration_displays_effective_fields_without_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profiles_file = root / "profiles.json"
+            profiles_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "kimi": {
+                                "provider": "openai_compatible_chat",
+                                "api_key_env": "MOONSHOT_API_KEY",
+                                "base_url": "https://api.moonshot.cn/v1",
+                                "max_retries": 2,
+                                "capabilities": {
+                                    "max_output_tokens_parameter": "max_completion_tokens"
+                                },
+                                "judge": {
+                                    "model": "kimi-k2.6",
+                                    "structured_output_mode": "json_object",
+                                    "thinking": "disabled",
+                                    "max_output_tokens": 4096,
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            resolver = SecretResolver(root / ".env.local")
+            resolver.set_session("MOONSHOT_API_KEY", "secret-value")
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                console_cli._print_provider_configuration(profiles_file, resolver)
+            rendered = output.getvalue()
+            for expected in (
+                "Provider=openai_compatible_chat",
+                "模型=kimi-k2.6",
+                "Structured Output=json_object",
+                "Thinking=disabled",
+                "Max Output Tokens=4096",
+                "Token Parameter=max_completion_tokens",
+                "Max Retries=2",
+                "API Key 环境变量=MOONSHOT_API_KEY",
+            ):
+                self.assertIn(expected, rendered)
+            self.assertNotIn("secret-value", rendered)
 
 
 if __name__ == "__main__":

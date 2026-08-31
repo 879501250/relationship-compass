@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import signal
 import subprocess
@@ -55,6 +56,14 @@ from .test_runner import TerminalTestReporter, TestSuiteRequest, TestSuiteRunner
 
 
 T = TypeVar("T")
+
+
+class InteractiveInputClosed(Exception):
+    """Raised when an interactive input stream has reached EOF."""
+
+
+class InteractiveInputCancelled(Exception):
+    """Raised when Ctrl+C interrupts an interactive menu prompt."""
 
 
 class _ActivityReporter:
@@ -428,39 +437,49 @@ def _command_interactive(args: argparse.Namespace) -> int:
 def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool = False) -> int:
     """Run the non-developer interactive menu using only standard-library prompts."""
     while True:
-        evals = discover_evals()
-        profiles = discover_provider_profiles(profiles_file)
-        resolver = SecretResolver(runner.ROOT / ".env.local")
-        resolver.prepare_environment()
-        _print_environment_summary(evals, profiles, profiles_file, results_root, resolver)
-        if _setup_required(profiles_file, profiles, resolver) and _yes_no(
-            "检测到首次配置尚未完成。现在开始配置吗？", default=True
-        ):
-            _setup_wizard(profiles_file, results_root, resolver)
-            continue
-        options: list[tuple[str, Callable[[], int | None]]] = [
-            ("运行行为评测", lambda: _interactive_run(evals, profiles_file, results_root, debug, resolver)),
-            ("运行自动化测试", lambda: _interactive_tests()),
-            ("检查运行环境", lambda: _interactive_validate(profiles_file, results_root, debug)),
-            ("配置 Provider", lambda: _configure_providers(profiles_file, resolver)),
-            ("查看历史运行", lambda: _print_history(discover_runs(results_root))),
-            ("继续 / 重试历史运行", lambda: _interactive_history_stage(
-                evals, profiles_file, results_root, debug, resolver, EvalExecutionMode.RESUME
-            )),
-            (
-                "查看 Eval 列表",
-                lambda: _print_evals(evals),
-            ),
-            ("退出", lambda: 0),
-        ]
         try:
+            evals = discover_evals()
+            profiles = discover_provider_profiles(profiles_file)
+            resolver = SecretResolver(runner.ROOT / ".env.local")
+            resolver.prepare_environment()
+            _print_environment_summary(evals, profiles, profiles_file, results_root, resolver)
+            if _setup_required(profiles_file, profiles, resolver) and _yes_no(
+                "检测到首次配置尚未完成。现在开始配置吗？", default=True
+            ):
+                _setup_wizard(profiles_file, results_root, resolver)
+                continue
+            options: list[tuple[str, Callable[[], int | None]]] = [
+                ("运行行为评测", lambda: _interactive_run(evals, profiles_file, results_root, debug, resolver)),
+                ("运行自动化测试", lambda: _interactive_tests()),
+                ("检查运行环境", lambda: _interactive_validate(profiles_file, results_root, debug)),
+                ("配置 Provider", lambda: _configure_providers(profiles_file, resolver)),
+                ("查看历史运行", lambda: _print_history(discover_runs(results_root))),
+                ("继续 / 重试历史运行", lambda: _interactive_history_stage(
+                    evals, profiles_file, results_root, debug, resolver, EvalExecutionMode.RESUME
+                )),
+                (
+                    "查看 Eval 列表",
+                    lambda: _print_evals(evals),
+                ),
+                ("退出", lambda: 0),
+            ]
             choice = _choose(
                 "请选择操作", [(label, (label, action)) for label, action in options]
             )
-            if choice[0] == "退出":
-                return 0
+        except InteractiveInputClosed:
+            print("\n检测到输入流已关闭，Eval Console 已安全退出。")
+            return 0
+        except InteractiveInputCancelled:
+            print("\n已取消操作，Eval Console 已退出。")
+            return 0
+        if choice[0] == "退出":
+            return 0
+        try:
             result = choice[1]()
-        except KeyboardInterrupt:
+        except InteractiveInputClosed:
+            print("\n检测到输入流已关闭，Eval Console 已安全退出。")
+            return 0
+        except InteractiveInputCancelled:
             print("\n操作已取消，正在返回主菜单。")
             continue
         if result not in (None, 0):
@@ -692,12 +711,20 @@ def _configure_role(
         os.environ.get(details["model_env"]) if isinstance(details.get("model_env"), str) else None
     )
     base_url = details.get("base_url")
+    model_update: str | None = None
+    base_url_update: str | None = None
     if required and not model:
-        model = _prompt_required("模型名称")
-        update_role_configuration(profiles_file, selected.name, role, model=model)
+        model_update = _prompt_required("模型名称")
     if required and not base_url:
-        base_url = _prompt_url("API Base URL")
-        update_role_configuration(profiles_file, selected.name, role, base_url=base_url)
+        base_url_update = _prompt_url("API Base URL")
+    if model_update is not None or base_url_update is not None:
+        update_role_configuration(
+            profiles_file,
+            selected.name,
+            role,
+            model=model_update,
+            base_url=base_url_update,
+        )
     api_key_env = details.get("api_key_env")
     if isinstance(api_key_env, str) and api_key_env and not resolver.has(api_key_env):
         _configure_secret(resolver, api_key_env)
@@ -772,11 +799,9 @@ def _edit_profile_menu(
 
 
 def _configure_secret(resolver: SecretResolver, env_name: str) -> None:
-    from getpass import getpass
-
     print(f"未检测到 API Key：{env_name}")
     print("请输入 API Key（输入内容不会显示）：")
-    value = getpass("> ")
+    value = _read_interactive_secret("> ")
     if not value.strip():
         print("未修改 API Key。")
         return
@@ -802,10 +827,31 @@ def _print_provider_configuration(profiles_file: Path, resolver: SecretResolver)
                 continue
             details = role_configuration(profiles_file, profile.name, role)
             configured = resolver.has(details.get("api_key_env"))
+            capabilities = details.get("capabilities")
+            token_parameter = (
+                capabilities.get("max_output_tokens_parameter")
+                if isinstance(capabilities, dict)
+                else None
+            )
+            role_defaults = runner.PROVIDER_ROLE_DEFAULTS[role]
+            structured_output = details.get("structured_output_mode")
+            if structured_output is None:
+                structured_output = "不适用（Target 普通文本）" if role == "target" else "未声明"
             print(
-                f"    {role.title()}：模型={details.get('model') or details.get('model_env') or '缺失'}，"
-                f"API Base URL={details.get('base_url') or details.get('base_url_env') or '缺失'}，"
-                f"API Key={'已配置' if configured else '缺失'}"
+                f"    {role.title()}：Provider={details.get('provider') or '缺失'}，"
+                f"模型={details.get('model') or details.get('model_env') or '缺失'}，"
+                f"Structured Output={structured_output}，"
+                f"Thinking={details.get('thinking') or 'provider-default'}"
+            )
+            print(
+                f"      Max Output Tokens={details.get('max_output_tokens') or role_defaults['max_output_tokens']}，"
+                f"Token Parameter={token_parameter or '未声明'}，"
+                f"Max Retries={details.get('max_retries') or role_defaults['max_retries']}"
+            )
+            print(
+                f"      API Base URL={details.get('base_url') or details.get('base_url_env') or '缺失'}，"
+                f"API Key 环境变量={details.get('api_key_env') or '缺失'}"
+                f"（{'已配置' if configured else '缺失'}）"
             )
 
 
@@ -829,9 +875,11 @@ def _ensure_role_ready(
         if isinstance(details.get("model_env"), str)
         else None
     )
+    model_update: str | None = None
+    base_url_update: str | None = None
     if not model:
         print(f"{role.title()} Profile 尚未配置模型，现在完成配置。")
-        update_role_configuration(profiles_file, profile.name, role, model=_prompt_required("模型名称"))
+        model_update = _prompt_required("模型名称")
     base_url = details.get("base_url") or (
         os.environ.get(details["base_url_env"])
         if isinstance(details.get("base_url_env"), str)
@@ -839,7 +887,15 @@ def _ensure_role_ready(
     )
     if not base_url:
         print(f"{role.title()} Profile 尚未配置 API Base URL，现在完成配置。")
-        update_role_configuration(profiles_file, profile.name, role, base_url=_prompt_url("API Base URL"))
+        base_url_update = _prompt_url("API Base URL")
+    if model_update is not None or base_url_update is not None:
+        update_role_configuration(
+            profiles_file,
+            profile.name,
+            role,
+            model=model_update,
+            base_url=base_url_update,
+        )
     env_name = details.get("api_key_env")
     if not isinstance(env_name, str) or not env_name:
         print(f"{role.title()} Profile 缺少 API Key 环境变量名。")
@@ -857,7 +913,7 @@ def _interactive_concurrency() -> int:
     if selected != "custom":
         return int(selected)
     while True:
-        value = input("请输入并发数（1-32）：").strip()
+        value = _read_interactive_input("请输入并发数（1-32）：").strip()
         if value.isdigit() and 1 <= int(value) <= 32:
             return int(value)
         print("并发数必须介于 1 到 32 之间。")
@@ -865,7 +921,7 @@ def _interactive_concurrency() -> int:
 
 def _prompt_required(label: str) -> str:
     while True:
-        value = input(f"{label}: ").strip()
+        value = _read_interactive_input(f"{label}: ").strip()
         if value:
             return value
         print(f"{label}不能为空。")
@@ -876,12 +932,12 @@ def _prompt_with_current(label: str, current: object) -> str:
     if not value:
         return _prompt_required(label)
     print(f"{label}\n当前值：{value}\n直接回车保留当前值，或输入新的值：")
-    return input("> ").strip() or value
+    return _read_interactive_input("> ").strip() or value
 
 
 def _prompt_url(label: str) -> str:
     while True:
-        value = input(f"{label}: ").strip()
+        value = _read_interactive_input(f"{label}: ").strip()
         try:
             return validate_base_url(value)
         except ValueError as exc:
@@ -894,7 +950,7 @@ def _prompt_url_with_current(label: str, current: object) -> str:
         return _prompt_url(label)
     while True:
         print(f"{label}\n当前值：{value}\n直接回车保留当前值，或输入新的地址：")
-        candidate = input("> ").strip() or value
+        candidate = _read_interactive_input("> ").strip() or value
         try:
             return validate_base_url(candidate)
         except ValueError as exc:
@@ -1047,7 +1103,8 @@ def _interactive_history_stage(
         if selector is JudgeCaseSelector.SELECTED:
             _print_cases(definition)
             requested = parse_case_selection(
-                input("请输入位置、ID 或范围：").strip(), [case.case_id for case in definition.cases]
+                _read_interactive_input("请输入位置、ID 或范围：").strip(),
+                [case.case_id for case in definition.cases],
             )
         case_ids = list(judge_only_case_ids(source.run_dir, selector, tuple(requested)))
         stage_plan = plan_stage_execution(source.run_dir, tuple(case_ids), mode)
@@ -1066,7 +1123,7 @@ def _interactive_history_stage(
         if scope == "selected":
             _print_cases(definition)
             case_ids = parse_case_selection(
-                input("请输入位置、ID 或范围：").strip(),
+                _read_interactive_input("请输入位置、ID 或范围：").strip(),
                 [case.case_id for case in definition.cases],
             )
         else:
@@ -1268,17 +1325,17 @@ def _interactive_case_selection(definition: EvalDefinition, results_root: Path) 
         return [case.case_id for case in definition.cases]
     _print_cases(definition)
     if mode == "single":
-        value = input("\n请输入一个 Case 位置或 Case ID：").strip()
+        value = _read_interactive_input("\n请输入一个 Case 位置或 Case ID：").strip()
     elif mode == "multiple":
         print("\n请输入位置或 ID，例如 1,3,5-8。输入 all 选择全部；输入 clear 重新选择。")
         while True:
-            value = input("选择：").strip()
+            value = _read_interactive_input("选择：").strip()
             if value.lower() == "clear":
                 print("已清空选择，请重新输入要运行的 Cases。")
                 continue
             break
     else:
-        value = input("\n请输入范围或组合，例如 1-10 或 1,3,5-10：").strip()
+        value = _read_interactive_input("\n请输入范围或组合，例如 1-10 或 1,3,5-10：").strip()
     selected = parse_case_selection(value, [case.case_id for case in definition.cases])
     print("\n已选择的 Cases：")
     for case_id in selected:
@@ -1537,12 +1594,32 @@ def _print_history(runs: list[HistoricalRun]) -> None:
         print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
 
 
+def _read_interactive_input(prompt: str) -> str:
+    """Read a visible Console prompt without conflating EOF and Ctrl+C."""
+    try:
+        return input(prompt)
+    except EOFError as exc:
+        raise InteractiveInputClosed() from exc
+    except KeyboardInterrupt as exc:
+        raise InteractiveInputCancelled() from exc
+
+
+def _read_interactive_secret(prompt: str) -> str:
+    """Read a secret prompt with the same lifecycle semantics as visible input."""
+    try:
+        return getpass.getpass(prompt)
+    except EOFError as exc:
+        raise InteractiveInputClosed() from exc
+    except KeyboardInterrupt as exc:
+        raise InteractiveInputCancelled() from exc
+
+
 def _choose(prompt: str, choices: list[tuple[str, T]]) -> T:
     print(f"\n{prompt}:")
     for number, (label, _) in enumerate(choices, start=1):
         print(f"  {number}. {label}")
     while True:
-        value = input("请输入编号：").strip()
+        value = _read_interactive_input("请输入编号：").strip()
         if value.isdigit() and 1 <= int(value) <= len(choices):
             return choices[int(value) - 1][1]
         print(f"请输入 1 到 {len(choices)} 之间的编号。")
@@ -1551,7 +1628,7 @@ def _choose(prompt: str, choices: list[tuple[str, T]]) -> T:
 def _yes_no(prompt: str, *, default: bool) -> bool:
     suffix = "[是/否，默认是]" if default else "[是/否，默认否]"
     while True:
-        value = input(f"{prompt} {suffix}: ").strip().lower()
+        value = _read_interactive_input(f"{prompt} {suffix}: ").strip().lower()
         if not value:
             return default
         if value in {"y", "yes", "是"}:
