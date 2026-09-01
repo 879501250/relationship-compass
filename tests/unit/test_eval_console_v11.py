@@ -1,4 +1,4 @@
-"""Eval Console V1.1 UX, setup, secret, and shared test-runner checks."""
+"""Eval Console V1.2A UX, setup, secret, and shared test-runner checks."""
 
 from __future__ import annotations
 
@@ -38,7 +38,12 @@ from eval_console.configuration import (  # noqa: E402
     update_role_configuration,
 )
 from eval_console.discovery import HistoricalRun, discover_evals  # noqa: E402
-from eval_console.models import EvalExecutionMode, EvalRunRequest, ProviderProfile  # noqa: E402
+from eval_console.models import (  # noqa: E402
+    EVAL_CONSOLE_VERSION,
+    EvalExecutionMode,
+    EvalRunRequest,
+    ProviderProfile,
+)
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
 from eval_console.secrets import SecretResolver  # noqa: E402
 from eval_console.test_runner import (  # noqa: E402
@@ -548,7 +553,8 @@ class InteractiveRequestTests(unittest.TestCase):
             with mock.patch("sys.stdout", output):
                 _print_environment_summary(discover_evals(), profiles, profiles_file, root / "results", resolver)
             rendered = output.getvalue()
-            self.assertIn("评测控制台 V1.1", rendered)
+            self.assertIn(f"评测控制台 V{EVAL_CONSOLE_VERSION}", rendered)
+            self.assertNotIn("评测控制台 V1.1", rendered)
             self.assertIn("Target：可用", rendered)
             self.assertIn("Judge：可用", rendered)
             self.assertIn("Target API 凭据", rendered)
@@ -556,6 +562,11 @@ class InteractiveRequestTests(unittest.TestCase):
             self.assertIn("[已配置] Target API 凭据", rendered)
             self.assertIn("[缺失] Judge API 凭据", rendered)
             self.assertIn("输出目录：可写", rendered)
+
+    def test_console_help_and_environment_use_the_single_version_constant(self) -> None:
+        rendered = build_parser().format_help()
+        self.assertIn(f"评测控制台 V{EVAL_CONSOLE_VERSION}", rendered)
+        self.assertNotIn("评测控制台 V1.1", rendered)
 
     def test_environment_summary_does_not_claim_a_missing_target_profile_is_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -706,7 +717,7 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
             profiles_file = Path(temp_dir) / "profiles.json"
             profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
             before = profiles_file.read_bytes()
-            with mock.patch(
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
                 "builtins.input",
                 side_effect=["new-profile", "2", "https://api.example.com/v1", EOFError()],
             ):
@@ -722,7 +733,7 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
             profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
             before = profiles_file.read_bytes()
             resolver = SecretResolver(Path(temp_dir) / ".env.local")
-            with mock.patch(
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
                 "builtins.input",
                 side_effect=["new-profile", "2", "https://api.example.com/v1", "judge-model", EOFError()],
             ), mock.patch("eval_console.cli.getpass.getpass", return_value="secret-value"):
@@ -730,6 +741,56 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                     console_cli._create_profile_interactively(profiles_file, "judge", resolver)
             self.assertEqual(profiles_file.read_bytes(), before)
             self.assertFalse(resolver.has("RELATIONSHIP_EVAL_NEW_PROFILE_API_KEY"))
+
+    def test_new_profile_confirmation_eof_does_not_write_configuration_or_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
+            before = profiles_file.read_bytes()
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "builtins.input",
+                side_effect=[
+                    "new-profile",
+                    "2",
+                    "https://api.example.com/v1",
+                    "judge-model",
+                    "1",
+                    EOFError(),
+                ],
+            ), mock.patch("eval_console.cli.getpass.getpass", return_value="secret-value"):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._create_profile_interactively(profiles_file, "judge", resolver)
+            self.assertEqual(profiles_file.read_bytes(), before)
+            self.assertFalse(resolver.has("RELATIONSHIP_EVAL_NEW_PROFILE_API_KEY"))
+
+    def test_new_profile_configuration_commits_once_after_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text('{"profiles": {}}\n', encoding="utf-8")
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "builtins.input",
+                side_effect=[
+                    "new-profile",
+                    "2",
+                    "https://api.example.com/v1",
+                    "judge-model",
+                    "1",
+                    "yes",
+                ],
+            ), mock.patch("eval_console.cli.getpass.getpass", return_value="secret-value"), mock.patch(
+                "eval_console.cli.create_profile", wraps=create_profile
+            ) as commit:
+                profile = console_cli._create_profile_interactively(profiles_file, "judge", resolver)
+            self.assertIsNotNone(profile)
+            self.assertEqual(commit.call_count, 1)
+            rendered = profiles_file.read_text(encoding="utf-8")
+            self.assertIn('"new-profile"', rendered)
+            self.assertIn('"model": "judge-model"', rendered)
+            self.assertIn('"base_url": "https://api.example.com/v1"', rendered)
+            self.assertNotIn("secret-value", rendered)
+            self.assertTrue(resolver.has("RELATIONSHIP_EVAL_NEW_PROFILE_API_KEY"))
 
     def test_history_selection_eof_does_not_read_or_mutate_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -802,6 +863,105 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                 with self.assertRaises(console_cli.InteractiveInputClosed):
                     console_cli._ensure_role_ready(profiles_file, profile, "target", resolver)
             self.assertEqual(profiles_file.read_bytes(), before)
+
+    def test_existing_profile_secret_eof_keeps_all_draft_changes_in_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "target": {
+                                "provider": "openai_responses",
+                                "api_key_env": "TARGET_API_KEY",
+                                "target": {},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = profiles_file.read_bytes()
+            profile = ProviderProfile("target", "openai_responses", None, None, True, False)
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "builtins.input", side_effect=["target-model", "https://api.example.com/v1"]
+            ), mock.patch("eval_console.cli.getpass.getpass", side_effect=EOFError):
+                with self.assertRaises(console_cli.InteractiveInputClosed):
+                    console_cli._ensure_role_ready(
+                        profiles_file, profile, "target", SecretResolver(Path(temp_dir) / ".env.local")
+                    )
+            self.assertEqual(profiles_file.read_bytes(), before)
+
+    def test_existing_profile_secret_or_confirmation_interrupt_keeps_yaml_unchanged(self) -> None:
+        for phase, secret_effect, inputs in (
+            ("secret", KeyboardInterrupt(), ["target-model", "https://api.example.com/v1"]),
+            (
+                "confirmation",
+                "secret-value",
+                ["target-model", "https://api.example.com/v1", "1", KeyboardInterrupt()],
+            ),
+        ):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temp_dir:
+                profiles_file = Path(temp_dir) / "profiles.json"
+                profiles_file.write_text(
+                    json.dumps(
+                        {
+                            "profiles": {
+                                "target": {
+                                    "provider": "openai_responses",
+                                    "api_key_env": "TARGET_API_KEY",
+                                    "target": {},
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                before = profiles_file.read_bytes()
+                resolver = SecretResolver(Path(temp_dir) / ".env.local")
+                profile = ProviderProfile("target", "openai_responses", None, None, True, False)
+                with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                    "builtins.input", side_effect=inputs
+                ), mock.patch(
+                    "eval_console.cli.getpass.getpass", side_effect=secret_effect
+                ):
+                    with self.assertRaises(console_cli.InteractiveInputCancelled):
+                        console_cli._ensure_role_ready(profiles_file, profile, "target", resolver)
+                self.assertEqual(profiles_file.read_bytes(), before)
+                self.assertFalse(resolver.has("TARGET_API_KEY"))
+
+    def test_existing_profile_configuration_commits_once_after_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles_file = Path(temp_dir) / "profiles.json"
+            profiles_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "target": {
+                                "provider": "openai_responses",
+                                "api_key_env": "TARGET_API_KEY",
+                                "target": {},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            resolver = SecretResolver(Path(temp_dir) / ".env.local")
+            profile = ProviderProfile("target", "openai_responses", None, None, True, False)
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
+                "builtins.input",
+                side_effect=["target-model", "https://api.example.com/v1", "1", "yes"],
+            ), mock.patch("eval_console.cli.getpass.getpass", return_value="secret-value"), mock.patch(
+                "eval_console.cli.update_role_configuration", wraps=update_role_configuration
+            ) as commit:
+                self.assertTrue(console_cli._ensure_role_ready(profiles_file, profile, "target", resolver))
+            self.assertEqual(commit.call_count, 1)
+            rendered = profiles_file.read_text(encoding="utf-8")
+            self.assertIn('"model": "target-model"', rendered)
+            self.assertIn('"base_url": "https://api.example.com/v1"', rendered)
+            self.assertNotIn("secret-value", rendered)
+            self.assertTrue(resolver.has("TARGET_API_KEY"))
 
     def test_partial_eval_setup_does_not_create_run_or_call_provider(self) -> None:
         definition = discover_evals()[0]

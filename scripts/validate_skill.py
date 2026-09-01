@@ -19,17 +19,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from eval_console.test_runner import TestSuiteRequest, TestSuiteRunner
-from eval_console.models import CURRENT_CONSOLE_SCHEMA_VERSION
 from date_utils import normalize_iso8601
 from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
-from run_model_evals import (
-    ModelEvalError,
-    RUNTIME_PROFILES,
-    command_validate as validate_model_eval_command,
-    validate_result_artifacts,
-)
+from run_model_evals import command_validate as validate_model_eval_command
 
 ERRORS: list[str] = []
 SKILL_MAX_LINES = 150
@@ -530,32 +524,13 @@ def validate_model_eval_definitions(runtime_only: bool) -> None:
 
 
 def validate_model_eval_artifacts(runtime_only: bool) -> None:
-    """Statically validate saved run schemas without executing a provider."""
-    if runtime_only:
-        return
-    results_root = ROOT / "model_evals" / "results"
-    if not results_root.is_dir():
-        return
-    for version_dir in sorted(path for path in results_root.iterdir() if path.is_dir()):
-        if not re.fullmatch(r"v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version_dir.name):
-            ERRORS.append(f"invalid model eval version directory: {version_dir.name}")
-            continue
-        for profile_dir in sorted(path for path in version_dir.iterdir() if path.is_dir()):
-            if profile_dir.name not in RUNTIME_PROFILES:
-                ERRORS.append(f"invalid model eval runtime profile: {profile_dir.name}")
-                continue
-            for run_dir in sorted(path for path in profile_dir.iterdir() if path.is_dir()):
-                try:
-                    metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-                    console = metadata.get("console") if isinstance(metadata, dict) else None
-                    if (
-                        not isinstance(console, dict)
-                        or console.get("schema_version") != CURRENT_CONSOLE_SCHEMA_VERSION
-                    ):
-                        continue
-                    validate_result_artifacts(run_dir)
-                except (json.JSONDecodeError, ModelEvalError, OSError) as exc:
-                    ERRORS.append(f"model eval artifact validation failed: {exc}")
+    """Leave mutable run evidence to the explicit per-run artifact validator.
+
+    Package validation must not inspect result directories: they may contain
+    user-owned, untracked API evidence or intentionally frozen historical runs
+    whose schema is no longer part of the current execution contract.
+    """
+    return
 
 
 def validate_automated_test_suites(runtime_only: bool) -> None:

@@ -584,7 +584,9 @@ class ProviderProvenanceTests(unittest.TestCase):
                     repository_sha="a" * 40,
                     repository_dirty=False,
                 )
-                runner.execute_judge(run_dir, judge)
+                runner.execute_judge(
+                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                )
                 old_summary = runner.build_report(run_dir)
                 runner.accept_reference(run_dir, notes="offline historical test fixture only")
                 old_status = runner.effective_reference_status(run_dir)

@@ -415,6 +415,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
             counts = runner.execute_judge(
                 run_dir,
                 judge,
+                case_ids=runner.planned_judge_case_ids(run_dir),
                 on_case_complete=lambda record, done, total: progress.append(
                     (record["status"], done, total)
                 ),

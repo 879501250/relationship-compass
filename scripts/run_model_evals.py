@@ -736,6 +736,9 @@ def eval_identity_manifest(snapshot: dict[str, Any]) -> dict[str, Any]:
     cases = snapshot.get("cases")
     criteria = snapshot.get("criteria")
     judge = snapshot.get("judge")
+    eval_schema_version = snapshot.get("eval_schema_version")
+    if not isinstance(eval_schema_version, str) or not eval_schema_version:
+        raise ModelEvalError("eval-definition.json is missing eval_schema_version")
     suite_metadata = [
         {
             "case_id": case.get("id"),
@@ -746,7 +749,7 @@ def eval_identity_manifest(snapshot: dict[str, Any]) -> dict[str, Any]:
         for case in cases
     ] if isinstance(cases, list) else []
     manifest = {
-        "eval_schema_version": snapshot.get("eval_schema_version", "legacy-schema-v1"),
+        "eval_schema_version": eval_schema_version,
         "eval_definition_hash": eval_definition_hash(snapshot),
         "cases_hash": sha256_bytes(canonical_json_bytes(cases)),
         "rubric_hash": sha256_bytes(canonical_json_bytes(criteria)),
@@ -816,14 +819,6 @@ def runtime_snapshot(
             "pack_info": pack_info,
         }
     raise ModelEvalError(f"invalid runtime profile: {runtime_profile!r}")
-
-
-def legacy_bundle_hash(
-    prepared_records: list[dict[str, Any]], runtime: dict[str, Any]
-) -> str:
-    return sha256_bytes(
-        canonical_json_bytes({"prepared": prepared_records, "runtime": runtime})
-    )
 
 
 def sut_bundle_snapshot(
@@ -2192,32 +2187,31 @@ def execution_scope(
     return case_ids
 
 
+def planned_judge_case_ids(run_dir: Path) -> tuple[str, ...]:
+    """Return the current planner-owned scope of successful Target responses."""
+    validate_result_artifacts(run_dir)
+    metadata = load_json_object(run_dir / "run.json")
+    cases = metadata.get("cases")
+    if not isinstance(cases, list):
+        raise ModelEvalError("run.json is missing case snapshots")
+    available_case_ids = tuple(case["case_id"] for case in cases)
+    responses = index_response_attempts(
+        load_jsonl(run_dir / "responses.jsonl"), set(available_case_ids), "responses.jsonl"
+    )
+    return tuple(
+        case_id
+        for case_id in available_case_ids
+        if responses.get(case_id, {}).get("status") == "MODEL_RESPONSE"
+    )
+
+
 def run_counts(
     cases: list[dict[str, Any]],
     responses: list[dict[str, Any]],
     judgments: list[dict[str, Any]],
-    *,
-    schema_version: int = 3,
 ) -> dict[str, int]:
     total = len(cases)
     case_ids = {case["case_id"] for case in cases}
-    if schema_version < 3:
-        response_statuses = [record.get("status") for record in responses]
-        judgment_statuses = [record.get("status") for record in judgments]
-        return {
-            "total_cases": total,
-            "response_records": len(responses),
-            "model_response": response_statuses.count("MODEL_RESPONSE"),
-            "provider_error": response_statuses.count("PROVIDER_ERROR"),
-            "timeout": response_statuses.count("TIMEOUT"),
-            "invalid_response": response_statuses.count("INVALID_RESPONSE"),
-            "not_run": total - len(responses),
-            "judged": judgment_statuses.count("JUDGMENT"),
-            "judge_error": judgment_statuses.count("JUDGE_ERROR"),
-            "not_judged": judgment_statuses.count("NOT_JUDGED")
-            + total
-            - len(judgments),
-        }
     effective_responses = (
         index_response_attempts(responses, case_ids) if responses else {}
     )
@@ -2531,7 +2525,6 @@ def refresh_run_metadata(
         cases,
         responses,
         judgments,
-        schema_version=metadata.get("schema_version", 2),
     )
     metadata["status"] = derive_run_status(
         cases,
@@ -2540,30 +2533,25 @@ def refresh_run_metadata(
         judge_phase_completed=metadata.get("judge_phase_completed") is True,
         interrupted=metadata.get("interrupted") is True,
     )
-    if metadata.get("schema_version", 2) >= 3:
-        case_ids = {case["case_id"] for case in cases}
-        effective_responses = list(index_response_attempts(responses, case_ids).values())
-        latest_judgments = list(index_judgment_attempts(judgments, case_ids).values())
-        metadata["execution"] = {
-            "target": execution_purity(effective_responses, response=True),
-            "judge": execution_purity(latest_judgments, response=False),
-        }
-        metadata["identities"] = {
-            "target": {
-                "provider_identity": metadata.get("target", {}).get("provider_identity"),
-                "model_identity": model_identity_from_records(
-                    metadata.get("target"), responses
-                ),
-            },
-            "judge": {
-                "provider_identity": metadata.get("judge", {}).get("provider_identity")
-                if isinstance(metadata.get("judge"), dict)
-                else None,
-                "model_identity": model_identity_from_records(
-                    metadata.get("judge"), judgments
-                ),
-            },
-        }
+    case_ids = {case["case_id"] for case in cases}
+    effective_responses = list(index_response_attempts(responses, case_ids).values())
+    latest_judgments = list(index_judgment_attempts(judgments, case_ids).values())
+    metadata["execution"] = {
+        "target": execution_purity(effective_responses, response=True),
+        "judge": execution_purity(latest_judgments, response=False),
+    }
+    metadata["identities"] = {
+        "target": {
+            "provider_identity": metadata.get("target", {}).get("provider_identity"),
+            "model_identity": model_identity_from_records(metadata.get("target"), responses),
+        },
+        "judge": {
+            "provider_identity": metadata.get("judge", {}).get("provider_identity")
+            if isinstance(metadata.get("judge"), dict)
+            else None,
+            "model_identity": model_identity_from_records(metadata.get("judge"), judgments),
+        },
+    }
 
 
 def artifact_binding(metadata: dict[str, Any]) -> dict[str, str]:
@@ -2572,13 +2560,10 @@ def artifact_binding(metadata: dict[str, Any]) -> dict[str, str]:
         "bundle_hash": metadata["bundle_hash"],
         "runtime_profile": metadata["runtime_profile"],
     }
-    if metadata.get("schema_version", 2) >= 3:
-        binding["target_provider_config_hash"] = metadata["target"][
-            "provider_config_hash"
-        ]
-        binding["eval_identity_hash"] = metadata["eval_identity"]["eval_identity_hash"]
-        binding["sut_bundle_hash"] = metadata["sut_bundle_hash"]
-        binding["target_execution_hash"] = metadata["target_execution_hash"]
+    binding["target_provider_config_hash"] = metadata["target"]["provider_config_hash"]
+    binding["eval_identity_hash"] = metadata["eval_identity"]["eval_identity_hash"]
+    binding["sut_bundle_hash"] = metadata["sut_bundle_hash"]
+    binding["target_execution_hash"] = metadata["target_execution_hash"]
     return binding
 
 
@@ -3119,6 +3104,8 @@ def _sanitize_diagnostic_excerpt(value: str, limit: int = 800) -> str:
 def judge_execution_manifest(
     metadata: dict[str, Any], judge_metadata: dict[str, Any]
 ) -> dict[str, Any]:
+    if "thinking" not in judge_metadata:
+        raise ModelEvalError("judge provider metadata is missing thinking")
     manifest = {
         "provider_config_hash": judge_metadata["provider_config_hash"],
         "requested_model": judge_metadata.get("requested_model"),
@@ -3127,15 +3114,11 @@ def judge_execution_manifest(
         "structured_output_mode": judge_metadata.get("structured_output_mode"),
         "judge_prompt_version": JUDGE_PROMPT_VERSION,
         "judge_prompt_hash": metadata.get("judge_prompt_hash"),
-        "eval_identity_hash": metadata.get("eval_identity", {}).get(
-            "eval_identity_hash"
-        ),
-        "sut_bundle_hash": metadata.get("sut_bundle_hash", metadata.get("bundle_hash")),
+        "eval_identity_hash": metadata["eval_identity"]["eval_identity_hash"],
+        "sut_bundle_hash": metadata["sut_bundle_hash"],
         "sampling_policy": judge_metadata.get("sampling_policy"),
+        "thinking": judge_metadata["thinking"],
     }
-    # Keep historical artifacts valid while requiring new runs to bind thinking.
-    if "thinking" in judge_metadata:
-        manifest["thinking"] = judge_metadata.get("thinking")
     manifest["execution_hash"] = sha256_bytes(canonical_json_bytes(manifest))
     return manifest
 
@@ -3160,6 +3143,8 @@ def execute_judge(
     if not isinstance(cases, list):
         raise ModelEvalError("run.json is missing case snapshots")
     available_case_ids = tuple(case["case_id"] for case in cases)
+    if case_ids is None:
+        raise ModelEvalError("Judge execution requires an explicit planner-owned case scope")
     scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Judge")
     scoped_case_id_set = set(scoped_case_ids)
     scoped_cases = [case for case in cases if case["case_id"] in scoped_case_id_set]
@@ -3172,11 +3157,7 @@ def execute_judge(
         for case_id in scoped_case_ids
         if responses.get(case_id, {}).get("status") != "MODEL_RESPONSE"
     ]
-    # Console stages always pass Planner-owned case_ids and therefore require
-    # every requested Case to have a successful effective Target response.
-    # Preserve the legacy unscoped API behavior for callers that intentionally
-    # ask the runner to judge every eligible Target in a partial run.
-    if case_ids is not None and missing_target_cases:
+    if missing_target_cases:
         raise ModelEvalError(
             "judge scope contains cases without successful target responses: "
             + ", ".join(missing_target_cases)
@@ -3212,7 +3193,7 @@ def execute_judge(
         if responses.get(case["case_id"], {}).get("status") == "MODEL_RESPONSE"
         and existing.get(case["case_id"], {}).get("status") != "JUDGMENT"
     ]
-    if not eligible and case_ids is not None:
+    if not eligible:
         judged = sum(
             existing.get(case_id, {}).get("status") == "JUDGMENT"
             for case_id in scoped_case_ids
@@ -3545,16 +3526,8 @@ def aggregate_results(
     if not isinstance(cases, list) or not cases:
         raise ModelEvalError("run.json is missing case snapshots")
     case_ids = {case["case_id"] for case in cases}
-    responses = (
-        index_response_attempts(response_records, case_ids, "responses.jsonl")
-        if metadata.get("schema_version", 2) >= 3
-        else index_case_records(response_records, case_ids, "responses.jsonl")
-    )
-    judgments = (
-        index_judgment_attempts(judgment_records, case_ids)
-        if metadata.get("schema_version", 2) >= 3
-        else index_case_records(judgment_records, case_ids, "judgments.jsonl")
-    )
+    responses = index_response_attempts(response_records, case_ids, "responses.jsonl")
+    judgments = index_judgment_attempts(judgment_records, case_ids)
     passed_cases: list[str] = []
     failed_cases: list[dict[str, Any]] = []
     errored_cases: list[dict[str, Any]] = []
@@ -3563,20 +3536,19 @@ def aggregate_results(
     failed_criteria = 0
     total_criteria = sum(len(case["criteria"]) for case in cases)
     suite_stats: dict[str, dict[str, Any]] = {}
-    if metadata.get("schema_version", 2) >= 3:
-        for suite in sorted({case["suite"] for case in cases}):
-            suite_cases = [case for case in cases if case["suite"] == suite]
-            suite_stats[suite] = {
-                "total_cases": len(suite_cases),
-                "passed_cases": 0,
-                "failed_cases": 0,
-                "errored_cases": 0,
-                "not_evaluable_cases": 0,
-                "total_criteria": sum(len(case["criteria"]) for case in suite_cases),
-                "passed_criteria": 0,
-                "failed_criteria": 0,
-                "unjudged_criteria": sum(len(case["criteria"]) for case in suite_cases),
-            }
+    for suite in sorted({case["suite"] for case in cases}):
+        suite_cases = [case for case in cases if case["suite"] == suite]
+        suite_stats[suite] = {
+            "total_cases": len(suite_cases),
+            "passed_cases": 0,
+            "failed_cases": 0,
+            "errored_cases": 0,
+            "not_evaluable_cases": 0,
+            "total_criteria": sum(len(case["criteria"]) for case in suite_cases),
+            "passed_criteria": 0,
+            "failed_criteria": 0,
+            "unjudged_criteria": sum(len(case["criteria"]) for case in suite_cases),
+        }
     for case in cases:
         case_id = case["case_id"]
         suite = case.get("suite")
@@ -3685,7 +3657,7 @@ def aggregate_results(
         else ("FAIL" if failed_cases else "PASS")
     )
     summary = {
-        "schema_version": 2,
+        "schema_version": 3,
         "evaluation_type": "model_behavioral",
         "run_id": metadata.get("run_id"),
         "product_version": metadata.get("product_version"),
@@ -3727,8 +3699,6 @@ def aggregate_results(
         "errored_cases": errored_cases,
         "not_evaluable_cases": not_evaluable_cases,
     }
-    if metadata.get("schema_version", 2) < 3:
-        return summary
     latest_judgments = list(judgments.values())
     target_usage = aggregate_usage(list(responses.values()))
     judge_usage = aggregate_usage(latest_judgments)
@@ -3754,7 +3724,6 @@ def aggregate_results(
     ) is True else "PENDING_HUMAN_REVIEW"
     summary.update(
         {
-            "schema_version": 3,
             "eval_identity": metadata.get("eval_identity"),
             "sut_identity": metadata.get("sut_identity"),
             "sut_bundle_hash": metadata.get("sut_bundle_hash"),
@@ -3852,60 +3821,59 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
                 f"Judge={summary.get('api_calls', {}).get('judge', 0)}"
             ),
         ]
-    if summary.get("schema_version", 2) >= 3:
-        provenance = summary["provider_provenance"]
-        target_identity = provenance["target"].get("model_identity") or {}
-        judge_identity = provenance["judge"].get("model_identity") or {}
-        target_provider_identity = provenance["target"].get("provider_identity") or {}
-        judge_provider_identity = provenance["judge"].get("provider_identity") or {}
+    provenance = summary["provider_provenance"]
+    target_identity = provenance["target"].get("model_identity") or {}
+    judge_identity = provenance["judge"].get("model_identity") or {}
+    target_provider_identity = provenance["target"].get("provider_identity") or {}
+    judge_provider_identity = provenance["judge"].get("provider_identity") or {}
+    markdown[3:3] = [
+        f"- Reference qualification: `{summary['reference_qualification']}`",
+        f"- Reference quality: `{summary['reference_quality']}`",
+        f"- Acceptance status: `{summary['acceptance_status']}`",
+        (
+            "- Execution purity: "
+            f"target=`{summary['execution']['target']}` / "
+            f"judge=`{summary['execution']['judge']}`"
+        ),
+        (
+            "- Target provenance: "
+            f"`{provenance['target']['provider']}` / "
+            f"requested=`{target_identity.get('requested_model')}` / "
+            f"`{provenance['target']['provenance_type']}` / "
+            f"endpoint_verified=`{target_provider_identity.get('endpoint_verified')}` / "
+            f"model_status=`{target_identity.get('status')}` / "
+            f"reported=`{target_identity.get('reported_models')}`"
+        ),
+        (
+            "- Judge provenance: "
+            f"`{provenance['judge']['provider']}` / "
+            f"requested=`{judge_identity.get('requested_model')}` / "
+            f"`{provenance['judge']['provenance_type']}` / "
+            f"endpoint_verified=`{judge_provider_identity.get('endpoint_verified')}` / "
+            f"model_status=`{judge_identity.get('status')}` / "
+            f"reported=`{judge_identity.get('reported_models')}`"
+        ),
+    ]
+    if summary.get("warnings"):
         markdown[3:3] = [
-            f"- Reference qualification: `{summary['reference_qualification']}`",
-            f"- Reference quality: `{summary['reference_quality']}`",
-            f"- Acceptance status: `{summary['acceptance_status']}`",
-            (
-                "- Execution purity: "
-                f"target=`{summary['execution']['target']}` / "
-                f"judge=`{summary['execution']['judge']}`"
-            ),
-            (
-                "- Target provenance: "
-                f"`{provenance['target']['provider']}` / "
-                f"requested=`{target_identity.get('requested_model')}` / "
-                f"`{provenance['target']['provenance_type']}` / "
-                f"endpoint_verified=`{target_provider_identity.get('endpoint_verified')}` / "
-                f"model_status=`{target_identity.get('status')}` / "
-                f"reported=`{target_identity.get('reported_models')}`"
-            ),
-            (
-                "- Judge provenance: "
-                f"`{provenance['judge']['provider']}` / "
-                f"requested=`{judge_identity.get('requested_model')}` / "
-                f"`{provenance['judge']['provenance_type']}` / "
-                f"endpoint_verified=`{judge_provider_identity.get('endpoint_verified')}` / "
-                f"model_status=`{judge_identity.get('status')}` / "
-                f"reported=`{judge_identity.get('reported_models')}`"
-            ),
+            f"- Warnings: `{', '.join(summary['warnings'])}`",
         ]
-        if summary.get("warnings"):
-            markdown[3:3] = [
-                f"- Warnings: `{', '.join(summary['warnings'])}`",
-            ]
-        markdown.extend(
-            [
-                "## Suite Results",
-                "",
-                "| Suite | Status | Cases | Pass | Fail | Error | Not evaluable | Criteria pass/fail/unjudged |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-            ]
+    markdown.extend(
+        [
+            "## Suite Results",
+            "",
+            "| Suite | Status | Cases | Pass | Fail | Error | Not evaluable | Criteria pass/fail/unjudged |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for suite, values in summary["suites"].items():
+        markdown.append(
+            f"| {suite} | {values['status']} | {values['total_cases']} | {values['passed_cases']} | "
+            f"{values['failed_cases']} | {values['errored_cases']} | "
+            f"{values['not_evaluable_cases']} | {values['passed_criteria']}/"
+            f"{values['failed_criteria']}/{values['unjudged_criteria']} |"
         )
-        for suite, values in summary["suites"].items():
-            markdown.append(
-                f"| {suite} | {values['status']} | {values['total_cases']} | {values['passed_cases']} | "
-                f"{values['failed_cases']} | {values['errored_cases']} | "
-                f"{values['not_evaluable_cases']} | {values['passed_criteria']}/"
-                f"{values['failed_criteria']}/{values['unjudged_criteria']} |"
-            )
-        markdown.append("")
+    markdown.append("")
     if summary["failed_cases"]:
         markdown.extend(["## Failed Cases", ""])
         for case in summary["failed_cases"]:
@@ -3996,7 +3964,7 @@ def effective_reference_status(run_dir: Path) -> dict[str, Any]:
     metadata = load_json_object(run_dir / "run.json")
     summary = load_json_object(summary_path)
     acceptance = load_reference_acceptance(run_dir)
-    execution_status = summary.get("execution_status", summary.get("completion_status"))
+    execution_status = summary["execution_status"]
     acceptance_status = (
         "ACCEPTED"
         if isinstance(acceptance, dict) and acceptance.get("accepted") is True
@@ -4057,19 +4025,20 @@ def build_report(run_dir: Path) -> dict[str, Any]:
         "bundle_hash": summary["bundle_hash"],
         "counts": summary["counts"],
     }
-    if metadata.get("schema_version", 2) >= 3:
-        metadata["report"].update(
-            {
-                "reference_qualification": summary["reference_qualification"],
-                "reference_quality": summary["reference_quality"],
-                "suites": summary["suites"],
-            }
-        )
+    metadata["report"].update(
+        {
+            "reference_qualification": summary["reference_qualification"],
+            "reference_quality": summary["reference_quality"],
+            "suites": summary["suites"],
+        }
+    )
     write_json(run_dir / "run.json", metadata)
     return summary
 
 
 def validate_response_record(record: dict[str, Any]) -> None:
+    if record.get("schema_version") != 3:
+        raise ModelEvalError("unsupported target response artifact schema")
     status = record.get("status")
     valid_statuses = {
         "MODEL_RESPONSE",
@@ -4091,7 +4060,7 @@ def validate_response_record(record: dict[str, Any]) -> None:
             raise ModelEvalError(f"{record.get('case_id')}: MODEL_RESPONSE needs text")
         if record.get("error") is not None:
             raise ModelEvalError(f"{record.get('case_id')}: MODEL_RESPONSE must not contain error")
-        if record.get("schema_version", 1) >= 2 and (
+        if (
             record.get("error_code") is not None or record.get("retryable") is not None
         ):
             raise ModelEvalError(f"{record.get('case_id')}: successful response has error state")
@@ -4100,7 +4069,7 @@ def validate_response_record(record: dict[str, Any]) -> None:
             raise ModelEvalError(f"{record.get('case_id')}: error response must not contain text")
         if not isinstance(record.get("error"), str) or not record["error"].strip():
             raise ModelEvalError(f"{record.get('case_id')}: error response needs a reason")
-        if record.get("schema_version", 1) >= 2 and (
+        if (
             record.get("error_code") not in PROVIDER_ERROR_CODES
             or not isinstance(record.get("retryable"), bool)
         ):
@@ -4139,7 +4108,9 @@ def forbidden_secret_key(value: Any) -> str | None:
     return None
 
 
-def validate_provider_manifest(manifest: Any, label: str) -> None:
+def validate_provider_manifest(
+    manifest: Any, label: str, *, require_thinking: bool = False
+) -> None:
     if not isinstance(manifest, dict):
         raise ModelEvalError(f"{label} provider manifest must be an object")
     required = {
@@ -4162,6 +4133,8 @@ def validate_provider_manifest(manifest: Any, label: str) -> None:
         "parameters",
         "provider_config_hash",
     }
+    if require_thinking:
+        required.add("thinking")
     if required - set(manifest):
         raise ModelEvalError(
             f"{label} provider manifest is missing {sorted(required - set(manifest))}"
@@ -4229,7 +4202,7 @@ def validate_provider_manifest(manifest: Any, label: str) -> None:
     ):
         raise ModelEvalError(f"{label} provider configuration is invalid")
     sampling = manifest.get("sampling_policy")
-    legacy_sampling_fields = {
+    sampling_policy_fields = {
         "temperature",
         "top_p",
         "seed",
@@ -4240,10 +4213,15 @@ def validate_provider_manifest(manifest: Any, label: str) -> None:
     sampling_fields = frozenset(sampling) if isinstance(sampling, dict) else frozenset()
     if (
         not isinstance(sampling, dict)
-        or sampling_fields not in {
-            frozenset(legacy_sampling_fields),
-            frozenset(legacy_sampling_fields | {"thinking"}),
-        }
+        or sampling_fields
+        not in (
+            {frozenset(sampling_policy_fields | {"thinking"})}
+            if require_thinking
+            else {
+                frozenset(sampling_policy_fields),
+                frozenset(sampling_policy_fields | {"thinking"}),
+            }
+        )
         or sampling.get("n") != 1
         or sampling.get("thinking") not in {None, "provider-default", "enabled", "disabled"}
     ):
@@ -4385,23 +4363,18 @@ def validate_provenance(
             computed_definition,
             "eval-definition.json",
         )
-    if metadata.get("schema_version", 2) >= 3:
-        computed_eval_identity = eval_identity_manifest(definition)
-        if metadata.get("eval_identity") != computed_eval_identity:
-            raise ModelEvalError("eval identity differs from eval-definition.json")
-        for field in ("cases_hash", "rubric_hash", "judge_prompt_hash"):
-            if metadata.get(field) != computed_eval_identity[field]:
-                raise fingerprint_mismatch(
-                    field,
-                    metadata.get(field),
-                    computed_eval_identity[field],
-                    "eval-definition.json",
-                )
-    computed_bundle = (
-        bundle_hash(prepared, runtime)
-        if metadata.get("schema_version", 2) >= 3
-        else legacy_bundle_hash(prepared, runtime)
-    )
+    computed_eval_identity = eval_identity_manifest(definition)
+    if metadata.get("eval_identity") != computed_eval_identity:
+        raise ModelEvalError("eval identity differs from eval-definition.json")
+    for field in ("cases_hash", "rubric_hash", "judge_prompt_hash"):
+        if metadata.get(field) != computed_eval_identity[field]:
+            raise fingerprint_mismatch(
+                field,
+                metadata.get(field),
+                computed_eval_identity[field],
+                "eval-definition.json",
+            )
+    computed_bundle = bundle_hash(prepared, runtime)
     if metadata.get("bundle_hash") != computed_bundle:
         raise fingerprint_mismatch(
             "bundle_hash",
@@ -4409,29 +4382,26 @@ def validate_provenance(
             computed_bundle,
             "prepared.jsonl + runtime-snapshot.json",
         )
-    if metadata.get("schema_version", 2) >= 3:
-        if metadata.get("sut_bundle_hash") != computed_bundle:
-            raise fingerprint_mismatch(
-                "sut_bundle_hash",
-                metadata.get("sut_bundle_hash"),
-                computed_bundle,
-                "prepared runtime + runtime-snapshot.json",
-            )
-        expected_sut = {
-            "product_version": metadata.get("product_version"),
-            "git_sha": metadata.get("git_sha"),
-            "runtime_profile": metadata.get("runtime_profile"),
-            "skill_instructions_hash": source_content_hash(sources, "skill"),
-            "generated_knowledge_hash": sha256_bytes(
-                canonical_json_bytes(runtime.get("knowledge"))
-            )
-            if isinstance(runtime.get("knowledge"), list)
-            else None,
-            "runtime_snapshot_hash": sha256_bytes(canonical_json_bytes(runtime)),
-            "sut_bundle_hash": computed_bundle,
-        }
-        if metadata.get("sut_identity") != expected_sut:
-            raise ModelEvalError("SUT identity differs from runtime/source snapshots")
+    if metadata.get("sut_bundle_hash") != computed_bundle:
+        raise fingerprint_mismatch(
+            "sut_bundle_hash",
+            metadata.get("sut_bundle_hash"),
+            computed_bundle,
+            "prepared runtime + runtime-snapshot.json",
+        )
+    expected_sut = {
+        "product_version": metadata.get("product_version"),
+        "git_sha": metadata.get("git_sha"),
+        "runtime_profile": metadata.get("runtime_profile"),
+        "skill_instructions_hash": source_content_hash(sources, "skill"),
+        "generated_knowledge_hash": sha256_bytes(canonical_json_bytes(runtime.get("knowledge")))
+        if isinstance(runtime.get("knowledge"), list)
+        else None,
+        "runtime_snapshot_hash": sha256_bytes(canonical_json_bytes(runtime)),
+        "sut_bundle_hash": computed_bundle,
+    }
+    if metadata.get("sut_identity") != expected_sut:
+        raise ModelEvalError("SUT identity differs from runtime/source snapshots")
     for field, source_name in (
         ("runner_revision", "runner"),
         ("skill_revision", "skill"),
@@ -4490,14 +4460,11 @@ def validate_lifecycle(
     timestamps = {field: parse_timestamp(metadata.get(field), field) for field in fields}
     if timestamps["created_at"] is None:
         raise ModelEvalError("run.json created_at is required")
-    if metadata.get("schema_version", 2) >= 3:
-        response_view = list(
-            index_response_attempts(
-                responses, {case["case_id"] for case in metadata["cases"]}
-            ).values()
-        )
-    else:
-        response_view = responses
+    response_view = list(
+        index_response_attempts(
+            responses, {case["case_id"] for case in metadata["cases"]}
+        ).values()
+    )
     target_complete = (
         bool(response_view)
         and len(response_view) == len(metadata["cases"])
@@ -4556,29 +4523,28 @@ def validate_result_artifacts(run_dir: Path) -> None:
     if missing:
         raise ModelEvalError(f"{run_dir}: run.json missing fields {sorted(missing)}")
     schema_version = metadata.get("schema_version")
-    if schema_version not in {2, 3} or metadata.get("evaluation_type") != "model_behavioral":
+    if schema_version != 3 or metadata.get("evaluation_type") != "model_behavioral":
         raise ModelEvalError(f"{run_dir}: unsupported run artifact schema")
-    if schema_version == 3:
-        v3_required = {
-            "eval_identity",
-            "sut_identity",
-            "sut_bundle_hash",
-            "cases_hash",
-            "rubric_hash",
-            "judge_prompt_hash",
-            "provider_manifest",
-            "target_execution",
-            "target_execution_hash",
-            "judge_execution",
-            "samples_per_case",
-            "reference_acceptance",
-            "execution",
-            "identities",
-        }
-        if v3_required - set(metadata):
-            raise ModelEvalError(
-                f"{run_dir}: run.json missing v3 fields {sorted(v3_required - set(metadata))}"
-            )
+    current_required = {
+        "eval_identity",
+        "sut_identity",
+        "sut_bundle_hash",
+        "cases_hash",
+        "rubric_hash",
+        "judge_prompt_hash",
+        "provider_manifest",
+        "target_execution",
+        "target_execution_hash",
+        "judge_execution",
+        "samples_per_case",
+        "reference_acceptance",
+        "execution",
+        "identities",
+    }
+    if current_required - set(metadata):
+        raise ModelEvalError(
+            f"{run_dir}: run.json missing current fields {sorted(current_required - set(metadata))}"
+        )
     if metadata.get("run_id") != run_dir.name or metadata.get("baseline") is not False:
         raise ModelEvalError(f"{run_dir}: invalid run identity or automatic baseline flag")
     version = normalize_pack_version(metadata.get("pack_version"))
@@ -4601,15 +4567,12 @@ def validate_result_artifacts(run_dir: Path) -> None:
         "eval_definition_hash",
         "bundle_hash",
         "skill_revision",
+        "sut_bundle_hash",
+        "cases_hash",
+        "rubric_hash",
+        "judge_prompt_hash",
+        "target_execution_hash",
     )
-    if schema_version == 3:
-        hash_fields = hash_fields + (
-            "sut_bundle_hash",
-            "cases_hash",
-            "rubric_hash",
-            "judge_prompt_hash",
-            "target_execution_hash",
-        )
     for field in hash_fields:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(metadata.get(field))):
             raise ModelEvalError(f"{run_dir}: invalid {field}")
@@ -4635,50 +4598,45 @@ def validate_result_artifacts(run_dir: Path) -> None:
         or not isinstance(judge.get("parameters"), dict)
     ):
         raise ModelEvalError(f"{run_dir}: invalid judge identity")
-    if schema_version == 3:
-        validate_provider_manifest(target, "target")
-        for index, fallback in enumerate(metadata.get("target_fallbacks", [])):
-            validate_provider_manifest(fallback, f"target_fallbacks[{index}]")
-        if judge is not None:
-            validate_provider_manifest(judge, "judge")
-        for index, fallback in enumerate(metadata.get("judge_fallbacks", [])):
-            if not isinstance(fallback, dict):
-                raise ModelEvalError(f"{run_dir}: invalid judge fallback")
-            validate_provider_manifest(
-                fallback.get("provider"), f"judge_fallbacks[{index}]"
-            )
-            expected_fallback_execution = judge_execution_manifest(
-                metadata, fallback["provider"]
-            )
-            if fallback.get("execution") != expected_fallback_execution:
-                raise ModelEvalError(f"{run_dir}: judge fallback execution mismatch")
-        manifest = metadata.get("provider_manifest")
-        if not isinstance(manifest, dict) or manifest.get("target") != target or manifest.get(
-            "judge"
-        ) != judge:
-            raise ModelEvalError(f"{run_dir}: provider manifest differs from target/judge")
-        if metadata.get("samples_per_case") != 1:
-            raise ModelEvalError(f"{run_dir}: only single-sample runs are supported")
+    validate_provider_manifest(target, "target")
+    for index, fallback in enumerate(metadata.get("target_fallbacks", [])):
+        validate_provider_manifest(fallback, f"target_fallbacks[{index}]")
+    if judge is not None:
+        validate_provider_manifest(judge, "judge", require_thinking=True)
+    for index, fallback in enumerate(metadata.get("judge_fallbacks", [])):
+        if not isinstance(fallback, dict):
+            raise ModelEvalError(f"{run_dir}: invalid judge fallback")
+        validate_provider_manifest(
+            fallback.get("provider"), f"judge_fallbacks[{index}]", require_thinking=True
+        )
+        expected_fallback_execution = judge_execution_manifest(metadata, fallback["provider"])
+        if fallback.get("execution") != expected_fallback_execution:
+            raise ModelEvalError(f"{run_dir}: judge fallback execution mismatch")
+    manifest = metadata.get("provider_manifest")
+    if not isinstance(manifest, dict) or manifest.get("target") != target or manifest.get(
+        "judge"
+    ) != judge:
+        raise ModelEvalError(f"{run_dir}: provider manifest differs from target/judge")
+    if metadata.get("samples_per_case") != 1:
+        raise ModelEvalError(f"{run_dir}: only single-sample runs are supported")
     snapshots = load_run_snapshots(run_dir)
     prepared = validate_provenance(metadata, snapshots)
-    if schema_version == 3:
-        expected_target_execution = target_execution_manifest(
-            target=target,
-            eval_identity=metadata["eval_identity"],
-            sut_identity=metadata["sut_identity"],
-            runtime_profile=metadata["runtime_profile"],
-        )
-        if (
-            metadata.get("target_execution") != expected_target_execution
-            or metadata.get("target_execution_hash")
-            != expected_target_execution["execution_hash"]
-        ):
-            raise ModelEvalError(f"{run_dir}: target_execution_hash mismatch")
-        if judge is None:
-            if metadata.get("judge_execution") is not None:
-                raise ModelEvalError(f"{run_dir}: judge execution exists without judge")
-        elif metadata.get("judge_execution") != judge_execution_manifest(metadata, judge):
-            raise ModelEvalError(f"{run_dir}: judge execution identity mismatch")
+    expected_target_execution = target_execution_manifest(
+        target=target,
+        eval_identity=metadata["eval_identity"],
+        sut_identity=metadata["sut_identity"],
+        runtime_profile=metadata["runtime_profile"],
+    )
+    if (
+        metadata.get("target_execution") != expected_target_execution
+        or metadata.get("target_execution_hash") != expected_target_execution["execution_hash"]
+    ):
+        raise ModelEvalError(f"{run_dir}: target_execution_hash mismatch")
+    if judge is None:
+        if metadata.get("judge_execution") is not None:
+            raise ModelEvalError(f"{run_dir}: judge execution exists without judge")
+    elif metadata.get("judge_execution") != judge_execution_manifest(metadata, judge):
+        raise ModelEvalError(f"{run_dir}: judge execution identity mismatch")
     cases = metadata.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ModelEvalError(f"{run_dir}: cases snapshot is missing")
@@ -4694,104 +4652,97 @@ def validate_result_artifacts(run_dir: Path) -> None:
         criterion_ids = [item.get("criterion") for item in criteria if isinstance(item, dict)]
         if len(criterion_ids) != len(criteria) or len(set(criterion_ids)) != len(criteria):
             raise ModelEvalError(f"{run_dir}: {case_id} has invalid criteria snapshot")
-        if schema_version == 3 and (
+        if (
             case.get("suite") not in EVAL_SUITES
             or case.get("classification") not in CASE_CLASSIFICATIONS
         ):
             raise ModelEvalError(f"{run_dir}: {case_id} has invalid suite metadata")
     responses = load_jsonl(run_dir / "responses.jsonl")
-    response_index = (
-        index_response_attempts(responses, case_ids, "responses.jsonl")
-        if schema_version == 3
-        else index_case_records(responses, case_ids, "responses.jsonl")
-    )
+    response_index = index_response_attempts(responses, case_ids, "responses.jsonl")
     for record in responses:
         validate_artifact_binding(record, metadata, "responses.jsonl")
         validate_response_record(record)
-        if schema_version == 3:
-            case = next(case for case in cases if case["case_id"] == record["case_id"])
-            prompt_identity = canonical_target_prompt_identity(
-                next(item for item in prepared if item["case_id"] == record["case_id"])
-            )
-            if (
-                record.get("suite") != case["suite"]
-                or record.get("classification") != case["classification"]
-            ):
-                raise ModelEvalError(f"{run_dir}: response execution context mismatch")
-            if any(record.get(field) != value for field, value in prompt_identity.items()):
-                raise ModelEvalError(f"{run_dir}: canonical target prompt identity mismatch")
-            if record.get("execution_source") == "api" and (
-                record.get("requested_model") != target.get("requested_model")
-                or record.get("provider") != target.get("provider")
-            ):
-                raise ModelEvalError(f"{run_dir}: API target provider context mismatch")
-            if record.get("execution_source") not in {"api", "manual"}:
-                raise ModelEvalError(f"{run_dir}: invalid target execution source")
-            envelope_hash = record.get("request_envelope_hash")
-            if envelope_hash is not None and not re.fullmatch(
-                r"sha256:[0-9a-f]{64}", str(envelope_hash)
-            ):
-                raise ModelEvalError(f"{run_dir}: invalid request envelope hash")
+        case = next(case for case in cases if case["case_id"] == record["case_id"])
+        prompt_identity = canonical_target_prompt_identity(
+            next(item for item in prepared if item["case_id"] == record["case_id"])
+        )
+        if (
+            record.get("suite") != case["suite"]
+            or record.get("classification") != case["classification"]
+        ):
+            raise ModelEvalError(f"{run_dir}: response execution context mismatch")
+        if any(record.get(field) != value for field, value in prompt_identity.items()):
+            raise ModelEvalError(f"{run_dir}: canonical target prompt identity mismatch")
+        if record.get("execution_source") == "api" and (
+            record.get("requested_model") != target.get("requested_model")
+            or record.get("provider") != target.get("provider")
+        ):
+            raise ModelEvalError(f"{run_dir}: API target provider context mismatch")
+        if record.get("execution_source") not in {"api", "manual"}:
+            raise ModelEvalError(f"{run_dir}: invalid target execution source")
+        envelope_hash = record.get("request_envelope_hash")
+        if envelope_hash is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", str(envelope_hash)
+        ):
+            raise ModelEvalError(f"{run_dir}: invalid request envelope hash")
     judgments = (
         load_jsonl(run_dir / "judgments.jsonl")
         if (run_dir / "judgments.jsonl").exists()
         else []
     )
-    judgment_index = (
-        index_judgment_attempts(judgments, case_ids)
-        if schema_version == 3
-        else index_case_records(judgments, case_ids, "judgments.jsonl")
-    )
+    judgment_index = index_judgment_attempts(judgments, case_ids)
     cases_by_id = {case["case_id"]: case for case in cases}
     for judgment in judgments:
         case_id = judgment.get("case_id")
+        if judgment.get("schema_version") != 3:
+            raise ModelEvalError(f"{run_dir}: unsupported judgment artifact schema")
         validate_artifact_binding(judgment, metadata, "judgments.jsonl")
         status = judgment.get("status")
         if status not in {"JUDGMENT", "JUDGE_ERROR", "NOT_JUDGED"}:
             raise ModelEvalError(f"{run_dir}: invalid judgment status")
-        if schema_version == 3 and status == "JUDGE_ERROR" and (
+        if status == "JUDGE_ERROR" and (
             judgment.get("error_code") not in PROVIDER_ERROR_CODES
             or not isinstance(judgment.get("retryable"), bool)
         ):
             raise ModelEvalError(f"{run_dir}: invalid judgment error classification")
-        if schema_version == 3 and status in {"JUDGMENT", "NOT_JUDGED"} and (
+        if status in {"JUDGMENT", "NOT_JUDGED"} and (
             judgment.get("error_code") is not None
             or judgment.get("retryable") is not None
         ):
             raise ModelEvalError(f"{run_dir}: unexpected judgment error classification")
-        if schema_version == 3:
-            case = cases_by_id[case_id]
-            if (
-                judgment.get("suite") != case["suite"]
-                or judgment.get("classification") != case["classification"]
-            ):
-                raise ModelEvalError(f"{run_dir}: judgment execution context mismatch")
-            if status in {"JUDGMENT", "JUDGE_ERROR"} and judgment.get(
-                "execution_source"
-            ) not in {"api", "manual"}:
-                raise ModelEvalError(f"{run_dir}: invalid judge execution source")
-            if status in {"JUDGMENT", "JUDGE_ERROR"}:
-                bindings = []
-                if isinstance(judge, dict):
-                    bindings.append(
-                        (
-                            judge.get("provider_config_hash"),
-                            (metadata.get("judge_execution") or {}).get("execution_hash"),
-                        )
-                    )
-                bindings.extend(
+        case = cases_by_id[case_id]
+        if (
+            judgment.get("suite") != case["suite"]
+            or judgment.get("classification") != case["classification"]
+        ):
+            raise ModelEvalError(f"{run_dir}: judgment execution context mismatch")
+        if status in {"JUDGMENT", "JUDGE_ERROR"} and judgment.get("execution_source") not in {
+            "api",
+            "manual",
+        }:
+            raise ModelEvalError(f"{run_dir}: invalid judge execution source")
+        if status in {"JUDGMENT", "JUDGE_ERROR"}:
+            bindings = []
+            if isinstance(judge, dict):
+                bindings.append(
                     (
-                        fallback["provider"].get("provider_config_hash"),
-                        fallback["execution"].get("execution_hash"),
+                        judge.get("provider_config_hash"),
+                        (metadata.get("judge_execution") or {}).get("execution_hash"),
                     )
-                    for fallback in metadata.get("judge_fallbacks", [])
                 )
-                actual_binding = (
-                    judgment.get("judge_provider_config_hash"),
-                    judgment.get("judge_execution_hash"),
+            bindings.extend(
+                (
+                    fallback["provider"].get("provider_config_hash"),
+                    fallback["execution"].get("execution_hash"),
                 )
-                if actual_binding not in bindings:
-                    raise ModelEvalError(f"{run_dir}: judgment provider binding mismatch")
+                for fallback in metadata.get("judge_fallbacks", [])
+            )
+            actual_binding = (
+                judgment.get("judge_provider_config_hash"),
+                judgment.get("judge_execution_hash"),
+            )
+            if actual_binding not in bindings:
+                raise ModelEvalError(f"{run_dir}: judgment provider binding mismatch")
         target = response_index.get(case_id)
         if status == "JUDGMENT":
             if not target or target.get("status") != "MODEL_RESPONSE":
@@ -4801,9 +4752,7 @@ def validate_result_artifacts(run_dir: Path) -> None:
             judgment.get("error"), str
         ):
             raise ModelEvalError(f"{run_dir}: invalid non-judgment evidence")
-    expected_counts = run_counts(
-        cases, responses, judgments, schema_version=schema_version
-    )
+    expected_counts = run_counts(cases, responses, judgments)
     if metadata.get("counts") != expected_counts:
         raise ModelEvalError(f"{run_dir}: run counts do not match artifacts")
     expected_status = derive_run_status(
@@ -4815,12 +4764,11 @@ def validate_result_artifacts(run_dir: Path) -> None:
     )
     if metadata.get("status") != expected_status:
         raise ModelEvalError(f"{run_dir}: run status does not match artifacts")
-    if schema_version == 3:
-        refreshed = json.loads(json.dumps(metadata, ensure_ascii=False))
-        refresh_run_metadata(refreshed, responses, judgments)
-        for field in ("execution", "identities"):
-            if metadata.get(field) != refreshed.get(field):
-                raise ModelEvalError(f"{run_dir}: {field} does not match artifacts")
+    refreshed = json.loads(json.dumps(metadata, ensure_ascii=False))
+    refresh_run_metadata(refreshed, responses, judgments)
+    for field in ("execution", "identities"):
+        if metadata.get(field) != refreshed.get(field):
+            raise ModelEvalError(f"{run_dir}: {field} does not match artifacts")
     validate_lifecycle(metadata, responses, judgments)
     for artifact in (metadata, prepared, snapshots, responses, judgments):
         secret_key = forbidden_secret_key(artifact)
@@ -4854,14 +4802,13 @@ def validate_result_artifacts(run_dir: Path) -> None:
             "bundle_hash": summary.get("bundle_hash"),
             "counts": counts,
         }
-        if schema_version == 3:
-            expected_report.update(
-                {
-                    "reference_qualification": summary.get("reference_qualification"),
-                    "reference_quality": summary.get("reference_quality"),
-                    "suites": summary.get("suites"),
-                }
-            )
+        expected_report.update(
+            {
+                "reference_qualification": summary.get("reference_qualification"),
+                "reference_quality": summary.get("reference_quality"),
+                "suites": summary.get("suites"),
+            }
+        )
         if metadata.get("report") != expected_report:
             raise ModelEvalError(f"{run_dir}: run report metadata differs from summary")
         expected_markdown = render_summary_markdown(summary)
@@ -5136,7 +5083,7 @@ def pending_judgments(
         )
         records.append(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 **artifact_binding(metadata),
                 "case_id": case_id,
                 "suite": case.get("suite"),
@@ -5781,11 +5728,6 @@ def create_provider(args: argparse.Namespace, *, role: str) -> ModelProvider:
     return OpenAICompatibleChatProvider(**common)
 
 
-def create_openai_provider(args: argparse.Namespace) -> ModelProvider:
-    """Backward-compatible factory name for existing callers."""
-    return create_provider(args, role="judge" if args.model_env == "OPENAI_JUDGE_MODEL" else "target")
-
-
 def assess_comparability(
     first: dict[str, Any], second: dict[str, Any]
 ) -> dict[str, Any]:
@@ -5986,11 +5928,7 @@ def execute_judge_case_debug(
     if case is None:
         raise ModelEvalError(f"unknown case_id: {case_id}")
     response_records = load_jsonl(run_dir / "responses.jsonl")
-    responses = (
-        index_response_attempts(response_records, set(cases), "responses.jsonl")
-        if metadata.get("schema_version", 2) >= 3
-        else index_case_records(response_records, set(cases), "responses.jsonl")
-    )
+    responses = index_response_attempts(response_records, set(cases), "responses.jsonl")
     target = responses.get(case_id)
     if not target or target.get("status") != "MODEL_RESPONSE":
         raise ModelEvalError(f"{case_id}: target response is unavailable")
@@ -6213,18 +6151,19 @@ def command_run(args: argparse.Namespace) -> int:
 def command_judge(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).expanduser().resolve()
     provider = create_provider(args, role="judge")
+    case_ids = planned_judge_case_ids(run_dir)
     metadata = load_json_object(run_dir / "run.json")
     plan = provider_execution_plan(
         provider,
         role="judge",
-        case_count=len(metadata.get("cases", [])),
+        case_count=len(case_ids),
         runtime_profile=metadata.get("runtime_profile", "unknown"),
     )
     plan.update({"resume": args.resume, "dry_run": args.dry_run})
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if args.dry_run:
         return 0
-    counts = execute_judge(run_dir, provider, resume=args.resume)
+    counts = execute_judge(run_dir, provider, resume=args.resume, case_ids=case_ids)
     print(json.dumps(counts, ensure_ascii=False, indent=2))
     return 0 if counts["judge_error"] == 0 and counts["not_judged"] == 0 else 2
 

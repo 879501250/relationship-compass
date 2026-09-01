@@ -246,7 +246,9 @@ class ModelEvalPipelineTests(unittest.TestCase):
                 knowledge_pack_version="1.6.0",
             )
             judge = RecordingFakeProvider([all_pass(prepared[0]), all_pass(prepared[1])])
-            runner.execute_judge(run_dir, judge)
+            runner.execute_judge(
+                run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+            )
             summary = runner.build_report(run_dir)
 
             self.assertEqual(len(target.calls), 2)
@@ -400,7 +402,9 @@ class ModelEvalPipelineTests(unittest.TestCase):
                 manual_dir, response_file, root / "results"
             )
             judge = RecordingFakeProvider([all_pass(record) for record in prepared])
-            counts = runner.execute_judge(run_dir, judge)
+            counts = runner.execute_judge(
+                run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+            )
             summary = runner.build_report(run_dir)
 
             self.assertEqual(counts["judged"], len(prepared))

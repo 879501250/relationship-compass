@@ -25,7 +25,7 @@ suite_metadata_hash
 eval_identity_hash
 ```
 
-`SUT Identity` 是被测 Relationship Compass，覆盖 product version、Git SHA、runtime profile、Skill / Project Instructions、Generated Knowledge、runtime snapshot 与 `sut_bundle_hash`。兼容字段 `bundle_hash` 在 schema v3 中与 `sut_bundle_hash` 相同，明确属于 SUT，不是 hard comparability gate。
+`SUT Identity` 是被测 Relationship Compass，覆盖 product version、Git SHA、runtime profile、Skill / Project Instructions、Generated Knowledge、runtime snapshot 与 `sut_bundle_hash`。`bundle_hash` 在当前 schema v3 artifact 中与 `sut_bundle_hash` 相同，明确属于 SUT，不是 hard comparability gate。
 
 因此，同一 Eval 下的 v1.6 与 v1.7 SUT bundle 变化是标准 regression：只要 Target、Judge、sampling 与 execution policy 相同，结果仍为 `COMPARABLE`。rubric、case prompt、criterion assignment 或 Judge calibration 改变才是 `NOT_COMPARABLE`。
 
@@ -279,6 +279,6 @@ Target / Judge usage 分别聚合 `input_tokens / output_tokens / reasoning_toke
 
 ## Historical reference
 
-`model_evals/results/v1.6.0/chatgpt_project/baseline-manual-20260825-01` 已作为 frozen historical reference evidence 由 Git 跟踪；9 个既有 artifact 保持字节级只读，`baseline:false` 不变。它不是自动 Gold baseline。Schema v2 继续由当前 validator 只读兼容，新 schema v3 不回填或改写历史文件。
+`model_evals/results/v1.6.0/chatgpt_project/baseline-manual-20260825-01` 已作为 frozen historical reference evidence 由 Git 跟踪；9 个既有 artifact 保持字节级只读，`baseline:false` 不变。它不是自动 Gold baseline。当前 validator 只接受 schema v3；旧 schema artifact 会明确拒绝，且不会迁移、回填或改写历史文件。
 
 所有仓库自动测试均使用 fake provider、mock HTTP 或 fixture，不调用 OpenAI、Moonshot、Kimi、relay 或其他付费 endpoint。直接运行 unittest 时使用 `python -B -m unittest ...`；CI 已使用 `-B`，`validate_skill.py` 也在加载测试前设置 `sys.dont_write_bytecode=True`。Validator 保持只读并继续把已有 `__pycache__ / .pyc` 判为污染，不会自动删除工作区内容。

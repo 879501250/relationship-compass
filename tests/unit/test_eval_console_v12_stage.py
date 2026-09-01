@@ -298,7 +298,7 @@ class StageDecouplingTests(unittest.TestCase):
             case_ids = self.case_ids(3)
             source, _ = self.target_only(root, case_ids, run_id="source-errors")
             errors = StageProvider(judge_outputs={case_ids[0]: "not json", case_ids[2]: "not json"})
-            runner.execute_judge(source.run_dir, errors)
+            runner.execute_judge(source.run_dir, errors, case_ids=case_ids)
             source_before = (source.run_dir / "responses.jsonl").read_bytes()
             selected = judge_only_case_ids(source.run_dir, JudgeCaseSelector.JUDGE_ERROR)
             self.assertEqual(selected, (case_ids[0], case_ids[2]))
@@ -338,7 +338,9 @@ class StageDecouplingTests(unittest.TestCase):
             source, target_source = self.target_only(root, case_ids, run_id="console-20260827T104640Z-17572")
             self.assertEqual(target_source.target_calls, 30)
             judge_errors = {case_id: "not json" for case_id in case_ids[17:]}
-            runner.execute_judge(source.run_dir, StageProvider(judge_outputs=judge_errors))
+            runner.execute_judge(
+                source.run_dir, StageProvider(judge_outputs=judge_errors), case_ids=case_ids
+            )
             selected = judge_only_case_ids(source.run_dir, JudgeCaseSelector.JUDGE_ERROR)
             self.assertEqual(len(selected), 13)
             target = StageProvider(["must not be used"])
@@ -366,7 +368,11 @@ class StageDecouplingTests(unittest.TestCase):
                 continue_on_error=False,
             )
             malformed = {case_ids[2]: "not json"}
-            runner.execute_judge(run_dir, StageProvider(judge_outputs=malformed))
+            runner.execute_judge(
+                run_dir,
+                StageProvider(judge_outputs=malformed),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             metadata = runner.load_json_object(run_dir / "run.json")
             judgments = runner.load_jsonl(run_dir / "judgments.jsonl")
             pending = next(record for record in judgments if record["case_id"] == case_ids[3])
@@ -816,7 +822,11 @@ class StageDecouplingTests(unittest.TestCase):
                 _resume_request_with_inherited_configuration(old_request, metadata)
             metadata["console"]["schema_version"] = CURRENT_CONSOLE_SCHEMA_VERSION
             runner.write_json(source.run_dir / "run.json", metadata)
-            runner.execute_judge(source.run_dir, StageProvider(judge_outputs={case_ids[0]: "fake-api-key malformed"}))
+            runner.execute_judge(
+                source.run_dir,
+                StageProvider(judge_outputs={case_ids[0]: "fake-api-key malformed"}),
+                case_ids=case_ids,
+            )
             record = runner.load_jsonl(source.run_dir / "judgments.jsonl")[0]
             self.assertEqual(record["status"], "JUDGE_ERROR")
             self.assertNotIn("fake-api-key", record["diagnostics"]["raw_excerpt"])
@@ -1009,6 +1019,7 @@ class StageDecouplingTests(unittest.TestCase):
             runner.execute_judge(
                 source.run_dir,
                 StageProvider(judge_outputs={case_id: "not json" for case_id in case_ids}),
+                case_ids=case_ids,
             )
             before_b = [
                 record for record in runner.load_jsonl(source.run_dir / "judgments.jsonl")
@@ -1052,6 +1063,7 @@ class StageDecouplingTests(unittest.TestCase):
             runner.execute_judge(
                 run_dir,
                 StageProvider(judge_outputs={case_ids[0]: "not json", case_ids[3]: "not json"}),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             self.mark_current_console_run(run_dir, case_ids)
             before_c = [record for record in runner.load_jsonl(run_dir / "judgments.jsonl") if record["case_id"] == case_ids[2]]
@@ -1079,6 +1091,7 @@ class StageDecouplingTests(unittest.TestCase):
             runner.execute_judge(
                 source.run_dir,
                 StageProvider(judge_outputs={case_id: "not json" for case_id in case_ids[17:]}),
+                case_ids=case_ids,
             )
             target = StageProvider(["must not be called"])
             judge = StageProvider()

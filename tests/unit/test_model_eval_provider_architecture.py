@@ -757,6 +757,7 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
             runner.execute_judge(
                 run_dir,
                 RecordingProvider([passing_judgment(item) for item in prepared]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             summary = runner.build_report(run_dir)
             self.assertEqual(set(summary["suites"]), {"core", "stress"})
@@ -787,14 +788,29 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
             first = RecordingProvider(
                 [runner.ProviderError("network", code="NETWORK_ERROR", retryable=True)]
             )
-            self.assertEqual(runner.execute_judge(run_dir, first)["judge_error"], 1)
+            self.assertEqual(
+                runner.execute_judge(
+                    run_dir, first, case_ids=runner.planned_judge_case_ids(run_dir)
+                )["judge_error"],
+                1,
+            )
             second = RecordingProvider([passing_judgment(self.core)])
-            counts = runner.execute_judge(run_dir, second, resume=True)
+            counts = runner.execute_judge(
+                run_dir,
+                second,
+                resume=True,
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             self.assertEqual(counts, {"judged": 1, "judge_error": 0, "not_judged": 0})
             attempts = runner.load_jsonl(run_dir / "judgments.jsonl")
             self.assertEqual([item["attempt"] for item in attempts], [1, 2])
             third = RecordingProvider([])
-            runner.execute_judge(run_dir, third, resume=True)
+            runner.execute_judge(
+                run_dir,
+                third,
+                resume=True,
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             self.assertEqual(third.calls, 0)
 
     def test_judge_resume_rejects_configuration_mismatch(self) -> None:
@@ -812,12 +828,14 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
                 RecordingProvider(
                     [runner.ProviderError("network", code="NETWORK_ERROR", retryable=True)]
                 ),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             with self.assertRaisesRegex(runner.ModelEvalError, "configuration mismatch"):
                 runner.execute_judge(
                     run_dir,
                     RecordingProvider([passing_judgment(self.core)], model="other-model"),
                     resume=True,
+                    case_ids=runner.planned_judge_case_ids(run_dir),
                 )
 
     def test_provider_error_is_classified_without_silent_failover(self) -> None:

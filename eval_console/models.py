@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 CURRENT_CONSOLE_SCHEMA_VERSION = 4
+EVAL_CONSOLE_VERSION = "1.2A"
 
 
 @dataclass(frozen=True)

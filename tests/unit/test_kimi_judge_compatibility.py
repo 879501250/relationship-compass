@@ -247,7 +247,12 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                         repository_dirty=False,
                     )
                     judge = self.kimi_provider(self.chat_payload(content))
-                    self.assertEqual(runner.execute_judge(run_dir, judge)["judged"], 1)
+                    self.assertEqual(
+                        runner.execute_judge(
+                            run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                        )["judged"],
+                        1,
+                    )
                     record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
                     self.assertEqual(record["status"], "JUDGMENT")
                     self.assertEqual(
@@ -304,7 +309,12 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                 repository_sha="a" * 40,
                 repository_dirty=False,
             )
-            self.assertEqual(runner.execute_judge(run_dir, judge)["judge_error"], 1)
+            self.assertEqual(
+                runner.execute_judge(
+                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                )["judge_error"],
+                1,
+            )
             record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
             self.assertEqual(record["status"], "JUDGE_ERROR")
             self.assertEqual(record["error_code"], "RATE_LIMIT")
@@ -344,7 +354,12 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                 repository_sha="a" * 40,
                 repository_dirty=False,
             )
-            self.assertEqual(runner.execute_judge(run_dir, judge)["judged"], 1)
+            self.assertEqual(
+                runner.execute_judge(
+                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                )["judged"],
+                1,
+            )
             record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
             self.assertEqual(record["status"], "JUDGMENT")
             self.assertEqual(
@@ -455,7 +470,12 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                 repository_sha="a" * 40,
                 repository_dirty=False,
             )
-            self.assertEqual(runner.execute_judge(run_dir, judge)["judge_error"], 1)
+            self.assertEqual(
+                runner.execute_judge(
+                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                )["judge_error"],
+                1,
+            )
             record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
             self.assertEqual(record["error_code"], "EMPTY_RESPONSE")
             self.assertEqual(record["provider_response_id"], "resp-test-1")
@@ -474,7 +494,12 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 runner.ModelEvalError, "judge resume configuration mismatch"
             ):
-                runner.execute_judge(run_dir, changed_judge, resume=True)
+                runner.execute_judge(
+                    run_dir,
+                    changed_judge,
+                    resume=True,
+                    case_ids=runner.planned_judge_case_ids(run_dir),
+                )
             persisted = "\n".join(
                 path.read_text(encoding="utf-8")
                 for path in run_dir.rglob("*")

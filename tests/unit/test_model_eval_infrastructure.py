@@ -142,7 +142,9 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             judge = FakeProvider(
                 [judgment_for(self.prepared[0]), judgment_for(self.prepared[1], fail_first=True)]
             )
-            counts = runner.execute_judge(run_dir, judge)
+            counts = runner.execute_judge(
+                run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+            )
             summary = runner.build_report(run_dir)
             self.assertEqual(counts, {"judged": 2, "judge_error": 0, "not_judged": 0})
             self.assertEqual(summary["behavioral_status"], "FAIL")
@@ -158,12 +160,79 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
     def test_malformed_judge_output_becomes_judge_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
-            counts = runner.execute_judge(run_dir, FakeProvider(["not json"]))
+            counts = runner.execute_judge(
+                run_dir,
+                FakeProvider(["not json"]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             judgment = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
             summary = runner.build_report(run_dir)
             self.assertEqual(counts["judge_error"], 1)
             self.assertEqual(judgment["status"], "JUDGE_ERROR")
             self.assertEqual(summary["behavioral_status"], "NOT_EVALUABLE")
+
+    def test_judge_executor_rejects_an_unscoped_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
+            with self.assertRaisesRegex(runner.ModelEvalError, "explicit planner-owned case scope"):
+                runner.execute_judge(run_dir, FakeProvider([judgment_for(self.prepared[0])]))
+
+    def test_current_artifact_rejects_missing_eval_schema_or_judge_thinking(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
+            definition = runner.load_json_object(run_dir / "eval-definition.json")
+            definition.pop("eval_schema_version")
+            with self.assertRaisesRegex(runner.ModelEvalError, "missing eval_schema_version"):
+                runner.eval_identity_manifest(definition)
+
+            runner.execute_judge(
+                run_dir,
+                FakeProvider([judgment_for(self.prepared[0])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
+            metadata = runner.load_json_object(run_dir / "run.json")
+            metadata["judge"].pop("thinking")
+            metadata["provider_manifest"]["judge"].pop("thinking")
+            runner.write_json(run_dir / "run.json", metadata)
+            with self.assertRaisesRegex(
+                runner.ModelEvalError, r"judge provider manifest is missing \['thinking'\]"
+            ):
+                runner.validate_result_artifacts(run_dir)
+
+    def test_current_artifact_rejects_an_old_runner_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
+            metadata = runner.load_json_object(run_dir / "run.json")
+            metadata["schema_version"] = 2
+            runner.write_json(run_dir / "run.json", metadata)
+            with self.assertRaisesRegex(runner.ModelEvalError, "unsupported run artifact schema"):
+                runner.validate_result_artifacts(run_dir)
+
+    def test_current_artifact_rejects_old_response_and_judgment_schemas(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
+            responses = runner.load_jsonl(run_dir / "responses.jsonl")
+            responses[0]["schema_version"] = 2
+            runner.write_jsonl(run_dir / "responses.jsonl", responses)
+            with self.assertRaisesRegex(
+                runner.ModelEvalError, "unsupported target response artifact schema"
+            ):
+                runner.validate_result_artifacts(run_dir)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
+            runner.execute_judge(
+                run_dir,
+                FakeProvider([judgment_for(self.prepared[0])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
+            judgments = runner.load_jsonl(run_dir / "judgments.jsonl")
+            judgments[0]["schema_version"] = 2
+            runner.write_jsonl(run_dir / "judgments.jsonl", judgments)
+            with self.assertRaisesRegex(
+                runner.ModelEvalError, "unsupported judgment artifact schema"
+            ):
+                runner.validate_result_artifacts(run_dir)
 
     def test_provider_secret_is_never_written(self) -> None:
         secret = "sk-test-must-never-be-written"
@@ -274,7 +343,11 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
     def test_summary_tampering_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
-            runner.execute_judge(run_dir, FakeProvider([judgment_for(self.prepared[0])]))
+            runner.execute_judge(
+                run_dir,
+                FakeProvider([judgment_for(self.prepared[0])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             runner.build_report(run_dir)
             summary = runner.load_json_object(run_dir / "summary.json")
             summary["counts"]["passed_cases"] = 999
@@ -416,7 +489,11 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
     def test_summary_markdown_tampering_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = self.run_target(Path(temp_dir), FakeProvider(["回答"]))
-            runner.execute_judge(run_dir, FakeProvider([judgment_for(self.prepared[0])]))
+            runner.execute_judge(
+                run_dir,
+                FakeProvider([judgment_for(self.prepared[0])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
             runner.build_report(run_dir)
             (run_dir / "summary.md").write_text("伪造摘要\n", encoding="utf-8")
             with self.assertRaisesRegex(runner.ModelEvalError, "summary.md differs"):
@@ -455,6 +532,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             runner.execute_judge(
                 run_dir,
                 FakeProvider([judgment_for(self.prepared[0]), judgment_for(self.prepared[1])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             judgments = runner.load_jsonl(run_dir / "judgments.jsonl")
             runner.write_jsonl(run_dir / "judgments.jsonl", judgments[:1])

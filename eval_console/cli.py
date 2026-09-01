@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import traceback
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, TextIO, TypeVar
@@ -35,6 +35,7 @@ from .configuration import (
 )
 from .models import (
     CURRENT_CONSOLE_SCHEMA_VERSION,
+    EVAL_CONSOLE_VERSION,
     EvalDefinition,
     EvalExecutionMode,
     EvalRunRequest,
@@ -65,6 +66,23 @@ class InteractiveInputClosed(Exception):
 
 class InteractiveInputCancelled(Exception):
     """Raised when Ctrl+C interrupts an interactive menu prompt."""
+
+
+@dataclass
+class _RoleConfigurationDraft:
+    """In-memory changes collected by one Provider configuration workflow."""
+
+    model: str | None = None
+    base_url: str | None = None
+    secret_configuration: tuple[str, str] | None = None
+
+    @property
+    def has_changes(self) -> bool:
+        return (
+            self.model is not None
+            or self.base_url is not None
+            or self.secret_configuration is not None
+        )
 
 
 class _ActivityReporter:
@@ -182,7 +200,7 @@ class _GracefulStop:
 def build_parser() -> argparse.ArgumentParser:
     """Build the small command surface; invoking no command opens the wizard."""
     parser = argparse.ArgumentParser(
-        description="Relationship Compass 评测控制台 V1.2A",
+        description=f"Relationship Compass 评测控制台 V{EVAL_CONSOLE_VERSION}",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -500,7 +518,7 @@ def _print_environment_summary(
     judges = [profile for profile in profiles if profile.supports_judge]
     target_credential = _role_credential_available(profiles_file, targets, "target", resolver)
     judge_credential = _role_credential_available(profiles_file, judges, "judge", resolver)
-    print("\nRelationship Compass\n评测控制台 V1.1\n" + "-" * 40)
+    print(f"\nRelationship Compass\n评测控制台 V{EVAL_CONSOLE_VERSION}\n" + "-" * 40)
     print("环境状态")
     print(f"  {git_state}")
     print(f"  [已检测] Eval：{len(evals)} 个")
@@ -707,36 +725,17 @@ def _configure_role(
     if selected == "create":
         return _create_profile_interactively(profiles_file, role, resolver)
     assert isinstance(selected, ProviderProfile)
-    details = role_configuration(profiles_file, selected.name, role)
-    model = details.get("model") or (
-        os.environ.get(details["model_env"]) if isinstance(details.get("model_env"), str) else None
-    )
-    base_url = details.get("base_url")
-    model_update: str | None = None
-    base_url_update: str | None = None
-    if required and not model:
-        model_update = _prompt_required("模型名称")
-    if required and not base_url:
-        base_url_update = _prompt_url("API Base URL")
-    if model_update is not None or base_url_update is not None:
-        update_role_configuration(
-            profiles_file,
-            selected.name,
-            role,
-            model=model_update,
-            base_url=base_url_update,
-        )
-    api_key_env = details.get("api_key_env")
-    if isinstance(api_key_env, str) and api_key_env and not resolver.has(api_key_env):
-        _configure_secret(resolver, api_key_env)
-    if not required:
+    if required:
+        if not _ensure_role_ready(profiles_file, selected, role, resolver):
+            return None
+    else:
         _edit_profile_menu(profiles_file, selected, role, resolver)
     return selected
 
 
 def _create_profile_interactively(
     profiles_file: Path, role: str, resolver: SecretResolver
-) -> ProviderProfile:
+) -> ProviderProfile | None:
     name = _prompt_required("Profile 名称")
     provider = _choose(
         "Provider 类型",
@@ -749,52 +748,55 @@ def _create_profile_interactively(
     model = _prompt_required("模型名称")
     api_key_env = profile_api_key_env(name)
     secret_configuration = _collect_secret_configuration(api_key_env)
+    if secret_configuration is None:
+        print("未提供 API Key，未保存 Provider 配置。")
+        return None
+    if not _confirm_provider_configuration():
+        print("未保存 Provider 配置。")
+        return None
     profile_name = create_profile(
         profiles_file, name=name, provider=provider, role=role, model=model, base_url=base_url
     )
     profile = next(item for item in discover_provider_profiles(profiles_file) if item.name == profile_name)
-    if secret_configuration is not None:
-        _store_secret(resolver, api_key_env, *secret_configuration)
+    _store_secret(resolver, api_key_env, *secret_configuration)
     return profile
 
 
 def _edit_profile_menu(
     profiles_file: Path, profile: ProviderProfile, role: str, resolver: SecretResolver
 ) -> None:
+    details = role_configuration(profiles_file, profile.name, role)
+    env_name = details.get("api_key_env")
+    draft = _RoleConfigurationDraft()
     while True:
         choice = _choose(
             f"{role.title()} Profile：{profile.name}",
             [
-                ("保留当前配置", "keep"),
+                ("保存本次修改并返回", "save"),
+                ("放弃本次修改", "cancel"),
                 ("修改模型", "model"),
                 ("修改 API Base URL", "base_url"),
                 ("配置 API Key", "key"),
-                ("返回", "back"),
             ],
         )
-        if choice in {"keep", "back"}:
+        if choice == "cancel":
+            print("未保存 Provider 配置。")
+            return
+        if choice == "save":
+            _commit_role_configuration(profiles_file, profile.name, role, resolver, env_name, draft)
             return
         if choice == "model":
-            details = role_configuration(profiles_file, profile.name, role)
-            update_role_configuration(
-                profiles_file,
-                profile.name,
-                role,
-                model=_prompt_with_current("模型名称", details.get("model")),
+            draft.model = _prompt_with_current(
+                "模型名称", draft.model if draft.model is not None else details.get("model")
             )
         elif choice == "base_url":
-            details = role_configuration(profiles_file, profile.name, role)
-            update_role_configuration(
-                profiles_file,
-                profile.name,
-                role,
-                base_url=_prompt_url_with_current("API Base URL", details.get("base_url")),
+            draft.base_url = _prompt_url_with_current(
+                "API Base URL",
+                draft.base_url if draft.base_url is not None else details.get("base_url"),
             )
         else:
-            details = role_configuration(profiles_file, profile.name, role)
-            env_name = details.get("api_key_env")
             if isinstance(env_name, str):
-                _configure_secret(resolver, env_name)
+                draft.secret_configuration = _collect_secret_configuration(env_name)
             else:
                 print("该 Profile 未声明 API Key 环境变量名。")
 
@@ -826,6 +828,38 @@ def _store_secret(resolver: SecretResolver, env_name: str, value: str, mode: str
     else:
         resolver.set_session(env_name, value)
         print("API Key 已配置为仅本次 Console 会话使用。")
+
+
+def _confirm_provider_configuration() -> bool:
+    return _yes_no("确认保存本次 Provider 配置吗？", default=True)
+
+
+def _commit_role_configuration(
+    profiles_file: Path,
+    profile_name: str,
+    role: str,
+    resolver: SecretResolver,
+    env_name: object,
+    draft: _RoleConfigurationDraft,
+) -> bool:
+    if not draft.has_changes:
+        return True
+    if not _confirm_provider_configuration():
+        print("未保存 Provider 配置。")
+        return False
+    if draft.model is not None or draft.base_url is not None:
+        update_role_configuration(
+            profiles_file,
+            profile_name,
+            role,
+            model=draft.model,
+            base_url=draft.base_url,
+        )
+    if draft.secret_configuration is not None:
+        if not isinstance(env_name, str) or not env_name:
+            raise ValueError("Profile 缺少 API Key 环境变量名。")
+        _store_secret(resolver, env_name, *draft.secret_configuration)
+    return True
 
 
 def _print_provider_configuration(profiles_file: Path, resolver: SecretResolver) -> None:
@@ -899,11 +933,10 @@ def _ensure_role_ready(
         if isinstance(details.get("model_env"), str)
         else None
     )
-    model_update: str | None = None
-    base_url_update: str | None = None
+    draft = _RoleConfigurationDraft()
     if not model:
         print(f"{role.title()} Profile 尚未配置模型，现在完成配置。")
-        model_update = _prompt_required("模型名称")
+        draft.model = _prompt_required("模型名称")
     base_url = details.get("base_url") or (
         os.environ.get(details["base_url_env"])
         if isinstance(details.get("base_url_env"), str)
@@ -911,21 +944,20 @@ def _ensure_role_ready(
     )
     if not base_url:
         print(f"{role.title()} Profile 尚未配置 API Base URL，现在完成配置。")
-        base_url_update = _prompt_url("API Base URL")
-    if model_update is not None or base_url_update is not None:
-        update_role_configuration(
-            profiles_file,
-            profile.name,
-            role,
-            model=model_update,
-            base_url=base_url_update,
-        )
+        draft.base_url = _prompt_url("API Base URL")
     env_name = details.get("api_key_env")
     if not isinstance(env_name, str) or not env_name:
         print(f"{role.title()} Profile 缺少 API Key 环境变量名。")
         return False
     if not resolver.has(env_name):
-        _configure_secret(resolver, env_name)
+        draft.secret_configuration = _collect_secret_configuration(env_name)
+        if draft.secret_configuration is None:
+            print("未提供 API Key，未保存 Provider 配置。")
+            return False
+    if not _commit_role_configuration(
+        profiles_file, profile.name, role, resolver, env_name, draft
+    ):
+        return False
     return resolver.has(env_name)
 
 

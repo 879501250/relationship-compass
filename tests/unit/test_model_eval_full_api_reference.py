@@ -362,6 +362,7 @@ class FullAPIReferenceTests(unittest.TestCase):
                     ],
                     model="judge-model",
                 ),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             runner.execute_judge(
                 run_dir,
@@ -373,6 +374,7 @@ class FullAPIReferenceTests(unittest.TestCase):
                     model="judge-model",
                 ),
                 resume=True,
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             output = root / "manual-judge"
             self.assertEqual(runner.export_manual_judge(run_dir, output), 1)
@@ -409,6 +411,7 @@ class FullAPIReferenceTests(unittest.TestCase):
                 SequenceProvider(
                     [passing_judgment(self.prepared[0])], model="judge-model"
                 ),
+                case_ids=runner.planned_judge_case_ids(run_dir),
             )
             runner.build_report(run_dir)
             immutable = [
