@@ -86,6 +86,73 @@ class BlockingFakeProvider(RecordingFakeProvider):
         )
 
 
+class ParallelFakeProvider:
+    """Event-driven fake provider for bounded Target/Judge integration coverage."""
+
+    provider_name = "parallel-fake-e2e"
+    model = "parallel-fake-e2e-model"
+    public_parameters = {"network": False, "single_sample": True}
+
+    def __init__(self, *, block_target: bool = False, block_judge: bool = False) -> None:
+        self.block_target = block_target
+        self.block_judge = block_judge
+        self.target_release = threading.Event()
+        self.judge_release = threading.Event()
+        self.target_two_started = threading.Event()
+        self.judge_two_started = threading.Event()
+        self._lock = threading.Lock()
+        self.target_calls = 0
+        self.judge_calls = 0
+        self.target_active = 0
+        self.judge_active = 0
+        self.target_peak = 0
+        self.judge_peak = 0
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is None:
+            with self._lock:
+                self.target_calls += 1
+                self.target_active += 1
+                self.target_peak = max(self.target_peak, self.target_active)
+                if self.target_calls >= 2:
+                    self.target_two_started.set()
+            if self.block_target and not self.target_release.wait(3):
+                raise AssertionError("test did not release parallel Target calls")
+            with self._lock:
+                self.target_active -= 1
+            return runner.ProviderResult("parallel target response", reported_model=self.model)
+        with self._lock:
+            self.judge_calls += 1
+            self.judge_active += 1
+            self.judge_peak = max(self.judge_peak, self.judge_active)
+            if self.judge_calls >= 2:
+                self.judge_two_started.set()
+        if self.block_judge and not self.judge_release.wait(3):
+            raise AssertionError("test did not release parallel Judge calls")
+        with self._lock:
+            self.judge_active -= 1
+        criteria = response_schema["properties"]["criteria"]["items"]["properties"]["criterion"]["enum"]
+        return runner.ProviderResult(
+            json.dumps(
+                {
+                    "case_id": response_schema["properties"]["case_id"]["const"],
+                    "criteria": [
+                        {"criterion": item, "passed": True, "reason": "可核对的 fake integration 判断。"}
+                        for item in criteria
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            reported_model=self.model,
+        )
+
+
 def all_pass(record: dict[str, Any]) -> str:
     return json.dumps(
         {
@@ -161,6 +228,151 @@ class ModelEvalPipelineTests(unittest.TestCase):
             self.assertEqual(outcome.api_calls, {"target": 1, "judge": 0})
             self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
             self.assertEqual(len(runner.load_jsonl(outcome.run_dir / "responses.jsonl")), 1)
+
+    def test_console_full_bounds_target_and_judge_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profiles = root / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "parallel": {
+                                "provider": "openai_responses",
+                                "target": {"model": "parallel-fake-e2e-model"},
+                                "judge": {"model": "parallel-fake-e2e-model"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            case_ids = tuple(case.case_id for case in discover_evals()[0].cases[:3])
+            request = EvalRunRequest(
+                eval_id=discover_evals()[0].eval_id,
+                case_ids=case_ids,
+                target_profile="parallel",
+                judge_profile="parallel",
+                profiles_file=profiles,
+                results_root=root / "results",
+                allow_dirty_debug=True,
+                run_id="parallel-full",
+                mode=EvalExecutionMode.FULL,
+                target_concurrency=2,
+                judge_concurrency=2,
+            )
+            provider = ParallelFakeProvider(block_target=True, block_judge=True)
+            result: dict[str, Any] = {}
+
+            def execute() -> None:
+                result["outcome"] = execute_request(
+                    request, target_provider=provider, judge_provider=provider
+                )
+
+            worker = threading.Thread(target=execute)
+            worker.start()
+            try:
+                self.assertTrue(provider.target_two_started.wait(3))
+                self.assertEqual(provider.target_calls, 2)
+                self.assertEqual(provider.judge_calls, 0)
+                provider.target_release.set()
+                self.assertTrue(provider.judge_two_started.wait(3))
+                self.assertEqual(provider.target_calls, len(case_ids))
+                provider.judge_release.set()
+            finally:
+                provider.target_release.set()
+                provider.judge_release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            outcome = result["outcome"]
+            self.assertEqual(outcome.summary["completion_status"], "COMPLETED")
+            self.assertEqual(provider.target_peak, 2)
+            self.assertEqual(provider.judge_peak, 2)
+            metadata = runner.load_json_object(outcome.run_dir / "run.json")
+            self.assertEqual(metadata["parallel_metrics"], {
+                "target_peak_in_flight": 2,
+                "judge_peak_in_flight": 2,
+            })
+
+    def test_parallel_interrupt_resume_preserves_missing_case_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profiles = root / "profiles.json"
+            profiles.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "parallel": {
+                                "provider": "openai_responses",
+                                "target": {"model": "parallel-fake-e2e-model"},
+                                "judge": {"model": "parallel-fake-e2e-model"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            case_ids = tuple(case.case_id for case in discover_evals()[0].cases[:5])
+            stop_requested = threading.Event()
+            initial_request = EvalRunRequest(
+                eval_id=discover_evals()[0].eval_id,
+                case_ids=case_ids,
+                target_profile="parallel",
+                judge_profile="parallel",
+                profiles_file=profiles,
+                results_root=root / "results",
+                allow_dirty_debug=True,
+                run_id="parallel-interrupted",
+                mode=EvalExecutionMode.FULL,
+                target_concurrency=2,
+            )
+            initial_provider = ParallelFakeProvider(block_target=True)
+            result: dict[str, Any] = {}
+
+            def execute_initial() -> None:
+                result["outcome"] = execute_request(
+                    initial_request,
+                    target_provider=initial_provider,
+                    judge_provider=ParallelFakeProvider(),
+                    should_stop=stop_requested.is_set,
+                )
+
+            worker = threading.Thread(target=execute_initial)
+            worker.start()
+            try:
+                self.assertTrue(initial_provider.target_two_started.wait(3))
+                stop_requested.set()
+                initial_provider.target_release.set()
+            finally:
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            source = result["outcome"]
+            self.assertEqual(source.summary["completion_status"], "INTERRUPTED")
+            self.assertEqual(len(runner.load_jsonl(source.run_dir / "responses.jsonl")), 2)
+
+            selected = (case_ids[2], case_ids[4])
+            resumed = execute_request(
+                EvalRunRequest(
+                    eval_id=discover_evals()[0].eval_id,
+                    case_ids=selected,
+                    target_profile="parallel",
+                    judge_profile="parallel",
+                    profiles_file=profiles,
+                    results_root=root / "results",
+                    allow_dirty_debug=True,
+                    mode=EvalExecutionMode.RESUME,
+                    source_run_dir=source.run_dir,
+                    target_concurrency=1,
+                    judge_concurrency=1,
+                ),
+                target_provider=ParallelFakeProvider(),
+                judge_provider=ParallelFakeProvider(),
+            )
+            self.assertEqual(resumed.api_calls, {"target": 2, "judge": 2})
+            attempts = runner.load_jsonl(source.run_dir / "responses.jsonl")
+            self.assertFalse(any(item["case_id"] == case_ids[3] for item in attempts))
+            metadata = runner.load_json_object(source.run_dir / "run.json")
+            self.assertEqual(metadata["console"]["target_concurrency"], 2)
 
     def test_role_specific_relay_profiles_ignore_global_openai_base_url(self) -> None:
         profile = {
