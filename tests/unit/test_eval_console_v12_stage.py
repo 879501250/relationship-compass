@@ -263,6 +263,8 @@ class StageDecouplingTests(unittest.TestCase):
                 if isinstance(metadata.get("judge"), dict)
                 else None
             ),
+            "target_concurrency": 1,
+            "judge_concurrency": 1,
         }
         runner.write_json(run_dir / "run.json", metadata)
 
@@ -598,7 +600,7 @@ class StageDecouplingTests(unittest.TestCase):
         for phase, label in (("TARGET", "Target"), ("JUDGE", "Judge")):
             with self.subTest(phase=phase):
                 output = io.StringIO()
-                stop = _GracefulStop(1, stream=output)
+                stop = _GracefulStop(1, 1, stream=output)
                 stop.set_stage(phase)
                 stop.handle_interrupt()
                 self.assertTrue(stop.requested)
@@ -620,7 +622,7 @@ class StageDecouplingTests(unittest.TestCase):
                 root, case_ids, run_id="blocking-judge"
             )
             stop_output = io.StringIO()
-            stop = _GracefulStop(1, stream=stop_output)
+            stop = _GracefulStop(1, 1, stream=stop_output)
             judge = BlockingJudgeProvider()
             result: dict[str, Any] = {}
             errors: list[BaseException] = []
@@ -687,7 +689,7 @@ class StageDecouplingTests(unittest.TestCase):
             root = Path(temp_dir)
             case_ids = self.case_ids(2)
             stop_output = io.StringIO()
-            stop = _GracefulStop(1, stream=stop_output)
+            stop = _GracefulStop(1, 1, stream=stop_output)
             target = BlockingTargetProvider()
             result: dict[str, Any] = {}
             errors: list[BaseException] = []
@@ -727,7 +729,7 @@ class StageDecouplingTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
         output = io.StringIO()
-        stop = _GracefulStop(1, stream=output)
+        stop = _GracefulStop(1, 1, stream=output)
         observed: dict[str, float] = {}
 
         def blocking_call() -> runner.ProviderResult:
@@ -765,7 +767,7 @@ class StageDecouplingTests(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
         output = io.StringIO()
-        stop = _GracefulStop(1, stream=output)
+        stop = _GracefulStop(1, 1, stream=output)
         observed: dict[str, float] = {}
 
         def blocking_call() -> runner.ProviderResult:

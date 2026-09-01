@@ -216,9 +216,9 @@ python scripts/run_model_evals.py run --prepared .work/model-eval-prepared.jsonl
 正式执行：
 
 ```text
-python scripts/run_model_evals.py run --prepared .work/model-eval-prepared.jsonl --run-id <run-id> --profile <target-profile> --profiles-file model_evals/provider_profiles.local.yaml --concurrency 1
-python scripts/run_model_evals.py judge --run-dir model_evals/results/v<version>/api_canonical/<run-id> --profile <judge-profile> --profiles-file model_evals/provider_profiles.local.yaml --dry-run
-python scripts/run_model_evals.py judge --run-dir model_evals/results/v<version>/api_canonical/<run-id> --profile <judge-profile> --profiles-file model_evals/provider_profiles.local.yaml
+python scripts/run_model_evals.py run --prepared .work/model-eval-prepared.jsonl --run-id <run-id> --profile <target-profile> --profiles-file model_evals/provider_profiles.local.yaml --target-concurrency 1
+python scripts/run_model_evals.py judge --run-dir model_evals/results/v<version>/api_canonical/<run-id> --profile <judge-profile> --profiles-file model_evals/provider_profiles.local.yaml --judge-concurrency 1 --dry-run
+python scripts/run_model_evals.py judge --run-dir model_evals/results/v<version>/api_canonical/<run-id> --profile <judge-profile> --profiles-file model_evals/provider_profiles.local.yaml --judge-concurrency 1
 python scripts/run_model_evals.py report --run-dir model_evals/results/v<version>/api_canonical/<run-id>
 python scripts/run_model_evals.py compare --run-a <run-a> --run-b <run-b>
 python scripts/run_model_evals.py accept-reference --run-dir model_evals/results/v<version>/api_canonical/<run-id> --notes "human reviewed"
@@ -226,6 +226,14 @@ python scripts/run_model_evals.py reference-status --run-dir model_evals/results
 ```
 
 Target / Judge 可以来自同一 relay，也可以使用不同 provider、endpoint 与 model。Target 与 Judge requested model 相同会产生 `CORRELATED_JUDGE_RISK`；同 relay endpoint + 同 alias 且 upstream 不可验证时另有 `TARGET_JUDGE_IDENTITY_CORRELATED`。
+
+## Eval Console V1.2B：有界并发
+
+Console Run 将 Target 与 Judge 执行策略分别持久化为 `target_concurrency` 与 `judge_concurrency`，默认均为 `1`，可配置范围为 `1–32`。FULL 模式分别询问两个值；TARGET_ONLY 只询问 Target，JUDGE_ONLY 只询问 Judge。Resume 固定继承原 Run 的两个值，不能临时改写。
+
+每个阶段只按 Planner 已给出的 Case scope 以 FIFO 方式启动最多 N 个 Provider 调用。不会把全部 Case 预先提交到 executor queue；一个完成结果由主线程安全写入 JSONL、更新 `run.json` 与 API logical-call 计数后，才补充下一个 Case。物理 JSONL 可按完成先后排列，最新 attempt 索引与界面展示仍按 `case_id` 和 Eval canonical order 判定。
+
+第一次 Ctrl+C 会停止后续提交，让已开始的调用完成并由单一主线程写入 checkpoint，Run 随后为 `INTERRUPTED`；第二次 Ctrl+C 立即放弃等待守护 Provider worker 的后续结果，worker 不拥有任何 artifact 写权限。当前 schema 仅支持包含拆分并发字段的 Console Run；旧版单 `concurrency` Console artifact 不迁移也不支持 Resume。
 
 ## Retry、resume 与错误恢复
 

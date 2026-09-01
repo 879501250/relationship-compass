@@ -369,6 +369,8 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
                 "judge_profile": "fake",
                 "target_model": metadata["target"]["requested_model"],
                 "judge_model": None,
+                "target_concurrency": 1,
+                "judge_concurrency": 1,
             }
             runner.write_json(run_dir / "run.json", metadata)
             history = discover_runs(results_root)

@@ -515,7 +515,8 @@ class InteractiveRequestTests(unittest.TestCase):
             dry_run=True,
             allow_dirty_debug=False,
             debug=False,
-            concurrency=1,
+            target_concurrency=1,
+            judge_concurrency=1,
             target_model_override="target-override",
             judge_model_override="judge-override",
             continue_on_error=True,
@@ -524,7 +525,8 @@ class InteractiveRequestTests(unittest.TestCase):
         self.assertEqual(request.target_profile, "target-profile")
         self.assertEqual(request.judge_profile, "judge-profile")
         self.assertTrue(request.dry_run)
-        self.assertEqual(request.concurrency, 1)
+        self.assertEqual(request.target_concurrency, 1)
+        self.assertEqual(request.judge_concurrency, 1)
         self.assertTrue(request.continue_on_error)
         self.assertEqual(request.target_model_override, "target-override")
 
@@ -630,7 +632,9 @@ class InteractiveRequestTests(unittest.TestCase):
                 "target-profile",
                 "--judge-profile",
                 "judge-profile",
-                "--concurrency",
+                "--target-concurrency",
+                "1",
+                "--judge-concurrency",
                 "1",
                 "--dry-run",
             ]
@@ -642,7 +646,8 @@ class InteractiveRequestTests(unittest.TestCase):
             [definition.cases[0].case_id, definition.cases[2].case_id, definition.cases[4].case_id],
         )
         self.assertTrue(request.dry_run)
-        self.assertEqual(request.concurrency, 1)
+        self.assertEqual(request.target_concurrency, 1)
+        self.assertEqual(request.judge_concurrency, 1)
         self.assertTrue(request.continue_on_error)
 
 

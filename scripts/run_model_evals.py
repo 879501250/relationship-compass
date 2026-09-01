@@ -18,8 +18,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2567,6 +2565,117 @@ def artifact_binding(metadata: dict[str, Any]) -> dict[str, str]:
     return binding
 
 
+@dataclass(frozen=True)
+class ProviderCallCompletion:
+    """One provider-only worker result handed back to the orchestration thread."""
+
+    item: Any
+    value: Any | None = None
+    error: BaseException | None = None
+
+
+class BoundedCaseScheduler:
+    """Start at most ``concurrency`` daemon provider calls in planner FIFO order.
+
+    This intentionally is not an executor wrapper: pending Case work is kept in
+    this small scheduler until a main-thread writer has durably processed a
+    completion. Workers only call the provider and return a value or exception.
+    """
+
+    def __init__(
+        self,
+        items: list[Any],
+        *,
+        concurrency: int,
+        provider_call: Callable[[Any], Any],
+        on_case_start: Callable[[Any, int, int], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
+        poll_interval: float = RESPONSIVE_PROVIDER_POLL_SECONDS,
+    ) -> None:
+        if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 32:
+            raise ModelEvalError("concurrency must be between 1 and 32")
+        if poll_interval <= 0:
+            raise ValueError("provider scheduler poll interval must be positive")
+        self._pending = list(items)
+        self._concurrency = concurrency
+        self._provider_call = provider_call
+        self._on_case_start = on_case_start
+        self._should_stop = should_stop
+        self._poll_interval = poll_interval
+        self._handoff: queue.Queue[ProviderCallCompletion] = queue.Queue()
+        self._in_flight: dict[int, threading.Thread] = {}
+        self._started = 0
+        self._stop_submission = False
+        self.peak_in_flight = 0
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending)
+
+    @property
+    def in_flight_count(self) -> int:
+        return len(self._in_flight)
+
+    def stop_submissions(self) -> None:
+        """Keep already started daemon calls, but never schedule another Case."""
+        self._stop_submission = True
+
+    def _is_stop_requested(self) -> bool:
+        return self._stop_submission or bool(
+            self._should_stop is not None and self._should_stop()
+        )
+
+    def _fill_slots(self) -> None:
+        if self._is_stop_requested():
+            self.stop_submissions()
+            return
+        while self._pending and len(self._in_flight) < self._concurrency:
+            if self._is_stop_requested():
+                self.stop_submissions()
+                return
+            item = self._pending.pop(0)
+            self._started += 1
+            if self._on_case_start is not None:
+                self._on_case_start(item, self._started, self._started + len(self._pending))
+            token = id(item)
+
+            def invoke(selected: Any = item, selected_token: int = token) -> None:
+                try:
+                    self._handoff.put(
+                        ProviderCallCompletion(selected, value=self._provider_call(selected))
+                    )
+                except BaseException as exc:
+                    self._handoff.put(ProviderCallCompletion(selected, error=exc))
+
+            worker = threading.Thread(
+                target=invoke,
+                name="eval-provider-case",
+                daemon=True,
+            )
+            self._in_flight[token] = worker
+            self.peak_in_flight = max(self.peak_in_flight, len(self._in_flight))
+            worker.start()
+
+    def completions(self) -> Any:
+        """Yield completion events; slot refill occurs only after the prior yield."""
+        self._fill_slots()
+        try:
+            while self._in_flight:
+                if self._is_stop_requested():
+                    self.stop_submissions()
+                try:
+                    completion = self._handoff.get(timeout=self._poll_interval)
+                except queue.Empty:
+                    continue
+                self._in_flight.pop(id(completion.item), None)
+                yield completion
+                self._fill_slots()
+        finally:
+            # Force-stop callers unwind immediately; daemon workers cannot write
+            # artifacts and therefore cannot mutate a later checkpoint.
+            self.stop_submissions()
+
+
 def run_responsive_provider_call(
     call: Callable[[], Any], *, poll_interval: float = RESPONSIVE_PROVIDER_POLL_SECONDS
 ) -> Any:
@@ -2605,9 +2714,14 @@ def target_attempt_record(
     provider: ModelProvider,
     metadata: dict[str, Any],
     attempt: int,
+    *,
+    provider_result: ProviderResult | None = None,
+    provider_error: BaseException | None = None,
+    started_at: str | None = None,
+    started_monotonic: float | None = None,
 ) -> dict[str, Any]:
     prompt_identity = canonical_target_prompt_identity(record)
-    started_monotonic = time.perf_counter()
+    started_monotonic = started_monotonic if started_monotonic is not None else time.perf_counter()
     response_record: dict[str, Any] = {
         "schema_version": 3,
         **artifact_binding(metadata),
@@ -2617,7 +2731,7 @@ def target_attempt_record(
         "classification": record["classification"],
         "attempt": attempt,
         "execution_source": "api",
-        "started_at": utc_now(),
+        "started_at": started_at or utc_now(),
         "completed_at": None,
         "duration_seconds": None,
         "status": None,
@@ -2651,12 +2765,16 @@ def target_attempt_record(
             canonical_json_bytes(envelope)
         )
     try:
-        result = run_responsive_provider_call(
-            lambda: provider.generate(
-                instructions=TARGET_INSTRUCTIONS,
-                input_text=target_input(record),
+        if provider_error is not None:
+            raise provider_error
+        result = provider_result
+        if result is None:
+            result = run_responsive_provider_call(
+                lambda: provider.generate(
+                    instructions=TARGET_INSTRUCTIONS,
+                    input_text=target_input(record),
+                )
             )
-        )
         if not result.text.strip():
             raise ProviderInvalidResponse(
                 "target returned empty text", code="EMPTY_RESPONSE"
@@ -2703,7 +2821,7 @@ def execute_run(
     knowledge_pack_version: str | None = None,
     resume: bool = False,
     allow_dirty_debug: bool = False,
-    concurrency: int = 1,
+    target_concurrency: int = 1,
     continue_on_error: bool = False,
     metadata_extra: dict[str, Any] | None = None,
     on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
@@ -2718,8 +2836,12 @@ def execute_run(
     preserve the original runner defaults for existing CLI and library callers.
     """
     validate_prepared_records(prepared_records, require_all=False)
-    if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 32:
-        raise ModelEvalError("concurrency must be between 1 and 32")
+    if (
+        not isinstance(target_concurrency, int)
+        or target_concurrency < 1
+        or target_concurrency > 32
+    ):
+        raise ModelEvalError("target concurrency must be between 1 and 32")
     if knowledge_pack_version is not None:
         expected = normalize_pack_version(knowledge_pack_version)
         if prepared_version(prepared_records) != expected:
@@ -2817,12 +2939,12 @@ def execute_run(
     all_case_ids = tuple(record["case_id"] for record in snapshots["prepared"])
     scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Target")
     scoped_case_id_set = set(scoped_case_ids)
+    prepared_by_id = {record["case_id"]: record for record in prepared_records}
     latest = latest_response_attempts(existing_records, set(all_case_ids))
     eligible: list[tuple[dict[str, Any], int]] = []
-    for record in prepared_records:
-        if record["case_id"] not in scoped_case_id_set:
-            continue
-        current = latest.get(record["case_id"])
+    for case_id in scoped_case_ids:
+        record = prepared_by_id[case_id]
+        current = latest.get(case_id)
         if current and current.get("status") == "MODEL_RESPONSE":
             continue
         eligible.append((record, int(current.get("attempt", 0)) + 1 if current else 1))
@@ -2838,46 +2960,57 @@ def execute_run(
         refresh_run_metadata(metadata, existing_records, existing_judgments)
         write_json(run_dir / "run.json", metadata)
         return metadata
-    with responses_path.open("a", encoding="utf-8", newline="\n") as handle:
-        if concurrency == 1:
-            def generate_serially() -> Any:
-                for started, (record, attempt) in enumerate(eligible, start=1):
-                    if should_stop is not None and should_stop():
-                        break
-                    if on_case_start is not None:
-                        on_case_start(record, started, len(eligible))
-                    yield target_attempt_record(record, provider, metadata, attempt)
+    work_items = [
+        {
+            "record": record,
+            "attempt": attempt,
+            "started_at": None,
+            "started_monotonic": None,
+        }
+        for record, attempt in eligible
+    ]
 
-            generated = generate_serially()
-        else:
-            executor = ThreadPoolExecutor(max_workers=concurrency)
-            if on_case_start is not None:
-                for started, (record, _) in enumerate(eligible, start=1):
-                    on_case_start(record, started, len(eligible))
-            generated = executor.map(
-                lambda item: target_attempt_record(item[0], provider, metadata, item[1]),
-                eligible,
+    def start_target_work(item: dict[str, Any], started: int, total: int) -> None:
+        item["started_at"] = utc_now()
+        item["started_monotonic"] = time.perf_counter()
+        if on_case_start is not None:
+            on_case_start(item["record"], started, total)
+
+    scheduler = BoundedCaseScheduler(
+        work_items,
+        concurrency=target_concurrency,
+        provider_call=lambda item: provider.generate(
+            instructions=TARGET_INSTRUCTIONS,
+            input_text=target_input(item["record"]),
+        ),
+        on_case_start=start_target_work,
+        should_stop=should_stop,
+    )
+    with responses_path.open("a", encoding="utf-8", newline="\n") as handle:
+        for completed, completion in enumerate(scheduler.completions(), start=1):
+            item = completion.item
+            response_record = target_attempt_record(
+                item["record"],
+                provider,
+                metadata,
+                item["attempt"],
+                provider_result=completion.value,
+                provider_error=completion.error,
+                started_at=item["started_at"],
+                started_monotonic=item["started_monotonic"],
             )
-        try:
-            for completed, response_record in enumerate(generated, start=1):
-                append_jsonl(handle, response_record)
-                metadata.setdefault("api_calls", {"target": 0, "judge": 0})["target"] += 1
-                saved_responses = load_jsonl(responses_path)
-                refresh_run_metadata(metadata, saved_responses, existing_judgments)
-                write_json(run_dir / "run.json", metadata)
-                if on_case_complete is not None:
-                    on_case_complete(response_record, completed, len(eligible))
-                if (
-                    concurrency == 1
-                    and response_record["status"] != "MODEL_RESPONSE"
-                    and not continue_on_error
-                ):
-                    break
-                if concurrency == 1 and should_stop is not None and should_stop():
-                    break
-        finally:
-            if concurrency != 1:
-                executor.shutdown(wait=True)
+            append_jsonl(handle, response_record)
+            metadata.setdefault("api_calls", {"target": 0, "judge": 0})["target"] += 1
+            saved_responses = load_jsonl(responses_path)
+            refresh_run_metadata(metadata, saved_responses, existing_judgments)
+            write_json(run_dir / "run.json", metadata)
+            if on_case_complete is not None:
+                on_case_complete(response_record, completed, len(eligible))
+            if response_record["status"] != "MODEL_RESPONSE" and not continue_on_error:
+                scheduler.stop_submissions()
+    metrics = metadata.setdefault("parallel_metrics", {})
+    if isinstance(metrics, dict):
+        metrics["target_peak_in_flight"] = scheduler.peak_in_flight
     saved_responses = load_jsonl(responses_path)
     refresh_run_metadata(metadata, saved_responses, existing_judgments)
     finished_at = utc_now()
@@ -3123,6 +3256,144 @@ def judge_execution_manifest(
     return manifest
 
 
+def judge_attempt_record(
+    case: dict[str, Any],
+    target: dict[str, Any],
+    provider: ModelProvider,
+    metadata: dict[str, Any],
+    judge_metadata: dict[str, Any],
+    execution: dict[str, Any],
+    attempt: int,
+    *,
+    provider_result: ProviderResult | None = None,
+    provider_error: BaseException | None = None,
+    started_at: str | None = None,
+    started_monotonic: float | None = None,
+) -> dict[str, Any]:
+    """Materialize one Judge artifact on the main writer thread."""
+    case_id = case["case_id"]
+    record: dict[str, Any] = {
+        "schema_version": 3,
+        **artifact_binding(metadata),
+        "judge_provider_config_hash": judge_metadata["provider_config_hash"],
+        "judge_execution_hash": execution["execution_hash"],
+        "case_id": case_id,
+        "suite": case["suite"],
+        "classification": case["classification"],
+        "attempt": attempt,
+        "execution_source": "api",
+        "status": None,
+        "structured_output_normalization": "none",
+        "criteria": None,
+        "judge": {
+            "provider": provider.provider_name,
+            "requested_model": provider.model,
+        },
+        "reported_model": None,
+        "request_id": None,
+        "provider_response_id": None,
+        "finish_reason": None,
+        "provider_created_at": None,
+        "system_fingerprint": None,
+        "provider_metadata": None,
+        "request_envelope_hash": None,
+        "usage": None,
+        "evaluated_at": started_at or utc_now(),
+        "completed_at": None,
+        "duration_seconds": None,
+        "error_code": None,
+        "retryable": None,
+        "error": None,
+    }
+    builder = getattr(provider, "build_request_payload", None)
+    if callable(builder):
+        envelope = builder(
+            instructions=JUDGE_INSTRUCTIONS,
+            input_text=judge_input(case, target["response"]),
+            response_schema=judgment_schema(case["criteria"], case_id),
+        )
+        record["request_envelope_hash"] = sha256_bytes(canonical_json_bytes(envelope))
+    started_monotonic = (
+        started_monotonic if started_monotonic is not None else time.perf_counter()
+    )
+    try:
+        if provider_error is not None:
+            raise provider_error
+        result = provider_result
+        if result is None:
+            result = run_responsive_provider_call(
+                lambda: provider.generate(
+                    instructions=JUDGE_INSTRUCTIONS,
+                    input_text=judge_input(case, target["response"]),
+                    response_schema=judgment_schema(case["criteria"], case_id),
+                )
+            )
+        normalized_text, normalization = normalize_structured_output_text(result.text)
+        record["structured_output_normalization"] = normalization
+        try:
+            criteria = parse_judgment(
+                normalized_text,
+                case["criteria"],
+                expected_case_id=case_id,
+                normalize_outer_fence=False,
+            )
+        except ModelEvalError as exc:
+            record.update(
+                {
+                    "status": "JUDGE_ERROR",
+                    "error": _sanitize_diagnostic_excerpt(str(exc)),
+                    "error_code": "INVALID_STRUCTURED_OUTPUT",
+                    "retryable": False,
+                    "diagnostics": judge_error_diagnostics(result, parse_error=str(exc)),
+                }
+            )
+        else:
+            record.update(
+                {
+                    "status": "JUDGMENT",
+                    "criteria": criteria,
+                    "provider_response_id": result.response_id,
+                    "request_id": result.response_id,
+                    "usage": result.usage,
+                    "reported_model": result.reported_model,
+                    "finish_reason": result.finish_reason,
+                    "provider_created_at": result.created_at,
+                    "system_fingerprint": result.system_fingerprint,
+                    "provider_metadata": result.provider_metadata,
+                    "request_envelope_hash": result.request_envelope_hash
+                    or record["request_envelope_hash"],
+                }
+            )
+    except ProviderError as exc:
+        record.update(
+            {
+                "status": "JUDGE_ERROR",
+                "error": _sanitize_diagnostic_excerpt(str(exc)),
+                "error_code": exc.code,
+                "retryable": exc.retryable,
+                "reported_model": exc.reported_model,
+                "diagnostics": judge_error_diagnostics(
+                    None,
+                    error_code=exc.code,
+                    provider_error=exc,
+                ),
+            }
+        )
+        record.update(provider_error_artifact_fields(exc))
+    except ModelEvalError as exc:
+        record.update(
+            {
+                "status": "JUDGE_ERROR",
+                "error": _sanitize_diagnostic_excerpt(str(exc)),
+                "error_code": "INVALID_STRUCTURED_OUTPUT",
+                "retryable": False,
+            }
+        )
+    record["completed_at"] = utc_now()
+    record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
+    return record
+
+
 def execute_judge(
     run_dir: Path,
     provider: ModelProvider,
@@ -3132,8 +3403,15 @@ def execute_judge(
     on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
     case_ids: tuple[str, ...] | None = None,
+    judge_concurrency: int = 1,
 ) -> dict[str, int]:
     validate_result_artifacts(run_dir)
+    if (
+        not isinstance(judge_concurrency, int)
+        or judge_concurrency < 1
+        or judge_concurrency > 32
+    ):
+        raise ModelEvalError("judge concurrency must be between 1 and 32")
     metadata = load_json_object(run_dir / "run.json")
     if metadata.get("schema_version") != 3:
         raise ModelEvalError("API judge execution requires a schema v3 run")
@@ -3147,7 +3425,8 @@ def execute_judge(
         raise ModelEvalError("Judge execution requires an explicit planner-owned case scope")
     scoped_case_ids = execution_scope(case_ids, available_case_ids, label="Judge")
     scoped_case_id_set = set(scoped_case_ids)
-    scoped_cases = [case for case in cases if case["case_id"] in scoped_case_id_set]
+    cases_by_id = {case["case_id"]: case for case in cases}
+    scoped_cases = [cases_by_id[case_id] for case_id in scoped_case_ids]
     all_response_records = load_jsonl(run_dir / "responses.jsonl")
     responses = index_response_attempts(
         all_response_records, set(available_case_ids), "responses.jsonl"
@@ -3211,154 +3490,73 @@ def execute_judge(
         metadata["judge_started_at"] = utc_now()
     metadata["judge_phase_completed"] = False
     invalidate_report(run_dir, metadata)
-    started = 0
-    completed = 0
-    with nullcontext():
-        for case in scoped_cases:
-            if should_stop is not None and should_stop():
-                break
-            case_id = case["case_id"]
-            current = existing.get(case_id)
-            if current and current.get("status") == "JUDGMENT":
-                continue
-            target = responses.get(case_id)
-            if not target or target.get("status") != "MODEL_RESPONSE":
-                continue
-            started += 1
-            if on_case_start is not None:
-                on_case_start(case, started, len(eligible))
-            attempt = int(current.get("attempt", 1)) + 1 if current else 1
-            record: dict[str, Any] = {
-                "schema_version": 3,
-                **artifact_binding(metadata),
-                "judge_provider_config_hash": judge_metadata["provider_config_hash"],
-                "judge_execution_hash": execution["execution_hash"],
-                "case_id": case_id,
-                "suite": case["suite"],
-                "classification": case["classification"],
-                "attempt": attempt,
-                "execution_source": "api",
-                "status": None,
-                "structured_output_normalization": "none",
-                "criteria": None,
-                "judge": {
-                    "provider": provider.provider_name,
-                    "requested_model": provider.model,
-                },
-                "reported_model": None,
-                "request_id": None,
-                "provider_response_id": None,
-                "finish_reason": None,
-                "provider_created_at": None,
-                "system_fingerprint": None,
-                "provider_metadata": None,
-                "request_envelope_hash": None,
-                "usage": None,
-                "evaluated_at": utc_now(),
-                "completed_at": None,
-                "duration_seconds": None,
-                "error_code": None,
-                "retryable": None,
-                "error": None,
+    work_items = []
+    for case in scoped_cases:
+        case_id = case["case_id"]
+        current = existing.get(case_id)
+        target = responses.get(case_id)
+        if current and current.get("status") == "JUDGMENT":
+            continue
+        if not target or target.get("status") != "MODEL_RESPONSE":
+            continue
+        work_items.append(
+            {
+                "case": case,
+                "target": target,
+                "attempt": int(current.get("attempt", 1)) + 1 if current else 1,
+                "started_at": None,
+                "started_monotonic": None,
             }
-            started_monotonic = time.perf_counter()
-            try:
-                builder = getattr(provider, "build_request_payload", None)
-                if callable(builder):
-                    envelope = builder(
-                        instructions=JUDGE_INSTRUCTIONS,
-                        input_text=judge_input(case, target["response"]),
-                        response_schema=judgment_schema(case["criteria"], case_id),
-                    )
-                    record["request_envelope_hash"] = sha256_bytes(
-                        canonical_json_bytes(envelope)
-                    )
-                result = run_responsive_provider_call(
-                    lambda: provider.generate(
-                        instructions=JUDGE_INSTRUCTIONS,
-                        input_text=judge_input(case, target["response"]),
-                        response_schema=judgment_schema(case["criteria"], case_id),
-                    )
-                )
-                normalized_text, normalization = normalize_structured_output_text(
-                    result.text
-                )
-                record["structured_output_normalization"] = normalization
-                try:
-                    criteria = parse_judgment(
-                        normalized_text,
-                        case["criteria"],
-                        expected_case_id=case_id,
-                        normalize_outer_fence=False,
-                    )
-                except ModelEvalError as exc:
-                    record.update(
-                        {
-                            "status": "JUDGE_ERROR",
-                            "error": _sanitize_diagnostic_excerpt(str(exc)),
-                            "error_code": "INVALID_STRUCTURED_OUTPUT",
-                            "retryable": False,
-                            "diagnostics": judge_error_diagnostics(
-                                result, parse_error=str(exc)
-                            ),
-                        }
-                    )
-                else:
-                    record.update(
-                        {
-                            "status": "JUDGMENT",
-                            "criteria": criteria,
-                            "provider_response_id": result.response_id,
-                            "request_id": result.response_id,
-                            "usage": result.usage,
-                            "reported_model": result.reported_model,
-                            "finish_reason": result.finish_reason,
-                            "provider_created_at": result.created_at,
-                            "system_fingerprint": result.system_fingerprint,
-                            "provider_metadata": result.provider_metadata,
-                            "request_envelope_hash": result.request_envelope_hash
-                            or record["request_envelope_hash"],
-                        }
-                    )
-            except ProviderError as exc:
-                record.update(
-                    {
-                        "status": "JUDGE_ERROR",
-                        "error": _sanitize_diagnostic_excerpt(str(exc)),
-                        "error_code": exc.code,
-                        "retryable": exc.retryable,
-                        "reported_model": exc.reported_model,
-                        "diagnostics": judge_error_diagnostics(
-                            None,
-                            error_code=exc.code,
-                            provider_error=exc,
-                        ),
-                    }
-                )
-                record.update(provider_error_artifact_fields(exc))
-            except ModelEvalError as exc:
-                record.update(
-                    {
-                        "status": "JUDGE_ERROR",
-                        "error": _sanitize_diagnostic_excerpt(str(exc)),
-                        "error_code": "INVALID_STRUCTURED_OUTPUT",
-                        "retryable": False,
-                    }
-                )
-            record["completed_at"] = utc_now()
-            record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
-            with judgments_path.open(
-                "a" if judgments_path.exists() else "x", encoding="utf-8", newline="\n"
-            ) as handle:
-                append_jsonl(handle, record)
-            existing[case_id] = record
-            metadata.setdefault("api_calls", {"target": 0, "judge": 0})["judge"] += 1
-            completed += 1
-            all_records = load_jsonl(judgments_path)
-            refresh_run_metadata(metadata, all_response_records, all_records)
-            write_json(run_dir / "run.json", metadata)
-            if on_case_complete is not None:
-                on_case_complete(record, completed, len(eligible))
+        )
+
+    def start_judge_work(item: dict[str, Any], started: int, total: int) -> None:
+        item["started_at"] = utc_now()
+        item["started_monotonic"] = time.perf_counter()
+        if on_case_start is not None:
+            on_case_start(item["case"], started, total)
+
+    scheduler = BoundedCaseScheduler(
+        work_items,
+        concurrency=judge_concurrency,
+        provider_call=lambda item: provider.generate(
+            instructions=JUDGE_INSTRUCTIONS,
+            input_text=judge_input(item["case"], item["target"]["response"]),
+            response_schema=judgment_schema(
+                item["case"]["criteria"], item["case"]["case_id"]
+            ),
+        ),
+        on_case_start=start_judge_work,
+        should_stop=should_stop,
+    )
+    for completed, completion in enumerate(scheduler.completions(), start=1):
+        item = completion.item
+        record = judge_attempt_record(
+            item["case"],
+            item["target"],
+            provider,
+            metadata,
+            judge_metadata,
+            execution,
+            item["attempt"],
+            provider_result=completion.value,
+            provider_error=completion.error,
+            started_at=item["started_at"],
+            started_monotonic=item["started_monotonic"],
+        )
+        with judgments_path.open(
+            "a" if judgments_path.exists() else "x", encoding="utf-8", newline="\n"
+        ) as handle:
+            append_jsonl(handle, record)
+        existing[record["case_id"]] = record
+        metadata.setdefault("api_calls", {"target": 0, "judge": 0})["judge"] += 1
+        all_records = load_jsonl(judgments_path)
+        refresh_run_metadata(metadata, all_response_records, all_records)
+        write_json(run_dir / "run.json", metadata)
+        if on_case_complete is not None:
+            on_case_complete(record, completed, len(eligible))
+    metrics = metadata.setdefault("parallel_metrics", {})
+    if isinstance(metrics, dict):
+        metrics["judge_peak_in_flight"] = scheduler.peak_in_flight
     all_records = load_jsonl(judgments_path)
     latest = index_judgment_attempts(all_records, set(available_case_ids))
     counts = {
@@ -6128,7 +6326,7 @@ def command_run(args: argparse.Namespace) -> int:
         {
             "run_id": selected_run_id,
             "resume": args.resume,
-            "concurrency": args.concurrency,
+            "target_concurrency": args.target_concurrency,
             "dry_run": args.dry_run,
         }
     )
@@ -6141,7 +6339,7 @@ def command_run(args: argparse.Namespace) -> int:
         candidate,
         resume=args.resume,
         allow_dirty_debug=args.allow_dirty_debug,
-        concurrency=args.concurrency,
+        target_concurrency=args.target_concurrency,
     )
     print(f"run_dir={candidate}")
     print(json.dumps({"status": metadata["status"], "counts": metadata["counts"]}, indent=2))
@@ -6159,11 +6357,23 @@ def command_judge(args: argparse.Namespace) -> int:
         case_count=len(case_ids),
         runtime_profile=metadata.get("runtime_profile", "unknown"),
     )
-    plan.update({"resume": args.resume, "dry_run": args.dry_run})
+    plan.update(
+        {
+            "resume": args.resume,
+            "judge_concurrency": args.judge_concurrency,
+            "dry_run": args.dry_run,
+        }
+    )
     print(json.dumps(plan, ensure_ascii=False, indent=2))
     if args.dry_run:
         return 0
-    counts = execute_judge(run_dir, provider, resume=args.resume, case_ids=case_ids)
+    counts = execute_judge(
+        run_dir,
+        provider,
+        resume=args.resume,
+        case_ids=case_ids,
+        judge_concurrency=args.judge_concurrency,
+    )
     print(json.dumps(counts, ensure_ascii=False, indent=2))
     return 0 if counts["judge_error"] == 0 and counts["not_judged"] == 0 else 2
 
@@ -6359,7 +6569,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id")
     run.add_argument("--resume", action="store_true")
     run.add_argument("--allow-dirty-debug", action="store_true")
-    run.add_argument("--concurrency", type=int, default=1)
+    run.add_argument("--target-concurrency", type=int, default=1)
     run.add_argument("--dry-run", action="store_true")
     add_provider_arguments(run, judge=False)
     run.set_defaults(func=command_run)
@@ -6367,6 +6577,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--run-dir", required=True)
     judge.add_argument("--resume", action="store_true")
     judge.add_argument("--dry-run", action="store_true")
+    judge.add_argument("--judge-concurrency", type=int, default=1)
     add_provider_arguments(judge, judge=True)
     judge.set_defaults(func=command_judge)
     judge_case = subparsers.add_parser(

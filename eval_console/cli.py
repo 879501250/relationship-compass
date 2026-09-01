@@ -152,10 +152,16 @@ class _ActivityReporter:
 class _GracefulStop:
     """Treat the first Ctrl+C as a durable stop request and a second as force stop."""
 
-    def __init__(self, concurrency: int, *, stream: TextIO | None = None) -> None:
+    def __init__(
+        self,
+        target_concurrency: int,
+        judge_concurrency: int,
+        *,
+        stream: TextIO | None = None,
+    ) -> None:
         self.requested = False
         self.force_requested = False
-        self.concurrency = concurrency
+        self.concurrency = max(target_concurrency, judge_concurrency)
         self._stream = stream or sys.stderr
         self._stage: str | None = None
         self._previous: object | None = None
@@ -300,7 +306,8 @@ def _add_run_arguments(
     parser.add_argument("--judge-model", help="仅本次运行覆盖 Judge 模型")
     parser.add_argument("--dry-run", action="store_true", help="检查并显示计划，不调用真实 API")
     parser.add_argument("--allow-dirty-debug", action="store_true")
-    parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument("--target-concurrency", type=int, default=1)
+    parser.add_argument("--judge-concurrency", type=int, default=1)
     parser.add_argument("--stop-on-error", action="store_true")
     parser.add_argument("--debug", action="store_true")
 
@@ -356,6 +363,8 @@ def _validate_resume_artifact(metadata: dict[str, object]) -> None:
         raise EvalConsoleError("Unsupported Run Artifact Version：Console artifact 版本不受支持。")
     if console.get("origin_mode") != metadata.get("origin_mode"):
         raise EvalConsoleError("Unsupported Run Artifact Version：origin_mode 不一致。")
+    if "concurrency" in console:
+        raise EvalConsoleError("Unsupported Run Artifact Version：不支持旧并发配置。")
 
 
 def _resume_request_with_inherited_configuration(
@@ -404,7 +413,18 @@ def _resume_request_with_inherited_configuration(
         judge_profile=inherited_profiles["Judge"],
         resume_target_model=inherited_models["Target"],
         resume_judge_model=inherited_models["Judge"],
+        target_concurrency=_saved_concurrency(console, "target_concurrency"),
+        judge_concurrency=_saved_concurrency(console, "judge_concurrency"),
     )
+
+
+def _saved_concurrency(console: dict[str, object], field: str) -> int:
+    value = console.get(field)
+    if not isinstance(value, int) or value < 1 or value > 32:
+        raise EvalConsoleError(
+            "Unsupported Run Artifact Version：当前 Console Run 缺少有效并发配置。"
+        )
+    return value
 
 
 def _command_validate(args: argparse.Namespace) -> int:
@@ -961,15 +981,15 @@ def _ensure_role_ready(
     return resolver.has(env_name)
 
 
-def _interactive_concurrency() -> int:
+def _interactive_concurrency(role: str) -> int:
     selected = _choose(
-        "并发数",
+        f"{role} 并发数",
         [("1（推荐）", 1), ("2", 2), ("4", 4), ("自定义", "custom")],
     )
     if selected != "custom":
         return int(selected)
     while True:
-        value = _read_interactive_input("请输入并发数（1-32）：").strip()
+        value = _read_interactive_input(f"请输入 {role} 并发数（1-32）：").strip()
         if value.isdigit() and 1 <= int(value) <= 32:
             return int(value)
         print("并发数必须介于 1 到 32 之间。")
@@ -1053,7 +1073,8 @@ def _interactive_run(
     judge_profile = refreshed_profiles[judge_profile.name]
     target_model = _interactive_model_override(target_profile, "target")
     judge_model = _interactive_model_override(judge_profile, "judge")
-    concurrency = _interactive_concurrency()
+    target_concurrency = _interactive_concurrency("Target")
+    judge_concurrency = _interactive_concurrency("Judge")
     continue_on_error = _choose(
         "单个 Case 出错时",
         [("继续运行剩余 Cases（推荐）", True), ("立即停止", False)],
@@ -1073,7 +1094,8 @@ def _interactive_run(
             "如有需要，允许在有未提交修改的工作区进行调试运行？此类运行不能作为正式参考", default=False
         ),
         debug=debug,
-        concurrency=concurrency,
+        target_concurrency=target_concurrency,
+        judge_concurrency=judge_concurrency,
         target_model_override=target_model,
         judge_model_override=judge_model,
         continue_on_error=continue_on_error,
@@ -1117,7 +1139,7 @@ def _interactive_target_only(
         dry_run=dry_run,
         debug=debug,
         allow_dirty_debug=_yes_no("如有需要，允许在有未提交修改的工作区进行调试运行", default=False),
-        concurrency=_interactive_concurrency(),
+        target_concurrency=_interactive_concurrency("Target"),
         target_model_override=target_model,
         continue_on_error=_choose("单个 Case 出错时", [("继续运行剩余 Cases（推荐）", True), ("立即停止", False)]),
         mode=EvalExecutionMode.TARGET_ONLY,
@@ -1171,6 +1193,8 @@ def _interactive_history_stage(
         judge = {item.name: item for item in discover_provider_profiles(profiles_file)}[judge.name]
         target_model = None
         judge_model = _interactive_model_override(judge, "judge")
+        target_concurrency = 1
+        judge_concurrency = _interactive_concurrency("Judge")
     else:
         scope = _choose(
             "选择继续范围",
@@ -1190,6 +1214,8 @@ def _interactive_history_stage(
         target_model = None
         judge_model = None
         selector = JudgeCaseSelector.SELECTED
+        target_concurrency = 1
+        judge_concurrency = 1
     dry_run = _choose("运行模式", [("Dry Run（不调用真实 API）", True), ("真实 API 运行", False)])
     request = EvalRunRequest(
         eval_id=definition.eval_id,
@@ -1201,6 +1227,8 @@ def _interactive_history_stage(
         dry_run=dry_run,
         debug=debug,
         allow_dirty_debug=_yes_no("如有需要，允许在有未提交修改的工作区进行调试运行", default=False),
+        target_concurrency=target_concurrency,
+        judge_concurrency=judge_concurrency,
         target_model_override=target_model,
         judge_model_override=judge_model,
         mode=mode,
@@ -1242,7 +1270,8 @@ def build_interactive_request(
     dry_run: bool,
     allow_dirty_debug: bool,
     debug: bool,
-    concurrency: int,
+    target_concurrency: int,
+    judge_concurrency: int,
     target_model_override: str | None,
     judge_model_override: str | None,
     continue_on_error: bool,
@@ -1258,7 +1287,8 @@ def build_interactive_request(
         dry_run=dry_run,
         allow_dirty_debug=allow_dirty_debug,
         debug=debug,
-        concurrency=concurrency,
+        target_concurrency=target_concurrency,
+        judge_concurrency=judge_concurrency,
         target_model_override=target_model_override,
         judge_model_override=judge_model_override,
         continue_on_error=continue_on_error,
@@ -1291,9 +1321,16 @@ def _print_run_summary(
     print(f"Judge Profile：{judge_profile.name}")
     print(f"Judge 模型：{judge_name}")
     print(f"Judge API 凭据：{'已配置' if isinstance(judge_key, str) and resolver.has(judge_key) else '缺失'}")
-    print(f"并发数：{request.concurrency}")
-    if request.concurrency > 1:
-        print("停止提示：并发大于 1 时，已排队的 Case 仍可能完成；严格停止请使用并发 1。")
+    print("Target：")
+    print(f"  Cases：{len(request.case_ids)}")
+    print(f"  Concurrency：{request.target_concurrency}")
+    print(f"  Planned API Calls：{len(request.case_ids)}")
+    print("Judge：")
+    print(f"  Cases：{len(request.case_ids)}")
+    print(f"  Concurrency：{request.judge_concurrency}")
+    print(f"  Planned API Calls：{len(request.case_ids)}")
+    if max(request.target_concurrency, request.judge_concurrency) > 1:
+        print("停止提示：停止后不会安排新的 Case；已开始的请求完成后将保存进度。")
     print(f"错误处理：{'继续运行' if request.continue_on_error else '立即停止'}")
     print(f"运行模式：{'Dry Run（不调用真实 API）' if request.dry_run else '真实 API 运行'}")
     if request.dry_run:
@@ -1331,7 +1368,10 @@ def _print_stage_request_summary(
     print(f"Cases：{len(request.case_ids)} / {len(definition.cases)}")
     if request.source_run_dir is not None:
         print(f"来源运行：{request.source_run_dir}")
-    print(f"计划调用：Target {target_count}，Judge {judge_count}")
+    print("Target：")
+    print(f"  Cases：{target_count}")
+    print(f"  Concurrency：{request.target_concurrency}")
+    print(f"  Planned API Calls：{target_count}")
     if target_count:
         target_name = request.resume_target_model or (
             target_profile.target_model if target_profile else None
@@ -1340,6 +1380,10 @@ def _print_stage_request_summary(
         print(f"Target 模型：{target_name}")
     else:
         print("Target：已有结果，不调用 API")
+    print("Judge：")
+    print(f"  Cases：{judge_count}")
+    print(f"  Concurrency：{request.judge_concurrency}")
+    print(f"  Planned API Calls：{judge_count}")
     if judge_count:
         judge_name = request.resume_judge_model or (
             judge_profile.judge_model if judge_profile else None
@@ -1349,10 +1393,9 @@ def _print_stage_request_summary(
     else:
         print("Judge：无需执行")
     if request.mode is EvalExecutionMode.RESUME:
-        print("Resume 将继续使用原运行的 Provider 配置；如需更换 Judge，请使用 JUDGE_ONLY。")
-    print(f"并发数：{request.concurrency}")
-    if request.concurrency > 1:
-        print("停止提示：并发大于 1 时，已排队的 Case 仍可能完成；严格停止请使用并发 1。")
+        print("Resume 将继续使用原运行的 Provider 与并发配置；如需更换 Judge，请使用 JUDGE_ONLY。")
+    if max(request.target_concurrency, request.judge_concurrency) > 1:
+        print("停止提示：停止后不会安排新的 Case；已开始的请求完成后将保存进度。")
     print(f"运行模式：{'Dry Run（不调用真实 API）' if request.dry_run else '真实 API 运行'}")
     print(f"输出位置：{request.results_root}")
 
@@ -1437,7 +1480,9 @@ def _execute_and_print(request: EvalRunRequest) -> int:
     print("\n正在运行……每个 Case 完成后都会保存进度。")
     activity = _ActivityReporter()
     try:
-        with _GracefulStop(request.concurrency) as stop:
+        with _GracefulStop(
+            request.target_concurrency, request.judge_concurrency
+        ) as stop:
             def on_activity(
                 phase: str, record: dict[str, object], started: int, total: int
             ) -> None:
@@ -1487,7 +1532,8 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
         dry_run=args.dry_run,
         debug=args.debug,
         allow_dirty_debug=args.allow_dirty_debug,
-        concurrency=args.concurrency,
+        target_concurrency=args.target_concurrency,
+        judge_concurrency=args.judge_concurrency,
         run_id=args.run_id,
         target_model_override=getattr(args, "target_model", None),
         judge_model_override=getattr(args, "judge_model", None),

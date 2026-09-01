@@ -138,7 +138,7 @@ class FullAPIReferenceTests(unittest.TestCase):
             )
             runner.validate_result_artifacts(run_dir)
 
-    def test_concurrent_target_execution_preserves_case_order(self) -> None:
+    def test_concurrent_target_execution_indexes_completion_order_by_case_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = self.run_dir(Path(temp_dir), "target-concurrency")
             provider = SequenceProvider(["first answer", "second answer"])
@@ -148,13 +148,13 @@ class FullAPIReferenceTests(unittest.TestCase):
                 run_dir,
                 repository_sha="a" * 40,
                 repository_dirty=False,
-                concurrency=2,
+                target_concurrency=2,
             )
             self.assertEqual(metadata["status"], "TARGET_COMPLETE")
             responses = runner.load_jsonl(run_dir / "responses.jsonl")
             self.assertEqual(
-                [item["case_id"] for item in responses],
-                [item["case_id"] for item in self.prepared],
+                set(item["case_id"] for item in responses),
+                set(item["case_id"] for item in self.prepared),
             )
             runner.validate_result_artifacts(run_dir)
 

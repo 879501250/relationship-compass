@@ -6,6 +6,7 @@ import json
 import os
 from copy import deepcopy
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -113,8 +114,10 @@ def validate_request(request: EvalRunRequest) -> None:
         )
     if len(set(request.case_ids)) != len(request.case_ids):
         raise EvalConsoleError("每个 Case 只能选择一次。")
-    if request.concurrency < 1 or request.concurrency > 32:
-        raise EvalConsoleError("并发数必须介于 1 到 32 之间。")
+    if request.target_concurrency < 1 or request.target_concurrency > 32:
+        raise EvalConsoleError("Target 并发数必须介于 1 到 32 之间。")
+    if request.judge_concurrency < 1 or request.judge_concurrency > 32:
+        raise EvalConsoleError("Judge 并发数必须介于 1 到 32 之间。")
     profiles = {profile.name: profile for profile in discover_provider_profiles(request.profiles_file)}
     needs_target = request.mode in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY}
     needs_judge = request.mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY}
@@ -215,6 +218,8 @@ def execute_request(
     should_stop: StopRequested | None = None,
 ) -> RunOutcome:
     """Execute an explicit Target/Judge stage mode with durable per-stage artifacts."""
+    if request.mode is EvalExecutionMode.RESUME:
+        request = _resume_request_with_persisted_concurrency(request)
     definition = find_eval(request.eval_id)
     resume_stage_plan = (
         plan_stage_execution(request.source_run_dir, request.case_ids, EvalExecutionMode.RESUME)
@@ -577,6 +582,8 @@ def _create_judge_only_run(
         "judge_profile": request.judge_profile,
         "target_model": _requested_model(source_metadata.get("target")),
         "judge_model": request.judge_model_override,
+        "target_concurrency": request.target_concurrency,
+        "judge_concurrency": request.judge_concurrency,
         "source_target_run_id": source_metadata["run_id"],
     }
     cloned_responses: list[dict[str, Any]] = []
@@ -620,7 +627,7 @@ def _execute_target_stage(
         run_dir,
         resume=resume,
         allow_dirty_debug=request.allow_dirty_debug,
-        concurrency=request.concurrency,
+        target_concurrency=request.target_concurrency,
         continue_on_error=request.continue_on_error,
         metadata_extra=metadata_extra,
         on_case_start=lambda record, started, total: _emit_activity(activity, "TARGET", record, started, total),
@@ -650,6 +657,7 @@ def _execute_judge_stage(
         on_case_complete=lambda record, completed, total: _emit_progress(run_dir, request, progress, "JUDGE", record, completed, total),
         should_stop=should_stop,
         case_ids=case_ids,
+        judge_concurrency=request.judge_concurrency,
     )
 
 
@@ -706,6 +714,8 @@ def _console_metadata(
             or request.target_model_override,
             "judge_model": _provider_requested_model(judge_provider)
             or request.judge_model_override,
+            "target_concurrency": request.target_concurrency,
+            "judge_concurrency": request.judge_concurrency,
         }
     }
 
@@ -753,6 +763,22 @@ def _resume_metadata(request: EvalRunRequest) -> dict[str, Any]:
     metadata = runner.load_json_object(request.source_run_dir / "run.json")
     _validate_current_run_schema(metadata)
     return metadata
+
+
+def _resume_request_with_persisted_concurrency(request: EvalRunRequest) -> EvalRunRequest:
+    """Keep Resume execution strategy fixed to the current Run artifact."""
+    metadata = _resume_metadata(request)
+    console = metadata["console"]
+    assert isinstance(console, dict)
+    values: dict[str, int] = {}
+    for field in ("target_concurrency", "judge_concurrency"):
+        value = console.get(field)
+        if not isinstance(value, int) or value < 1 or value > 32:
+            raise EvalConsoleError(
+                "Unsupported Run Artifact Version: current concurrency configuration is required"
+            )
+        values[field] = value
+    return replace(request, **values)
 
 
 def _validate_resume_profile_availability(
@@ -839,6 +865,16 @@ def _validate_current_run_schema(metadata: dict[str, Any]) -> None:
         raise runner.ModelEvalError(
             "Unsupported Run Artifact Version: Console origin_mode does not match run"
         )
+    if "concurrency" in console:
+        raise runner.ModelEvalError(
+            "Unsupported Run Artifact Version: legacy Console concurrency is not supported"
+        )
+    for field in ("target_concurrency", "judge_concurrency"):
+        value = console.get(field)
+        if not isinstance(value, int) or value < 1 or value > 32:
+            raise runner.ModelEvalError(
+                "Unsupported Run Artifact Version: current concurrency configuration is required"
+            )
 
 
 def _validate_selected_case_ids(case_ids: tuple[str, ...], available: tuple[str, ...] | list[str]) -> tuple[str, ...]:
@@ -896,6 +932,8 @@ def _record_execution_metadata(
     console = metadata["console"]
     console["target_model"] = _requested_model(metadata.get("target"))
     console["judge_model"] = _requested_model(metadata.get("judge"))
+    console["target_concurrency"] = request.target_concurrency
+    console["judge_concurrency"] = request.judge_concurrency
     history = metadata.get("execution_history")
     if not isinstance(history, list):
         history = []
@@ -916,6 +954,18 @@ def _record_execution_metadata(
             "actual_api_calls": dict(api_calls),
             "api_call_plan_match": api_calls == planned_api_calls,
             "interrupted": interrupted,
+            "target_concurrency": request.target_concurrency,
+            "judge_concurrency": request.judge_concurrency,
+            "target_peak_in_flight": (
+                metadata.get("parallel_metrics", {}).get("target_peak_in_flight")
+                if isinstance(metadata.get("parallel_metrics"), dict)
+                else None
+            ),
+            "judge_peak_in_flight": (
+                metadata.get("parallel_metrics", {}).get("judge_peak_in_flight")
+                if isinstance(metadata.get("parallel_metrics"), dict)
+                else None
+            ),
         }
     )
     runner.write_json(run_dir / "run.json", metadata)

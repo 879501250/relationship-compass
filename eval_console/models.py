@@ -7,7 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 
-CURRENT_CONSOLE_SCHEMA_VERSION = 4
+CURRENT_CONSOLE_SCHEMA_VERSION = 5
 EVAL_CONSOLE_VERSION = "1.2A"
 
 
@@ -107,7 +107,8 @@ class EvalRunRequest:
     dry_run: bool = False
     debug: bool = False
     allow_dirty_debug: bool = False
-    concurrency: int = 1
+    target_concurrency: int = 1
+    judge_concurrency: int = 1
     run_id: str | None = None
     target_model_override: str | None = None
     judge_model_override: str | None = None
