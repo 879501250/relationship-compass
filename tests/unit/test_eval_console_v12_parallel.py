@@ -162,6 +162,67 @@ class FullBarrierProvider(SuccessProvider):
         return result
 
 
+class BlockingJudgeProvider(SuccessProvider):
+    def __init__(self, *, block: bool, expected_workers: int = 2) -> None:
+        super().__init__()
+        self.block = block
+        self.expected_workers = expected_workers
+        self.judge_release = threading.Event()
+        self.judge_workers_started = threading.Event()
+        self.judge_workers_finished = threading.Event()
+        self.judge_active = 0
+        self.judge_peak = 0
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is None:
+            return super().generate(
+                instructions=instructions,
+                input_text=input_text,
+                response_schema=response_schema,
+            )
+        with self._lock:
+            self.judge_calls += 1
+            self.judge_active += 1
+            self.judge_peak = max(self.judge_peak, self.judge_active)
+            if self.judge_calls >= self.expected_workers:
+                self.judge_workers_started.set()
+        if self.block and not self.judge_release.wait(3):
+            raise AssertionError("test did not release parallel Judge calls")
+        with self._lock:
+            self.judge_active -= 1
+            if self.judge_active == 0:
+                self.judge_workers_finished.set()
+        return runner.ProviderResult(judgment(response_schema), reported_model=self.model)
+
+
+class JudgeErrorProvider(SuccessProvider):
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is None:
+            return super().generate(
+                instructions=instructions,
+                input_text=input_text,
+                response_schema=response_schema,
+            )
+        with self._lock:
+            self.judge_calls += 1
+            call_number = self.judge_calls
+        if call_number == 2:
+            raise runner.ProviderError("judge transport failure", code="NETWORK_ERROR")
+        return runner.ProviderResult(judgment(response_schema), reported_model=self.model)
+
+
 class ParallelExecutionTests(unittest.TestCase):
     @staticmethod
     def case_ids(count: int) -> tuple[str, ...]:
@@ -410,6 +471,37 @@ class ParallelExecutionTests(unittest.TestCase):
             self.assertEqual(set(append_threads), {main_thread})
             self.assertEqual(set(write_threads), {main_thread})
 
+    def test_parallel_judge_errors_still_complete_the_run_level_phase(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases(cases[:3], criteria)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = (
+                runner.results_root(
+                    runner.prepared_version(prepared),
+                    Path(temp_dir) / "results",
+                    runner.API_RUNTIME_PROFILE,
+                )
+                / "parallel-judge-errors"
+            )
+            runner.execute_run(
+                prepared,
+                SuccessProvider(),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            runner.execute_judge(
+                run_dir,
+                JudgeErrorProvider(),
+                case_ids=tuple(record["case_id"] for record in prepared),
+                judge_concurrency=2,
+            )
+            metadata = runner.load_json_object(run_dir / "run.json")
+            self.assertTrue(metadata["judge_phase_completed"])
+            self.assertEqual(metadata["status"], "COMPLETED_WITH_ERRORS")
+            self.assertEqual(metadata["counts"]["judge_error"], 1)
+            runner.validate_result_artifacts(run_dir)
+
     def test_parallel_force_stop_abandons_daemon_workers_without_late_writes(self) -> None:
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases(cases[:3], criteria)
@@ -455,4 +547,59 @@ class ParallelExecutionTests(unittest.TestCase):
             finally:
                 provider.release.set()
                 notifier.join(3)
+        self.assertFalse(notifier.is_alive())
+
+    def test_parallel_judge_force_stop_does_not_wait_for_blocked_workers(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases(cases[:3], criteria)
+        acknowledged = threading.Event()
+        provider = BlockingJudgeProvider(block=True, expected_workers=3)
+        stop = _GracefulStop(1, 3, stream=io.StringIO())
+
+        def should_stop() -> bool:
+            if stop.requested:
+                acknowledged.set()
+            return stop.requested
+
+        def interrupt_twice() -> None:
+            self.assertTrue(provider.judge_workers_started.wait(3))
+            signal.raise_signal(signal.SIGINT)
+            self.assertTrue(acknowledged.wait(2))
+            signal.raise_signal(signal.SIGINT)
+
+        notifier = threading.Thread(target=interrupt_twice, daemon=True)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = (
+                runner.results_root(
+                    runner.prepared_version(prepared),
+                    Path(temp_dir) / "results",
+                    runner.API_RUNTIME_PROFILE,
+                )
+                / "parallel-judge-force-stop"
+            )
+            runner.execute_run(
+                prepared,
+                SuccessProvider(),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            notifier.start()
+            try:
+                with self.assertRaises(KeyboardInterrupt):
+                    with stop:
+                        runner.execute_judge(
+                            run_dir,
+                            provider,
+                            case_ids=tuple(record["case_id"] for record in prepared),
+                            judge_concurrency=3,
+                            should_stop=should_stop,
+                        )
+                self.assertTrue(stop.force_requested)
+                self.assertFalse((run_dir / "judgments.jsonl").exists())
+            finally:
+                provider.judge_release.set()
+                notifier.join(3)
+            self.assertTrue(provider.judge_workers_finished.wait(2))
+            self.assertFalse((run_dir / "judgments.jsonl").exists())
         self.assertFalse(notifier.is_alive())

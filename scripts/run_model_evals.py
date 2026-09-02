@@ -2233,6 +2233,37 @@ def run_counts(
     }
 
 
+def judge_phase_is_complete(
+    cases: list[dict[str, Any]],
+    responses: list[dict[str, Any]],
+    judgments: list[dict[str, Any]],
+) -> bool:
+    """Return whether every Judge-eligible Case in this Run has settled.
+
+    This deliberately evaluates the full persisted Run, not the execution
+    subset.  A Selected Resume can settle its own Cases while another
+    Judge-eligible Case remains pending.
+    """
+    case_ids = {case["case_id"] for case in cases}
+    effective_responses = (
+        index_response_attempts(responses, case_ids) if responses else {}
+    )
+    if len(effective_responses) != len(case_ids):
+        return False
+    latest_judgments = (
+        index_judgment_attempts(judgments, case_ids) if judgments else {}
+    )
+    judgeable_ids = {
+        case_id
+        for case_id, record in effective_responses.items()
+        if record.get("status") == "MODEL_RESPONSE"
+    }
+    return all(
+        latest_judgments.get(case_id, {}).get("status") in {"JUDGMENT", "JUDGE_ERROR"}
+        for case_id in judgeable_ids
+    )
+
+
 def derive_run_status(
     cases: list[dict[str, Any]],
     responses: list[dict[str, Any]],
@@ -2259,10 +2290,7 @@ def derive_run_status(
         if record.get("status") == "MODEL_RESPONSE"
     }
     target_has_errors = len(judgeable_ids) != total
-    judge_complete = all(
-        latest_judgments.get(case_id, {}).get("status") in {"JUDGMENT", "JUDGE_ERROR"}
-        for case_id in judgeable_ids
-    )
+    judge_complete = judge_phase_is_complete(cases, responses, judgments)
     if judgeable_ids and judge_complete:
         judge_has_errors = any(
             latest_judgments[case_id].get("status") == "JUDGE_ERROR"
@@ -3569,7 +3597,9 @@ def execute_judge(
     metadata["judge_counts"] = counts
     if len(all_records) == len(existing_records) and was_completed:
         return counts
-    metadata["judge_phase_completed"] = True
+    metadata["judge_phase_completed"] = judge_phase_is_complete(
+        cases, all_response_records, all_records
+    )
     refresh_run_metadata(metadata, all_response_records, all_records)
     if metadata["status"] in {"COMPLETED", "COMPLETED_WITH_ERRORS"}:
         finished_at = utc_now()
