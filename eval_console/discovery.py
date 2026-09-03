@@ -128,6 +128,7 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
             ):
                 continue
             outcomes = run_case_outcomes(metadata_path.parent, metadata)
+            target_only = metadata.get("origin_mode") == "TARGET_ONLY"
             failed = [case_id for case_id, state in outcomes.items() if state == "FAIL"]
             errors = [case_id for case_id, state in outcomes.items() if state == "ERROR"]
             incomplete = [
@@ -144,11 +145,17 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
                     run_id=str(metadata.get("run_id") or metadata_path.parent.name),
                     created_at=_string(metadata.get("created_at")),
                     total_cases=int(counts.get("total_cases", len(outcomes))),
-                    passed_cases=sum(state == "PASS" for state in outcomes.values()),
-                    failed_case_ids=tuple(failed),
-                    error_case_ids=tuple(errors),
-                    incomplete_case_ids=tuple(incomplete),
-                    state=_run_state(incomplete, errors, failed),
+                    passed_cases=None if target_only else sum(
+                        state == "PASS" for state in outcomes.values()
+                    ),
+                    failed_case_ids=() if target_only else tuple(failed),
+                    error_case_ids=() if target_only else tuple(errors),
+                    incomplete_case_ids=() if target_only else tuple(incomplete),
+                    state=(
+                        str(metadata.get("status") or "TARGET_COMPLETE")
+                        if target_only
+                        else _run_state(incomplete, errors, failed)
+                    ),
                     target_profile=_string(console.get("target_profile")),
                     judge_profile=_string(console.get("judge_profile")),
                     mode=_string(metadata.get("origin_mode")),
@@ -172,7 +179,7 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
 def run_case_outcomes(
     run_dir: Path, metadata: dict[str, Any] | None = None
 ) -> dict[str, str]:
-    """Classify every selected case for history, retry, and Console summaries."""
+    """Classify Cases using the stage semantics persisted by the source Run."""
     metadata = metadata or runner.load_json_object(run_dir / "run.json")
     responses = _read_jsonl(run_dir / "responses.jsonl")
     judgments = _read_jsonl(run_dir / "judgments.jsonl")
@@ -187,8 +194,17 @@ def run_case_outcomes(
     if not case_ids:
         case_ids = list(dict.fromkeys([*response_latest, *judgment_latest]))
     outcomes: dict[str, str] = {}
+    target_only = metadata.get("origin_mode") == "TARGET_ONLY"
     for case_id in case_ids:
         response = response_latest.get(case_id)
+        if target_only:
+            if response is None:
+                outcomes[case_id] = "NOT_RUN"
+            elif response.get("status") == "MODEL_RESPONSE":
+                outcomes[case_id] = "TARGET_SUCCESS"
+            else:
+                outcomes[case_id] = "TARGET_ERROR"
+            continue
         if response is None:
             outcomes[case_id] = "INCOMPLETE"
             continue

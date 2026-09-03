@@ -1065,6 +1065,78 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                 self.assertIn(expected, rendered)
             self.assertNotIn("secret-value", rendered)
 
+    def test_interactive_environment_check_renders_role_configs_without_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
+            os.environ, {"MOONSHOT_JUDGE_MODEL": "kimi-k2.6"}, clear=True
+        ):
+            root = Path(temp_dir)
+            profiles_file = root / "profiles.json"
+            profiles_file.write_text(
+                json.dumps(
+                    {
+                        "profiles": {
+                            "target-ready": {
+                                "provider": "openai_responses",
+                                "api_key_env": "TARGET_READY_KEY",
+                                "base_url": "https://target.example/v1",
+                                "declared_upstream_vendor": "Target Vendor",
+                                "target": {"model": "target-model"},
+                            },
+                            "target-missing": {
+                                "provider": "openai_responses",
+                                "api_key_env": "TARGET_MISSING_KEY",
+                                "target": {"model_env": "TARGET_MISSING_MODEL"},
+                            },
+                            "reference-judge-kimi-official": {
+                                "provider": "openai_compatible_chat",
+                                "api_key_env": "MOONSHOT_API_KEY",
+                                "base_url": "https://api.moonshot.cn/v1",
+                                "declared_upstream_vendor": "Moonshot AI",
+                                "max_retries": 2,
+                                "capabilities": {
+                                    "max_output_tokens_parameter": "max_completion_tokens"
+                                },
+                                "judge": {
+                                    "model_env": "MOONSHOT_JUDGE_MODEL",
+                                    "structured_output_mode": "json_object",
+                                    "thinking": "disabled",
+                                    "max_output_tokens": 4096,
+                                },
+                            },
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            resolver = SecretResolver(root / ".env.local")
+            resolver.set_session("TARGET_READY_KEY", "target-secret")
+            resolver.set_session("MOONSHOT_API_KEY", "moonshot-secret")
+            output = io.StringIO()
+            with mock.patch("eval_console.cli.SecretResolver", return_value=resolver), mock.patch(
+                "sys.stdout", output
+            ):
+                self.assertEqual(console_cli._interactive_validate(profiles_file, root / "results", False), 0)
+            rendered = output.getvalue()
+            for expected in (
+                "可用 Target Profiles",
+                "[可用] target-ready",
+                "[缺少模型 / API Key] target-missing",
+                "Profile=target-ready",
+                "Model=target-model",
+                "API Base URL=https://target.example/v1",
+                "可用 Judge Profiles",
+                "reference-judge-kimi-official",
+                "Model=kimi-k2.6",
+                "Structured Output=json_object",
+                "Thinking=disabled",
+                "Max Output Tokens=4096",
+                "Token Parameter=max_completion_tokens",
+                "Max Retries=2",
+            ):
+                self.assertIn(expected, rendered)
+            self.assertNotIn("target-secret", rendered)
+            self.assertNotIn("moonshot-secret", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

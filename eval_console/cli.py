@@ -85,23 +85,68 @@ class _RoleConfigurationDraft:
         )
 
 
+@dataclass(frozen=True)
+class _ActivityState:
+    """One in-flight Target or Judge request shown by the Console."""
+
+    phase: str
+    case_id: str
+    ordinal: int
+    total: int
+    started_at: float
+
+
+@dataclass(frozen=True)
+class _ActivitySnapshot:
+    """A consistent, renderer-safe view of one execution stage."""
+
+    phase: str | None
+    total: int
+    completed: int
+    running: int
+    pending: int
+    concurrency: int
+    active_case_ids: tuple[str, ...]
+
+
 class _ActivityReporter:
     """Render API wait state without polluting the persisted JSONL event log."""
 
-    def __init__(self) -> None:
+    def __init__(self, target_concurrency: int = 1, judge_concurrency: int = 1) -> None:
         self._stream = sys.stdout
         self._tty = bool(getattr(self._stream, "isatty", lambda: False)())
         self._lock = threading.Lock()
-        self._active: tuple[str, str, int, int, float] | None = None
+        self._active: dict[tuple[str, str], _ActivityState] = {}
+        self._phase: str | None = None
+        self._total = 0
+        self._completed = 0
+        self._concurrency = {
+            "TARGET": max(1, target_concurrency),
+            "JUDGE": max(1, judge_concurrency),
+        }
         self._stopped = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self, phase: str, record: dict[str, object], started: int, total: int) -> None:
         case_id = str(record.get("case_id") or "未知 Case")
         with self._lock:
-            self._active = (phase, case_id, started, total, time.monotonic())
+            if self._phase != phase:
+                # The service has a stage barrier. Clearing here makes that
+                # boundary explicit and prevents stale Target activity from
+                # being rendered as Judge activity if a callback is delayed.
+                self._phase = phase
+                self._active.clear()
+                self._completed = 0
+            self._total = total
+            self._active[(phase, case_id)] = _ActivityState(
+                phase, case_id, started, total, time.monotonic()
+            )
+            snapshot = self._snapshot_locked()
         if not self._tty:
-            print(f"  [开始] {case_id} {_phase_label(phase)}")
+            print(
+                f"  [开始] {case_id} {_phase_label(phase)}"
+                f"（运行中 {snapshot.running}/{snapshot.total}，等待 {snapshot.pending}）"
+            )
             return
         if self._thread is None:
             self._thread = threading.Thread(target=self._spin, daemon=True)
@@ -110,18 +155,33 @@ class _ActivityReporter:
     def finish(self, phase: str, record: dict[str, object], completed: int, total: int) -> None:
         case_id = str(record.get("case_id") or "unknown case")
         with self._lock:
-            active = self._active
-            self._active = None
+            active = self._active.pop((phase, case_id), None)
+            if self._phase == phase:
+                self._completed = max(self._completed, completed)
+                self._total = total
+            snapshot = self._snapshot_locked()
         duration = _duration_seconds(record)
         if duration is None and active is not None:
-            duration = max(0.0, time.monotonic() - active[4])
+            duration = max(0.0, time.monotonic() - active.started_at)
         label = _result_label(phase, record)
         elapsed = f"{duration:.1f} 秒" if duration is not None else "耗时未知"
         if self._tty:
             print("\r" + " " * 100 + "\r", end="")
             print(f"  [{label}] {_phase_label(phase)} {completed}/{total}: {case_id}（{elapsed}）")
         else:
-            print(f"  [完成] {case_id} {_phase_label(phase)} {elapsed} - {label}")
+            print(
+                f"  [完成] {case_id} {_phase_label(phase)} {elapsed} - {label}"
+                f"（已完成 {snapshot.completed}/{snapshot.total}，运行中 {snapshot.running}，"
+                f"等待 {snapshot.pending}）"
+            )
+
+    def snapshot(self) -> _ActivitySnapshot:
+        """Return a locked snapshot for deterministic tests and interrupt UI."""
+        with self._lock:
+            return self._snapshot_locked()
+
+    def active_case_ids(self) -> tuple[str, ...]:
+        return self.snapshot().active_case_ids
 
     def close(self) -> None:
         self._stopped.set()
@@ -135,18 +195,40 @@ class _ActivityReporter:
         frame = 0
         while not self._stopped.wait(0.12):
             with self._lock:
-                active = self._active
-            if active is None:
+                snapshot = self._snapshot_locked()
+                active = tuple(self._active.values())
+            if not active or snapshot.phase is None:
                 continue
-            phase, case_id, started, total, started_at = active
-            verb = "正在生成模型回复..." if phase == "TARGET" else "正在评审回复..."
-            elapsed = time.monotonic() - started_at
+            phase = snapshot.phase
+            active_lines = " | ".join(
+                f"{item.case_id} {time.monotonic() - item.started_at:.1f}s"
+                for item in active
+                if item.phase == phase
+            )
             print(
-                f"\r  [{frames[frame % len(frames)]}] {_phase_label(phase)} {started}/{total}: {case_id} - {verb} 已用时：{elapsed:.1f} 秒",
+                f"\r  [{frames[frame % len(frames)]}] {_phase_label(phase)} 已完成 "
+                f"{snapshot.completed}/{snapshot.total}，运行中 {snapshot.running}，"
+                f"等待 {snapshot.pending}，并发 {snapshot.concurrency}：{active_lines}",
                 end="",
                 flush=True,
             )
             frame += 1
+
+    def _snapshot_locked(self) -> _ActivitySnapshot:
+        phase = self._phase
+        active = tuple(
+            state for state in self._active.values() if state.phase == phase
+        )
+        running = len(active)
+        return _ActivitySnapshot(
+            phase=phase,
+            total=self._total,
+            completed=self._completed,
+            running=running,
+            pending=max(0, self._total - self._completed - running),
+            concurrency=self._concurrency.get(phase or "", 1),
+            active_case_ids=tuple(state.case_id for state in active),
+        )
 
 
 class _GracefulStop:
@@ -158,11 +240,13 @@ class _GracefulStop:
         judge_concurrency: int,
         *,
         stream: TextIO | None = None,
+        active_cases: Callable[[], tuple[str, ...]] | None = None,
     ) -> None:
         self.requested = False
         self.force_requested = False
         self.concurrency = max(target_concurrency, judge_concurrency)
         self._stream = stream or sys.stderr
+        self._active_cases = active_cases
         self._stage: str | None = None
         self._previous: object | None = None
 
@@ -196,6 +280,12 @@ class _GracefulStop:
         )
         if self.concurrency > 1:
             message += " 已请求停止；不会继续安排新的工作。已开始的请求可能仍会完成。"
+        active_case_ids = self._active_cases() if self._active_cases is not None else ()
+        if active_case_ids:
+            message += "\n当前仍在运行：\n" + "\n".join(
+                f"  {case_id}" for case_id in active_case_ids
+            )
+            message += f"\n这 {len(active_case_ids)} 个请求完成后将保存进度并中断。"
         print(message, file=self._stream, flush=True)
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
@@ -438,6 +528,9 @@ def _command_validate(args: argparse.Namespace) -> int:
         print(f"  [警告] {warning}")
     for error in report.errors:
         print(f"  [错误] {error}")
+    resolver = SecretResolver(runner.ROOT / ".env.local")
+    resolver.prepare_environment()
+    _print_provider_configuration(args.profiles_file.expanduser().resolve(), resolver)
     if args.target_profile or args.judge_profile:
         if not args.target_profile or not args.judge_profile:
             raise EvalConsoleError("Provider 预检查需要同时提供 --target-profile 和 --judge-profile。")
@@ -882,54 +975,95 @@ def _commit_role_configuration(
     return True
 
 
+def _effective_provider_configuration(
+    profiles_file: Path, profile_name: str, role: str, resolver: SecretResolver
+) -> dict[str, object]:
+    """Resolve one role's display-safe configuration without creating a provider."""
+    details = role_configuration(profiles_file, profile_name, role)
+    capabilities = details.get("capabilities")
+    token_parameter = (
+        capabilities.get("max_output_tokens_parameter")
+        if isinstance(capabilities, dict)
+        else None
+    )
+    model_env = details.get("model_env")
+    resolved_model = details.get("model") or (
+        os.environ.get(model_env) if isinstance(model_env, str) else None
+    )
+    base_url_env = details.get("base_url_env")
+    resolved_base_url = details.get("base_url") or (
+        os.environ.get(base_url_env) if isinstance(base_url_env, str) else None
+    )
+    api_key_env = details.get("api_key_env")
+    configured = resolver.has(api_key_env) if isinstance(api_key_env, str) else False
+    missing: list[str] = []
+    if not details.get("provider"):
+        missing.append("Provider")
+    if not resolved_model:
+        missing.append("模型")
+    if not isinstance(api_key_env, str) or not api_key_env:
+        missing.append("API Key 环境变量")
+    elif not configured:
+        missing.append("API Key")
+    return {
+        **details,
+        "resolved_model": resolved_model,
+        "resolved_base_url": resolved_base_url,
+        "api_key_configured": configured,
+        "token_parameter": token_parameter,
+        "missing": tuple(missing),
+    }
+
+
 def _print_provider_configuration(profiles_file: Path, resolver: SecretResolver) -> None:
+    """Render each available role config using the same effective resolution path."""
     profiles = discover_provider_profiles(profiles_file)
-    print("\n当前 Provider 配置")
-    for profile in profiles:
-        for role, enabled in (("target", profile.supports_target), ("judge", profile.supports_judge)):
-            if not enabled:
+    print("\nProvider 有效配置")
+    for role, label in (("target", "Target"), ("judge", "Judge")):
+        eligible = (
+            [profile for profile in profiles if profile.supports_target]
+            if role == "target"
+            else [profile for profile in profiles if profile.supports_judge]
+        )
+        print(f"\n可用 {label} Profiles")
+        if not eligible:
+            print("  （未找到支持该角色的 Profile）")
+            continue
+        for index, profile in enumerate(eligible, start=1):
+            try:
+                details = _effective_provider_configuration(
+                    profiles_file, profile.name, role, resolver
+                )
+            except (OSError, ValueError, runner.ModelEvalError) as exc:
+                print(f"  {index}. [配置错误] {profile.name}：{exc}")
                 continue
-            details = role_configuration(profiles_file, profile.name, role)
-            configured = resolver.has(details.get("api_key_env"))
-            capabilities = details.get("capabilities")
-            token_parameter = (
-                capabilities.get("max_output_tokens_parameter")
-                if isinstance(capabilities, dict)
-                else None
-            )
-            role_defaults = runner.PROVIDER_ROLE_DEFAULTS[role]
-            model_env = details.get("model_env")
-            configured_model = details.get("model")
-            resolved_model = configured_model or (
-                os.environ.get(model_env) if isinstance(model_env, str) else None
-            )
-            base_url_env = details.get("base_url_env")
-            configured_base_url = details.get("base_url")
-            resolved_base_url = configured_base_url or (
-                os.environ.get(base_url_env) if isinstance(base_url_env, str) else None
-            )
+            missing = details["missing"]
+            status = "可用" if not missing else f"缺少{' / '.join(missing)}"
             structured_output = details.get("structured_output_mode")
             if structured_output is None:
                 structured_output = "不适用（Target 普通文本）" if role == "target" else "未声明"
+            role_defaults = runner.PROVIDER_ROLE_DEFAULTS[role]
+            configured = "是" if details["api_key_configured"] else "否"
+            print(f"  {index}. [{status}] {profile.name}")
             print(
-                f"    {role.title()}：Profile={profile.name}，"
+                f"    {label}：Profile={profile.name}，"
                 f"Provider={details.get('provider') or '缺失'}，"
                 f"Vendor={details.get('declared_upstream_vendor') or '未声明'}，"
-                f"Model={resolved_model or '未解析'}，"
+                f"Model={details['resolved_model'] or '未解析'}，"
                 f"Structured Output={structured_output}，"
                 f"Thinking={details.get('thinking') or 'provider-default'}"
             )
             print(
                 f"      Max Output Tokens={details.get('max_output_tokens') or role_defaults['max_output_tokens']}，"
-                f"Token Parameter={token_parameter or '未声明'}，"
+                f"Token Parameter={details['token_parameter'] or '未声明'}，"
                 f"Max Retries={details.get('max_retries') or role_defaults['max_retries']}，"
-                f"Model Env={model_env or '未声明'}"
+                f"Model Env={details.get('model_env') or '未声明'}"
             )
             print(
-                f"      API Base URL={resolved_base_url or '未解析'}，"
-                f"Base URL Env={base_url_env or '未声明'}，"
+                f"      API Base URL={details['resolved_base_url'] or '未解析'}，"
+                f"Base URL Env={details.get('base_url_env') or '未声明'}，"
                 f"API Key 环境变量={details.get('api_key_env') or '缺失'}，"
-                f"API Key 已配置={'是' if configured else '否'}"
+                f"API Key 已配置={configured}"
             )
 
 
@@ -1478,10 +1612,12 @@ def _execute_and_print(request: EvalRunRequest) -> int:
         print(f"输出位置：{outcome.run_dir}")
         return 0
     print("\n正在运行……每个 Case 完成后都会保存进度。")
-    activity = _ActivityReporter()
+    activity = _ActivityReporter(request.target_concurrency, request.judge_concurrency)
     try:
         with _GracefulStop(
-            request.target_concurrency, request.judge_concurrency
+            request.target_concurrency,
+            request.judge_concurrency,
+            active_cases=activity.active_case_ids,
         ) as stop:
             def on_activity(
                 phase: str, record: dict[str, object], started: int, total: int
@@ -1639,6 +1775,7 @@ def _print_outcome(outcome: object) -> None:
     metadata = runner.load_json_object(outcome.run_dir / "run.json")
     console = metadata.get("console", {})
     outcomes = run_case_outcomes(outcome.run_dir, metadata)
+    origin_mode = str(metadata.get("origin_mode") or "")
     counts = {
         "PASS": sum(state == "PASS" for state in outcomes.values()),
         "FAIL": sum(state == "FAIL" for state in outcomes.values()),
@@ -1648,7 +1785,25 @@ def _print_outcome(outcome: object) -> None:
     summary_counts = summary.get("counts", {}) if isinstance(summary, dict) else {}
     selected = console.get("selected_cases", len(outcomes)) if isinstance(console, dict) else len(outcomes)
     total = console.get("total_eval_cases", selected) if isinstance(console, dict) else selected
-    print("\nEval 运行完成\n" + "-" * 40)
+    if origin_mode == EvalExecutionMode.TARGET_ONLY.value:
+        target_counts = {
+            "TARGET_SUCCESS": sum(state == "TARGET_SUCCESS" for state in outcomes.values()),
+            "TARGET_ERROR": sum(state == "TARGET_ERROR" for state in outcomes.values()),
+            "NOT_RUN": sum(state == "NOT_RUN" for state in outcomes.values()),
+        }
+        print("\nTarget 运行结果\n" + "-" * 40)
+        print(f"SUCCESS（已生成模型回复）：{target_counts['TARGET_SUCCESS']}")
+        print(f"ERROR（Target 执行错误）：{target_counts['TARGET_ERROR']}")
+        print(f"NOT RUN（未执行）：{target_counts['NOT_RUN']}")
+        print(f"Cases：{selected}")
+        print(f"状态：{summary.get('completion_status')}")
+        print(
+            f"API 调用：Target {outcome.api_calls.get('target', 0)} / "
+            f"Judge {outcome.api_calls.get('judge', 0)}"
+        )
+        print(f"结果目录：{outcome.run_dir}")
+        return
+    print("\nBehavioral Eval 结果\n" + "-" * 40)
     print(f"PASS（通过）：{counts['PASS']}")
     print(f"FAIL（行为评测未通过）：{counts['FAIL']}")
     print(f"ERROR（执行错误）：{counts['ERROR']}")
@@ -1677,6 +1832,19 @@ def _print_history(runs: list[HistoricalRun]) -> None:
         print("  尚未找到结果产物。")
         return
     for index, run in enumerate(runs, start=1):
+        if run.mode == EvalExecutionMode.TARGET_ONLY.value:
+            print(
+                f"  {index}. {run.run_id} - {run.total_cases} 个 Cases，"
+                f"Target SUCCESS {run.target_successes}，Target ERROR {run.target_errors}，"
+                f"NOT RUN {run.target_missing} [{run.state}]"
+            )
+            print(
+                f"     初始方式={run.mode}；来源 Target={run.source_target_run_id or '当前 Run'}；"
+                f"Target 模型={run.target_model or '未知'}；"
+                f"API 调用 Target={run.target_api_calls} / Judge={run.judge_api_calls}"
+            )
+            print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
+            continue
         passed = "?" if run.passed_cases is None else str(run.passed_cases)
         print(
             f"  {index}. {run.run_id} - {run.total_cases} 个 Cases，PASS {passed}，"
@@ -1746,6 +1914,11 @@ def _profile_label(profile: ProviderProfile, role: str) -> str:
 
 
 def _run_label(run: HistoricalRun) -> str:
+    if run.mode == EvalExecutionMode.TARGET_ONLY.value:
+        return (
+            f"{run.run_id} [初始 {run.mode}]（Target SUCCESS {run.target_successes}，"
+            f"Target ERROR {run.target_errors}，NOT RUN {run.target_missing}）"
+        )
     return (
         f"{run.run_id} [初始 {run.mode}]（FAIL {len(run.failed_case_ids)}，"
         f"ERROR {len(run.error_case_ids)}，INCOMPLETE {len(run.incomplete_case_ids)}）"

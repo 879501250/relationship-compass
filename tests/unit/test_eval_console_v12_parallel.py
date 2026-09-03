@@ -326,11 +326,12 @@ class ParallelExecutionTests(unittest.TestCase):
                     self.request(
                         root,
                         case_ids,
-                        mode=EvalExecutionMode.TARGET_ONLY,
+                        mode=EvalExecutionMode.FULL,
                         run_id="parallel-interrupted",
                         target_concurrency=2,
                     ),
                     target_provider=initial,
+                    judge_provider=SuccessProvider(),
                     should_stop=stop_requested.is_set,
                 )
 

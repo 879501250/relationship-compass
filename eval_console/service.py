@@ -415,7 +415,16 @@ def plan_stage_execution(
             planned.append(CaseStagePlan(case_id, False, True, "复用历史 Target 成功结果"))
         elif mode is EvalExecutionMode.RESUME:
             if response is None or response.get("status") != "MODEL_RESPONSE":
-                planned.append(CaseStagePlan(case_id, True, True, "Target 缺失或执行错误"))
+                planned.append(
+                    CaseStagePlan(
+                        case_id,
+                        True,
+                        metadata.get("origin_mode") != EvalExecutionMode.TARGET_ONLY.value,
+                        "Target 缺失或执行错误",
+                    )
+                )
+            elif metadata.get("origin_mode") == EvalExecutionMode.TARGET_ONLY.value:
+                planned.append(CaseStagePlan(case_id, False, False, "已有 Target 成功结果"))
             elif judgment is None or judgment.get("status") == "NOT_JUDGED":
                 planned.append(CaseStagePlan(case_id, False, True, "Judge 尚未运行"))
             elif judgment.get("status") == "JUDGE_ERROR":

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -19,7 +21,8 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as runner  # noqa: E402
-from eval_console.discovery import discover_evals  # noqa: E402
+from eval_console.cli import _print_history, _print_outcome  # noqa: E402
+from eval_console.discovery import discover_evals, discover_runs, run_case_outcomes  # noqa: E402
 from eval_console.models import (  # noqa: E402
     EvalExecutionMode,
     EvalRunRequest,
@@ -538,6 +541,102 @@ class ModelEvalPipelineTests(unittest.TestCase):
             self.assertFalse(any(item["case_id"] == case_ids[3] for item in attempts))
             metadata = runner.load_json_object(source.run_dir / "run.json")
             self.assertEqual(metadata["console"]["target_concurrency"], 2)
+
+    def test_parallel_target_interrupt_console_summary_is_mode_aware(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            profiles = self._parallel_profiles(root)
+            case_ids = tuple(case.case_id for case in discover_evals()[0].cases[:4])
+            stop_requested = threading.Event()
+            provider = ParallelFakeProvider(block_target=True)
+            result: dict[str, Any] = {}
+            errors: list[BaseException] = []
+
+            def execute_initial() -> None:
+                try:
+                    result["outcome"] = execute_request(
+                        EvalRunRequest(
+                            eval_id=discover_evals()[0].eval_id,
+                            case_ids=case_ids,
+                            target_profile="parallel",
+                            judge_profile=None,
+                            profiles_file=profiles,
+                            results_root=root / "results",
+                            allow_dirty_debug=True,
+                            run_id="parallel-target-only-interrupted",
+                            mode=EvalExecutionMode.TARGET_ONLY,
+                            target_concurrency=2,
+                        ),
+                        target_provider=provider,
+                        should_stop=stop_requested.is_set,
+                    )
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            worker = threading.Thread(target=execute_initial)
+            worker.start()
+            try:
+                self.assertTrue(provider.target_two_started.wait(3))
+                self.assertEqual(provider.target_calls, 2)
+                stop_requested.set()
+                self.assertEqual(provider.target_calls, 2)
+            finally:
+                provider.target_release.set()
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            interrupted = result["outcome"]
+            self.assertEqual(interrupted.api_calls, {"target": 2, "judge": 0})
+            self.assertEqual(interrupted.summary["completion_status"], "INTERRUPTED")
+            responses = runner.load_jsonl(interrupted.run_dir / "responses.jsonl")
+            self.assertEqual(len(responses), 2)
+            self.assertTrue(all(record["status"] == "MODEL_RESPONSE" for record in responses))
+            outcomes = run_case_outcomes(interrupted.run_dir)
+            self.assertEqual(
+                [outcomes[case_id] for case_id in case_ids],
+                ["TARGET_SUCCESS", "TARGET_SUCCESS", "NOT_RUN", "NOT_RUN"],
+            )
+            runner.validate_result_artifacts(interrupted.run_dir)
+            rendered = io.StringIO()
+            with redirect_stdout(rendered):
+                _print_outcome(interrupted)
+            self.assertIn("SUCCESS（已生成模型回复）：2", rendered.getvalue())
+            self.assertIn("NOT RUN（未执行）：2", rendered.getvalue())
+            self.assertNotIn("INCOMPLETE（未完成）", rendered.getvalue())
+            history = discover_runs(root / "results")
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0].state, "INTERRUPTED")
+            self.assertEqual(history[0].passed_cases, None)
+            self.assertEqual(history[0].incomplete_case_ids, ())
+            history_rendered = io.StringIO()
+            with redirect_stdout(history_rendered):
+                _print_history(history)
+            self.assertIn("Target SUCCESS 2", history_rendered.getvalue())
+            self.assertNotIn("INCOMPLETE 4", history_rendered.getvalue())
+
+            resumed_provider = ParallelFakeProvider()
+            resumed = execute_request(
+                EvalRunRequest(
+                    eval_id=discover_evals()[0].eval_id,
+                    case_ids=case_ids,
+                    target_profile="parallel",
+                    judge_profile=None,
+                    profiles_file=profiles,
+                    results_root=root / "results",
+                    allow_dirty_debug=True,
+                    mode=EvalExecutionMode.RESUME,
+                    source_run_dir=interrupted.run_dir,
+                    target_concurrency=1,
+                ),
+                target_provider=resumed_provider,
+            )
+            self.assertEqual(resumed.api_calls, {"target": 2, "judge": 0})
+            self.assertEqual(resumed_provider.target_calls, 2)
+            self.assertEqual(resumed.summary["completion_status"], "TARGET_COMPLETE")
+            self.assertEqual(
+                set(run_case_outcomes(interrupted.run_dir).values()), {"TARGET_SUCCESS"}
+            )
+            runner.validate_result_artifacts(interrupted.run_dir)
 
     def test_role_specific_relay_profiles_ignore_global_openai_base_url(self) -> None:
         profile = {

@@ -429,28 +429,42 @@ class StageDecouplingTests(unittest.TestCase):
                 judge_provider=resumed_judge,
             )
             self.assertEqual(resumed_target.target_calls, 2)
-            self.assertEqual(resumed_judge.judge_calls, 3)
-            self.assertEqual(resumed.summary["completion_status"], "COMPLETED")
+            self.assertEqual(resumed_judge.judge_calls, 0)
+            self.assertEqual(resumed.summary["completion_status"], "TARGET_COMPLETE")
 
     def test_interrupted_judge_resume_uses_only_missing_scoped_judgments(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(3)
-            source, target = self.target_only_fast(
-                root, case_ids, run_id="interrupted-judge"
+            prepared = [
+                record
+                for record in runner.prepare_cases(*runner.load_definitions())
+                if record["case_id"] in set(case_ids)
+            ]
+            source_run_dir = (
+                root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "interrupted-judge"
             )
+            target = StageProvider(["one", "two", "three"])
+            runner.execute_run(
+                prepared,
+                target,
+                source_run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            self.mark_current_console_run(source_run_dir, case_ids)
             runner.execute_judge(
-                source.run_dir, StageProvider(), case_ids=(case_ids[0],)
+                source_run_dir, StageProvider(), case_ids=(case_ids[0],)
             )
-            _mark_interrupted(source.run_dir)
+            _mark_interrupted(source_run_dir)
             selected = (case_ids[2], case_ids[1])
-            prepared = _prepared_records(source.run_dir, selected)
+            prepared = _prepared_records(source_run_dir, selected)
             self.assertEqual(
                 [record["case_id"] for record in prepared], [case_ids[1], case_ids[2]]
             )
             source_before = {
-                path.relative_to(source.run_dir): path.read_bytes()
-                for path in source.run_dir.rglob("*")
+                path.relative_to(source_run_dir): path.read_bytes()
+                for path in source_run_dir.rglob("*")
                 if path.is_file()
             }
             child_target = StageProvider(["must not be used"])
@@ -461,7 +475,7 @@ class StageDecouplingTests(unittest.TestCase):
                     selected,
                     mode=EvalExecutionMode.JUDGE_ONLY,
                     run_id="interrupted-subset-child",
-                    source=source.run_dir,
+                    source=source_run_dir,
                 ),
                 target_provider=child_target,
                 judge_provider=child_judge,
@@ -481,15 +495,15 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(
                 source_before,
                 {
-                    path.relative_to(source.run_dir): path.read_bytes()
-                    for path in source.run_dir.rglob("*")
+                    path.relative_to(source_run_dir): path.read_bytes()
+                    for path in source_run_dir.rglob("*")
                     if path.is_file()
                 },
             )
-            selected_run_dir = root / "selected-copy" / source.run_dir.relative_to(
+            selected_run_dir = root / "selected-copy" / source_run_dir.relative_to(
                 root / "results"
             )
-            copytree(source.run_dir, selected_run_dir)
+            copytree(source_run_dir, selected_run_dir)
             before_c = [
                 record
                 for record in runner.load_jsonl(selected_run_dir / "judgments.jsonl")
@@ -514,14 +528,14 @@ class StageDecouplingTests(unittest.TestCase):
             ]
             self.assertEqual(after_c, before_c)
             plan = plan_stage_execution(
-                source.run_dir, case_ids, EvalExecutionMode.RESUME
+                source_run_dir, case_ids, EvalExecutionMode.RESUME
             )
             self.assertEqual(plan.target_cases, ())
             self.assertEqual(plan.judge_cases, case_ids[1:])
             judge = StageProvider()
             outcome = execute_request(
                 self.request(
-                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir
+                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source_run_dir
                 ),
                 judge_provider=judge,
             )
@@ -614,13 +628,35 @@ class StageDecouplingTests(unittest.TestCase):
                     f"正在强制终止当前 {label} 请求", output.getvalue()
                 )
 
+    def test_parallel_graceful_stop_lists_all_inflight_cases(self) -> None:
+        output = io.StringIO()
+        stop = _GracefulStop(2, 1, stream=output, active_cases=lambda: ("A", "B"))
+        stop.set_stage("TARGET")
+        stop.handle_interrupt()
+        self.assertIn("不会继续安排新的工作", output.getvalue())
+        self.assertIn("当前仍在运行：\n  A\n  B", output.getvalue())
+        self.assertIn("这 2 个请求完成后将保存进度并中断", output.getvalue())
+
     def test_graceful_stop_acknowledges_before_inflight_judge_completes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(3)
-            source, _ = self.target_only_fast(
-                root, case_ids, run_id="blocking-judge"
+            prepared = [
+                record
+                for record in runner.prepare_cases(*runner.load_definitions())
+                if record["case_id"] in set(case_ids)
+            ]
+            source_run_dir = (
+                root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "blocking-judge"
             )
+            runner.execute_run(
+                prepared,
+                StageProvider(["one", "two", "three"]),
+                source_run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            self.mark_current_console_run(source_run_dir, case_ids)
             stop_output = io.StringIO()
             stop = _GracefulStop(1, 1, stream=stop_output)
             judge = BlockingJudgeProvider()
@@ -634,7 +670,7 @@ class StageDecouplingTests(unittest.TestCase):
                             root,
                             case_ids,
                             mode=EvalExecutionMode.RESUME,
-                            source=source.run_dir,
+                            source=source_run_dir,
                         ),
                         judge_provider=judge,
                         activity=lambda phase, *_: stop.set_stage(phase),
@@ -652,7 +688,7 @@ class StageDecouplingTests(unittest.TestCase):
                 self.assertLess(time.monotonic() - acknowledged_at, 1)
                 self.assertIn("已收到停止请求", stop_output.getvalue())
                 self.assertTrue(worker.is_alive())
-                self.assertFalse((source.run_dir / "judgments.jsonl").exists())
+                self.assertFalse((source_run_dir / "judgments.jsonl").exists())
                 force_started_at = time.monotonic()
                 with self.assertRaises(KeyboardInterrupt):
                     stop.handle_interrupt()
@@ -668,12 +704,12 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(judge.judge_calls, 1)
             self.assertEqual(outcome.api_calls, {"target": 0, "judge": 1})
             self.assertEqual(outcome.summary["completion_status"], "INTERRUPTED")
-            judgments = runner.load_jsonl(source.run_dir / "judgments.jsonl")
+            judgments = runner.load_jsonl(source_run_dir / "judgments.jsonl")
             self.assertEqual(judgments[0]["status"], "JUDGMENT")
             resumed_judge = StageProvider()
             resumed = execute_request(
                 self.request(
-                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir
+                    root, case_ids, mode=EvalExecutionMode.RESUME, source=source_run_dir
                 ),
                 judge_provider=resumed_judge,
             )
@@ -1017,11 +1053,8 @@ class StageDecouplingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(2)
-            source, _ = self.target_only(root, case_ids, run_id="scope-judge")
-            runner.execute_judge(
-                source.run_dir,
-                StageProvider(judge_outputs={case_id: "not json" for case_id in case_ids}),
-                case_ids=case_ids,
+            source = self.full_with_judge_error(
+                root, case_ids, run_id="scope-judge"
             )
             before_b = [
                 record for record in runner.load_jsonl(source.run_dir / "judgments.jsonl")
@@ -1089,11 +1122,12 @@ class StageDecouplingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(30)
-            source, _ = self.target_only(root, case_ids, run_id="resume-thirty")
-            runner.execute_judge(
-                source.run_dir,
-                StageProvider(judge_outputs={case_id: "not json" for case_id in case_ids[17:]}),
-                case_ids=case_ids,
+            source = execute_request(
+                self.request(root, case_ids, mode=EvalExecutionMode.FULL, run_id="resume-thirty"),
+                target_provider=StageProvider(["response"] * len(case_ids)),
+                judge_provider=StageProvider(
+                    judge_outputs={case_id: "not json" for case_id in case_ids[17:]}
+                ),
             )
             target = StageProvider(["must not be called"])
             judge = StageProvider()

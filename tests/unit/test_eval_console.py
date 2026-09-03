@@ -400,6 +400,37 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
         self.assertIn("[开始] RC-001 Target", output.getvalue())
         self.assertIn("[完成] RC-001 Target", output.getvalue())
 
+    def test_activity_reporter_tracks_multiple_active_cases(self) -> None:
+        reporter = _ActivityReporter(target_concurrency=2)
+        reporter.start("TARGET", {"case_id": "A"}, 1, 4)
+        reporter.start("TARGET", {"case_id": "B"}, 2, 4)
+        snapshot = reporter.snapshot()
+        self.assertEqual(snapshot.active_case_ids, ("A", "B"))
+        self.assertEqual(snapshot.running, 2)
+        self.assertEqual(snapshot.concurrency, 2)
+        reporter.close()
+
+    def test_activity_reporter_finish_removes_only_completed_case(self) -> None:
+        reporter = _ActivityReporter(target_concurrency=2)
+        reporter.start("TARGET", {"case_id": "A"}, 1, 3)
+        reporter.start("TARGET", {"case_id": "B"}, 2, 3)
+        reporter.finish("TARGET", {"case_id": "A", "status": "MODEL_RESPONSE"}, 1, 3)
+        snapshot = reporter.snapshot()
+        self.assertEqual(snapshot.active_case_ids, ("B",))
+        self.assertEqual(snapshot.completed, 1)
+        reporter.close()
+
+    def test_parallel_activity_snapshot_reports_running_and_pending_counts(self) -> None:
+        reporter = _ActivityReporter(target_concurrency=2)
+        reporter.start("TARGET", {"case_id": "A"}, 1, 4)
+        reporter.start("TARGET", {"case_id": "B"}, 2, 4)
+        reporter.finish("TARGET", {"case_id": "A", "status": "MODEL_RESPONSE"}, 1, 4)
+        reporter.start("TARGET", {"case_id": "C"}, 3, 4)
+        snapshot = reporter.snapshot()
+        self.assertEqual((snapshot.completed, snapshot.running, snapshot.pending), (1, 2, 1))
+        self.assertEqual(snapshot.active_case_ids, ("B", "C"))
+        reporter.close()
+
     def test_malformed_judge_case_is_saved_as_error_and_later_cases_continue(self) -> None:
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases(cases[:2], criteria)
