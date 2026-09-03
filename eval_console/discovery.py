@@ -43,6 +43,12 @@ class HistoricalRun:
     judge_completed: int
     judge_errors: int
     judge_missing: int
+    target_http_attempts: int | None = None
+    target_rate_limits: int | None = None
+    target_retries: int | None = None
+    judge_http_attempts: int | None = None
+    judge_rate_limits: int | None = None
+    judge_retries: int | None = None
 
 
 def discover_evals() -> list[EvalDefinition]:
@@ -138,6 +144,27 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
             api_calls = metadata.get("api_calls") if isinstance(metadata.get("api_calls"), dict) else {}
             target_manifest = metadata.get("target") if isinstance(metadata.get("target"), dict) else {}
             counts = metadata.get("counts") if isinstance(metadata.get("counts"), dict) else {}
+            execution_history = metadata.get("execution_history")
+            latest_execution = (
+                execution_history[-1]
+                if isinstance(execution_history, list) and execution_history
+                else None
+            )
+            provider_telemetry = (
+                latest_execution.get("provider_telemetry")
+                if isinstance(latest_execution, dict)
+                else None
+            )
+            target_telemetry = (
+                provider_telemetry.get("target")
+                if isinstance(provider_telemetry, dict)
+                else None
+            )
+            judge_telemetry = (
+                provider_telemetry.get("judge")
+                if isinstance(provider_telemetry, dict)
+                else None
+            )
             runs.append(
                 HistoricalRun(
                     run_dir=metadata_path.parent,
@@ -169,6 +196,20 @@ def discover_runs(results_root: Path) -> list[HistoricalRun]:
                     judge_completed=_as_nonnegative_int(counts.get("judged")),
                     judge_errors=_as_nonnegative_int(counts.get("judge_error")),
                     judge_missing=_as_nonnegative_int(counts.get("not_judged")),
+                    target_http_attempts=_optional_nonnegative_int(
+                        target_telemetry, "http_attempts"
+                    ),
+                    target_rate_limits=_optional_nonnegative_int(
+                        target_telemetry, "rate_limit_responses"
+                    ),
+                    target_retries=_optional_nonnegative_int(target_telemetry, "retries"),
+                    judge_http_attempts=_optional_nonnegative_int(
+                        judge_telemetry, "http_attempts"
+                    ),
+                    judge_rate_limits=_optional_nonnegative_int(
+                        judge_telemetry, "rate_limit_responses"
+                    ),
+                    judge_retries=_optional_nonnegative_int(judge_telemetry, "retries"),
                 )
             )
         except (OSError, ValueError, TypeError, runner.ModelEvalError):
@@ -275,6 +316,13 @@ def _string(value: Any) -> str | None:
 
 def _as_nonnegative_int(value: Any) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
+
+
+def _optional_nonnegative_int(container: Any, field: str) -> int | None:
+    if not isinstance(container, dict):
+        return None
+    value = container.get(field)
+    return value if isinstance(value, int) and value >= 0 else None
 
 
 def _summary(prompt: str) -> str:

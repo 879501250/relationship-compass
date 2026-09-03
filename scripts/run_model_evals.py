@@ -343,6 +343,7 @@ class ProviderError(RuntimeError):
             "retry_attempt",
             "max_retries",
             "provider_http_attempts",
+            "http_telemetry",
         }
         self.safe_diagnostics = {
             key: value
@@ -354,8 +355,18 @@ class ProviderError(RuntimeError):
 class ProviderTimeout(ProviderError):
     """Raised when a provider request times out after bounded retries."""
 
-    def __init__(self, message: str = "provider request timed out") -> None:
-        super().__init__(message, code="TIMEOUT", retryable=True)
+    def __init__(
+        self,
+        message: str = "provider request timed out",
+        *,
+        safe_diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code="TIMEOUT",
+            retryable=True,
+            safe_diagnostics=safe_diagnostics,
+        )
 
 
 class ProviderInvalidResponse(ProviderError):
@@ -389,6 +400,7 @@ class ProviderResult:
     system_fingerprint: str | None = None
     provider_metadata: dict[str, Any] | None = None
     request_envelope_hash: str | None = None
+    http_telemetry: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -397,6 +409,7 @@ class HTTPJSONResponse:
 
     payload: dict[str, Any]
     http_status: int | None
+    http_telemetry: dict[str, Any]
 
 
 class ModelProvider(Protocol):
@@ -1234,6 +1247,31 @@ def provider_error_artifact_fields(error: ProviderError) -> dict[str, Any]:
     }
 
 
+def provider_http_telemetry(
+    result: ProviderResult | None = None, error: ProviderError | None = None
+) -> dict[str, Any] | None:
+    """Return only the provider's allowlisted per-logical-call HTTP evidence."""
+    candidate = result.http_telemetry if result is not None else None
+    if candidate is None and error is not None:
+        diagnostics = getattr(error, "safe_diagnostics", {})
+        candidate = diagnostics.get("http_telemetry") if isinstance(diagnostics, dict) else None
+    if not isinstance(candidate, dict):
+        return None
+    allowed = {
+        "http_attempts",
+        "retry_count",
+        "rate_limit_count",
+        "total_retry_delay_seconds",
+        "recovered_after_retry",
+        "final_http_status",
+        "retry_after_seconds",
+        "retry_delay_source",
+        "retry_delays_seconds",
+        "retry_delay_sources",
+    }
+    return {key: candidate.get(key) for key in allowed if key in candidate}
+
+
 def classify_http_error(status: int, body: bytes = b"") -> tuple[str, bool]:
     if status in {401, 403}:
         return "AUTH_ERROR", False
@@ -1267,6 +1305,99 @@ def retry_after_seconds(headers: Any) -> float | None:
     if not math.isfinite(seconds) or seconds < 0:
         return None
     return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
+def http_attempt_telemetry(
+    *,
+    attempts: int,
+    retry_count: int,
+    rate_limit_count: int,
+    retry_delays_seconds: list[float],
+    retry_delay_sources: list[str],
+    retry_after_values: list[float],
+    final_http_status: int | None,
+    recovered_after_retry: bool,
+) -> dict[str, Any]:
+    """Build the safe, per-logical-call HTTP retry evidence persisted in artifacts."""
+    return {
+        "http_attempts": attempts,
+        "retry_count": retry_count,
+        "rate_limit_count": rate_limit_count,
+        "total_retry_delay_seconds": sum(retry_delays_seconds),
+        "recovered_after_retry": recovered_after_retry,
+        "final_http_status": final_http_status,
+        "retry_after_seconds": retry_after_values[-1] if retry_after_values else None,
+        "retry_delay_source": retry_delay_sources[-1] if retry_delay_sources else None,
+        "retry_delays_seconds": list(retry_delays_seconds),
+        "retry_delay_sources": list(retry_delay_sources),
+    }
+
+
+class ProviderRateLimitCoordinator:
+    """Coordinate one execution stage's provider cooldown without writing artifacts.
+
+    Provider workers publish a 429 as soon as it is observed.  The scheduler
+    consults the same object only when refilling a slot, so started calls keep
+    running while pending work remains FIFO and paused until the cooldown ends.
+    """
+
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] | None = None,
+        wait: Callable[[float], None] | None = None,
+        on_cooldown: Callable[[float, bool], None] | None = None,
+        poll_interval: float = RESPONSIVE_PROVIDER_POLL_SECONDS,
+    ) -> None:
+        if poll_interval <= 0:
+            raise ValueError("rate-limit poll interval must be positive")
+        self._monotonic = monotonic or time.monotonic
+        self._wait = wait
+        self._on_cooldown = on_cooldown
+        self._poll_interval = poll_interval
+        self._condition = threading.Condition()
+        self._cooldown_until = 0.0
+
+    def set_on_cooldown(self, callback: Callable[[float, bool], None] | None) -> None:
+        with self._condition:
+            self._on_cooldown = callback
+
+    def note_rate_limit(self, delay_seconds: float) -> None:
+        delay = max(0.0, float(delay_seconds))
+        with self._condition:
+            now = self._monotonic()
+            previous = self._cooldown_until
+            updated = max(previous, now + delay)
+            self._cooldown_until = updated
+            remaining = max(0.0, updated - now)
+            extended = updated > previous
+            callback = self._on_cooldown if extended else None
+            self._condition.notify_all()
+        if callback is not None:
+            callback(remaining, previous > now)
+
+    def remaining_cooldown(self) -> float:
+        with self._condition:
+            return max(0.0, self._cooldown_until - self._monotonic())
+
+    def can_submit(self) -> bool:
+        return self.remaining_cooldown() <= 0
+
+    def wait_until_allowed(self, should_stop: Callable[[], bool] | None = None) -> bool:
+        """Wait through one authoritative cooldown path, while polling for stop."""
+        while True:
+            if should_stop is not None and should_stop():
+                return False
+            with self._condition:
+                remaining = max(0.0, self._cooldown_until - self._monotonic())
+                if remaining <= 0:
+                    return True
+                if self._wait is None:
+                    self._condition.wait(timeout=min(remaining, self._poll_interval))
+                    continue
+            # Injected fake waiters advance deterministic clocks in unit tests.
+            self._wait(remaining)
+            return True
 
 
 class HTTPJSONProvider:
@@ -1418,6 +1549,7 @@ class HTTPJSONProvider:
         self.output_cost_per_million = output_cost_per_million
         self._urlopen = urlopen or urllib.request.urlopen
         self._sleep = sleep or time.sleep
+        self._rate_limit_coordinator: ProviderRateLimitCoordinator | None = None
         self.sampling_policy = {
             "temperature": self.temperature,
             "top_p": self.top_p,
@@ -1482,6 +1614,21 @@ class HTTPJSONProvider:
     def request_envelope_hash(payload: dict[str, Any]) -> str:
         return sha256_bytes(canonical_json_bytes(payload))
 
+    def set_rate_limit_coordinator(
+        self, coordinator: ProviderRateLimitCoordinator | None
+    ) -> None:
+        """Bind the scheduler-owned, stage-scoped cooldown coordinator."""
+        self._rate_limit_coordinator = coordinator
+
+    def _wait_for_retry(self, delay: float, *, rate_limited: bool) -> None:
+        coordinator = self._rate_limit_coordinator if rate_limited else None
+        if coordinator is None:
+            self._sleep(delay)
+            return
+        coordinator.note_rate_limit(delay)
+        # The shared coordinator is the sole wait authority for HTTP 429s.
+        coordinator.wait_until_allowed()
+
     def _request_json(self, payload: dict[str, Any]) -> HTTPJSONResponse:
         request = urllib.request.Request(
             self._url,
@@ -1492,6 +1639,11 @@ class HTTPJSONProvider:
             },
             method="POST",
         )
+        retry_delays_seconds: list[float] = []
+        retry_delay_sources: list[str] = []
+        retry_after_values: list[float] = []
+        retry_count = 0
+        rate_limit_count = 0
         for attempt in range(self.max_retries + 1):
             try:
                 with self._urlopen(request, timeout=self.timeout_seconds) as response:
@@ -1503,12 +1655,52 @@ class HTTPJSONProvider:
                 try:
                     decoded = json.loads(body)
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                    raise ProviderInvalidResponse("provider returned invalid JSON") from exc
+                    raise ProviderInvalidResponse(
+                        "provider returned invalid JSON",
+                        safe_diagnostics={
+                            "http_status": status if isinstance(status, int) else None,
+                            "http_telemetry": http_attempt_telemetry(
+                                attempts=attempt + 1,
+                                retry_count=retry_count,
+                                rate_limit_count=rate_limit_count,
+                                retry_delays_seconds=retry_delays_seconds,
+                                retry_delay_sources=retry_delay_sources,
+                                retry_after_values=retry_after_values,
+                                final_http_status=status if isinstance(status, int) else None,
+                                recovered_after_retry=False,
+                            ),
+                        },
+                    ) from exc
                 if not isinstance(decoded, dict):
-                    raise ProviderInvalidResponse("provider response envelope must be an object")
+                    raise ProviderInvalidResponse(
+                        "provider response envelope must be an object",
+                        safe_diagnostics={
+                            "http_status": status if isinstance(status, int) else None,
+                            "http_telemetry": http_attempt_telemetry(
+                                attempts=attempt + 1,
+                                retry_count=retry_count,
+                                rate_limit_count=rate_limit_count,
+                                retry_delays_seconds=retry_delays_seconds,
+                                retry_delay_sources=retry_delay_sources,
+                                retry_after_values=retry_after_values,
+                                final_http_status=status if isinstance(status, int) else None,
+                                recovered_after_retry=False,
+                            ),
+                        },
+                    )
                 return HTTPJSONResponse(
                     payload=decoded,
                     http_status=status if isinstance(status, int) else None,
+                    http_telemetry=http_attempt_telemetry(
+                        attempts=attempt + 1,
+                        retry_count=retry_count,
+                        rate_limit_count=rate_limit_count,
+                        retry_delays_seconds=retry_delays_seconds,
+                        retry_delay_sources=retry_delay_sources,
+                        retry_after_values=retry_after_values,
+                        final_http_status=status if isinstance(status, int) else None,
+                        recovered_after_retry=retry_count > 0,
+                    ),
                 )
             except urllib.error.HTTPError as exc:
                 body = exc.read(4096)
@@ -1516,6 +1708,10 @@ class HTTPJSONProvider:
                 retry_after = (
                     retry_after_seconds(exc.headers) if code == "RATE_LIMIT" else None
                 )
+                if code == "RATE_LIMIT":
+                    rate_limit_count += 1
+                    if retry_after is not None:
+                        retry_after_values.append(retry_after)
                 safe_diagnostics = {
                     "http_status": exc.code,
                     "retry_attempt": attempt + 1,
@@ -1530,10 +1726,30 @@ class HTTPJSONProvider:
                         if retry_after is not None
                         else RETRY_DELAYS_SECONDS[attempt]
                     )
-                    self._sleep(delay)
+                    retry_count += 1
+                    retry_delays_seconds.append(delay)
+                    retry_delay_sources.append(
+                        "retry_after"
+                        if code == "RATE_LIMIT" and retry_after is not None
+                        else "fallback_backoff"
+                    )
+                    self._wait_for_retry(delay, rate_limited=code == "RATE_LIMIT")
                     continue
+                safe_diagnostics["http_telemetry"] = http_attempt_telemetry(
+                    attempts=attempt + 1,
+                    retry_count=retry_count,
+                    rate_limit_count=rate_limit_count,
+                    retry_delays_seconds=retry_delays_seconds,
+                    retry_delay_sources=retry_delay_sources,
+                    retry_after_values=retry_after_values,
+                    final_http_status=exc.code,
+                    recovered_after_retry=False,
+                )
                 if code == "TIMEOUT":
-                    raise ProviderTimeout("provider HTTP request timed out") from exc
+                    raise ProviderTimeout(
+                        "provider HTTP request timed out",
+                        safe_diagnostics=safe_diagnostics,
+                    ) from exc
                 raise ProviderError(
                     f"provider HTTP {exc.code}",
                     code=code,
@@ -1542,18 +1758,66 @@ class HTTPJSONProvider:
                 ) from exc
             except (TimeoutError, socket.timeout) as exc:
                 if attempt < self.max_retries:
-                    self._sleep(RETRY_DELAYS_SECONDS[attempt])
+                    delay = RETRY_DELAYS_SECONDS[attempt]
+                    retry_count += 1
+                    retry_delays_seconds.append(delay)
+                    retry_delay_sources.append("fallback_backoff")
+                    self._wait_for_retry(delay, rate_limited=False)
                     continue
-                raise ProviderTimeout() from exc
+                raise ProviderTimeout(
+                    safe_diagnostics={
+                        "http_telemetry": http_attempt_telemetry(
+                            attempts=attempt + 1,
+                            retry_count=retry_count,
+                            rate_limit_count=rate_limit_count,
+                            retry_delays_seconds=retry_delays_seconds,
+                            retry_delay_sources=retry_delay_sources,
+                            retry_after_values=retry_after_values,
+                            final_http_status=None,
+                            recovered_after_retry=False,
+                        )
+                    }
+                ) from exc
             except urllib.error.URLError as exc:
                 is_timeout = isinstance(exc.reason, (TimeoutError, socket.timeout))
                 if attempt < self.max_retries:
-                    self._sleep(RETRY_DELAYS_SECONDS[attempt])
+                    delay = RETRY_DELAYS_SECONDS[attempt]
+                    retry_count += 1
+                    retry_delays_seconds.append(delay)
+                    retry_delay_sources.append("fallback_backoff")
+                    self._wait_for_retry(delay, rate_limited=False)
                     continue
                 if is_timeout:
-                    raise ProviderTimeout() from exc
+                    raise ProviderTimeout(
+                        safe_diagnostics={
+                            "http_telemetry": http_attempt_telemetry(
+                                attempts=attempt + 1,
+                                retry_count=retry_count,
+                                rate_limit_count=rate_limit_count,
+                                retry_delays_seconds=retry_delays_seconds,
+                                retry_delay_sources=retry_delay_sources,
+                                retry_after_values=retry_after_values,
+                                final_http_status=None,
+                                recovered_after_retry=False,
+                            )
+                        }
+                    ) from exc
                 raise ProviderError(
-                    "provider network error", code="NETWORK_ERROR", retryable=True
+                    "provider network error",
+                    code="NETWORK_ERROR",
+                    retryable=True,
+                    safe_diagnostics={
+                        "http_telemetry": http_attempt_telemetry(
+                            attempts=attempt + 1,
+                            retry_count=retry_count,
+                            rate_limit_count=rate_limit_count,
+                            retry_delays_seconds=retry_delays_seconds,
+                            retry_delay_sources=retry_delay_sources,
+                            retry_after_values=retry_after_values,
+                            final_http_status=None,
+                            recovered_after_retry=False,
+                        )
+                    },
                 ) from exc
         raise ProviderError("provider request failed")
 
@@ -1677,9 +1941,10 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
             **{
                 field: getattr(result, field)
                 for field in ProviderResult.__dataclass_fields__
-                if field != "request_envelope_hash"
+                if field not in {"request_envelope_hash", "http_telemetry"}
             },
             request_envelope_hash=self.request_envelope_hash(payload),
+            http_telemetry=response.http_telemetry,
         )
 
     def build_request_payload(
@@ -1888,9 +2153,10 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
             **{
                 field: getattr(result, field)
                 for field in ProviderResult.__dataclass_fields__
-                if field != "request_envelope_hash"
+                if field not in {"request_envelope_hash", "http_telemetry"}
             },
             request_envelope_hash=self.request_envelope_hash(payload),
+            http_telemetry=response.http_telemetry,
         )
 
     def build_request_payload(
@@ -2618,6 +2884,8 @@ class BoundedCaseScheduler:
         provider_call: Callable[[Any], Any],
         on_case_start: Callable[[Any, int, int], None] | None = None,
         should_stop: Callable[[], bool] | None = None,
+        submission_gate: Callable[[], bool] | None = None,
+        wait_for_submission: Callable[[Callable[[], bool] | None], bool] | None = None,
         poll_interval: float = RESPONSIVE_PROVIDER_POLL_SECONDS,
     ) -> None:
         if not isinstance(concurrency, int) or concurrency < 1 or concurrency > 32:
@@ -2629,6 +2897,8 @@ class BoundedCaseScheduler:
         self._provider_call = provider_call
         self._on_case_start = on_case_start
         self._should_stop = should_stop
+        self._submission_gate = submission_gate
+        self._wait_for_submission = wait_for_submission
         self._poll_interval = poll_interval
         self._handoff: queue.Queue[ProviderCallCompletion] = queue.Queue()
         self._in_flight: dict[int, threading.Thread] = {}
@@ -2653,6 +2923,9 @@ class BoundedCaseScheduler:
             self._should_stop is not None and self._should_stop()
         )
 
+    def _can_submit(self) -> bool:
+        return self._submission_gate is None or self._submission_gate()
+
     def _fill_slots(self) -> None:
         if self._is_stop_requested():
             self.stop_submissions()
@@ -2660,6 +2933,8 @@ class BoundedCaseScheduler:
         while self._pending and len(self._in_flight) < self._concurrency:
             if self._is_stop_requested():
                 self.stop_submissions()
+                return
+            if not self._can_submit():
                 return
             item = self._pending.pop(0)
             self._started += 1
@@ -2688,9 +2963,18 @@ class BoundedCaseScheduler:
         """Yield completion events; slot refill occurs only after the prior yield."""
         self._fill_slots()
         try:
-            while self._in_flight:
+            while self._in_flight or (
+                self._pending and not self._is_stop_requested()
+            ):
                 if self._is_stop_requested():
                     self.stop_submissions()
+                    if not self._in_flight:
+                        break
+                self._fill_slots()
+                if not self._in_flight:
+                    if self._pending and self._wait_for_submission is not None:
+                        self._wait_for_submission(self._should_stop)
+                    continue
                 try:
                     completion = self._handoff.get(timeout=self._poll_interval)
                 except queue.Empty:
@@ -2737,6 +3021,33 @@ def run_responsive_provider_call(
         raise ModelEvalError("responsive provider worker returned an invalid exception")
 
 
+def stage_rate_limit_coordinator(
+    provider: ModelProvider,
+    *,
+    coordinator: ProviderRateLimitCoordinator | None = None,
+    on_cooldown: Callable[[float, bool], None] | None = None,
+) -> ProviderRateLimitCoordinator:
+    """Bind one stage coordinator when a provider supports HTTP rate-limit hooks."""
+    provider_wait = getattr(provider, "_sleep", None)
+    selected = coordinator or ProviderRateLimitCoordinator(
+        # Production providers retain Condition-based waits so a concurrent 429
+        # can extend an active cooldown. Test providers may inject a no-op or
+        # fake-time sleep callable, which is treated as one authoritative wait.
+        wait=(
+            provider_wait
+            if callable(provider_wait) and provider_wait is not time.sleep
+            else None
+        ),
+        on_cooldown=on_cooldown,
+    )
+    if coordinator is not None and on_cooldown is not None:
+        selected.set_on_cooldown(on_cooldown)
+    setter = getattr(provider, "set_rate_limit_coordinator", None)
+    if callable(setter):
+        setter(selected)
+    return selected
+
+
 def target_attempt_record(
     record: dict[str, Any],
     provider: ModelProvider,
@@ -2778,6 +3089,7 @@ def target_attempt_record(
         "system_fingerprint": None,
         "provider_metadata": None,
         "usage": None,
+        "http_telemetry": None,
         "error_code": None,
         "retryable": None,
         "error": None,
@@ -2821,6 +3133,7 @@ def target_attempt_record(
                 "provider_metadata": result.provider_metadata,
                 "request_envelope_hash": result.request_envelope_hash
                 or response_record["request_envelope_hash"],
+                "http_telemetry": provider_http_telemetry(result=result),
             }
         )
     except ProviderError as exc:
@@ -2834,6 +3147,7 @@ def target_attempt_record(
             }
         )
         response_record.update(provider_error_artifact_fields(exc))
+        response_record["http_telemetry"] = provider_http_telemetry(error=exc)
     response_record["completed_at"] = utc_now()
     response_record["duration_seconds"] = max(0.0, time.perf_counter() - started_monotonic)
     return response_record
@@ -2855,6 +3169,8 @@ def execute_run(
     on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
     on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    rate_limit_coordinator: ProviderRateLimitCoordinator | None = None,
+    on_rate_limit: Callable[[float, bool], None] | None = None,
     case_ids: tuple[str, ...] | None = None,
     origin_mode: str = "FULL",
 ) -> dict[str, Any]:
@@ -3004,6 +3320,11 @@ def execute_run(
         if on_case_start is not None:
             on_case_start(item["record"], started, total)
 
+    coordinator = stage_rate_limit_coordinator(
+        provider,
+        coordinator=rate_limit_coordinator,
+        on_cooldown=on_rate_limit,
+    )
     scheduler = BoundedCaseScheduler(
         work_items,
         concurrency=target_concurrency,
@@ -3013,6 +3334,8 @@ def execute_run(
         ),
         on_case_start=start_target_work,
         should_stop=should_stop,
+        submission_gate=coordinator.can_submit,
+        wait_for_submission=lambda stop: coordinator.wait_until_allowed(stop),
     )
     with responses_path.open("a", encoding="utf-8", newline="\n") as handle:
         for completed, completion in enumerate(scheduler.completions(), start=1):
@@ -3326,6 +3649,7 @@ def judge_attempt_record(
         "provider_metadata": None,
         "request_envelope_hash": None,
         "usage": None,
+        "http_telemetry": None,
         "evaluated_at": started_at or utc_now(),
         "completed_at": None,
         "duration_seconds": None,
@@ -3390,6 +3714,7 @@ def judge_attempt_record(
                     "provider_metadata": result.provider_metadata,
                     "request_envelope_hash": result.request_envelope_hash
                     or record["request_envelope_hash"],
+                    "http_telemetry": provider_http_telemetry(result=result),
                 }
             )
     except ProviderError as exc:
@@ -3408,6 +3733,7 @@ def judge_attempt_record(
             }
         )
         record.update(provider_error_artifact_fields(exc))
+        record["http_telemetry"] = provider_http_telemetry(error=exc)
     except ModelEvalError as exc:
         record.update(
             {
@@ -3432,6 +3758,8 @@ def execute_judge(
     should_stop: Callable[[], bool] | None = None,
     case_ids: tuple[str, ...] | None = None,
     judge_concurrency: int = 1,
+    rate_limit_coordinator: ProviderRateLimitCoordinator | None = None,
+    on_rate_limit: Callable[[float, bool], None] | None = None,
 ) -> dict[str, int]:
     validate_result_artifacts(run_dir)
     if (
@@ -3543,6 +3871,11 @@ def execute_judge(
         if on_case_start is not None:
             on_case_start(item["case"], started, total)
 
+    coordinator = stage_rate_limit_coordinator(
+        provider,
+        coordinator=rate_limit_coordinator,
+        on_cooldown=on_rate_limit,
+    )
     scheduler = BoundedCaseScheduler(
         work_items,
         concurrency=judge_concurrency,
@@ -3555,6 +3888,8 @@ def execute_judge(
         ),
         on_case_start=start_judge_work,
         should_stop=should_stop,
+        submission_gate=coordinator.can_submit,
+        wait_for_submission=lambda stop: coordinator.wait_until_allowed(stop),
     )
     for completed, completion in enumerate(scheduler.completions(), start=1):
         item = completion.item

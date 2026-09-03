@@ -124,6 +124,34 @@ class SuccessProvider(BlockingTargetProvider):
         )
 
 
+class TelemetryProvider(SuccessProvider):
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        result = super().generate(
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+        )
+        judge = response_schema is not None
+        return runner.ProviderResult(
+            result.text,
+            reported_model=result.reported_model,
+            http_telemetry={
+                "http_attempts": 2 if judge else 1,
+                "retry_count": 1 if judge else 0,
+                "rate_limit_count": 1 if judge else 0,
+                "total_retry_delay_seconds": 5.0 if judge else 0.0,
+                "recovered_after_retry": judge,
+                "final_http_status": 200,
+            },
+        )
+
+
 class FullBarrierProvider(SuccessProvider):
     def __init__(self) -> None:
         super().__init__()
@@ -223,6 +251,37 @@ class JudgeErrorProvider(SuccessProvider):
         return runner.ProviderResult(judgment(response_schema), reported_model=self.model)
 
 
+class SelectiveJudgeRateLimitProvider(SuccessProvider):
+    def __init__(self, successful_case_id: str) -> None:
+        super().__init__()
+        self.successful_case_id = successful_case_id
+
+    def generate(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None = None,
+    ) -> runner.ProviderResult:
+        if response_schema is None:
+            return super().generate(
+                instructions=instructions,
+                input_text=input_text,
+                response_schema=response_schema,
+            )
+        with self._lock:
+            self.judge_calls += 1
+        case_id = input_text.split("## Case ID\n", 1)[1].split("\n", 1)[0]
+        if case_id != self.successful_case_id:
+            raise runner.ProviderError(
+                "provider HTTP 429",
+                code="RATE_LIMIT",
+                retryable=True,
+                safe_diagnostics={"http_status": 429},
+            )
+        return runner.ProviderResult(judgment(response_schema), reported_model=self.model)
+
+
 class ParallelExecutionTests(unittest.TestCase):
     @staticmethod
     def case_ids(count: int) -> tuple[str, ...]:
@@ -313,6 +372,101 @@ class ParallelExecutionTests(unittest.TestCase):
         self.assertEqual(set(completed), set(case_ids))
         self.assertEqual(scheduler.peak_in_flight, 2)
 
+    def test_shared_rate_limit_cooldown_gates_refill_extends_and_stops_immediately(self) -> None:
+        clock = {"now": 0.0}
+        waits: list[float] = []
+        starts: list[tuple[str, float]] = []
+        first_pair = threading.Barrier(2)
+        coordinator = runner.ProviderRateLimitCoordinator(
+            monotonic=lambda: clock["now"],
+            wait=lambda delay: (waits.append(delay), clock.__setitem__("now", clock["now"] + delay)),
+        )
+
+        def call(case_id: str) -> str:
+            if case_id in {"A", "B"}:
+                first_pair.wait(timeout=1)
+            if case_id == "A":
+                coordinator.note_rate_limit(5.0)
+            elif case_id == "B":
+                coordinator.note_rate_limit(8.0)
+            return case_id
+
+        scheduler = runner.BoundedCaseScheduler(
+            ["A", "B", "C", "D"],
+            concurrency=2,
+            provider_call=call,
+            on_case_start=lambda case_id, _started, _total: starts.append(
+                (case_id, clock["now"])
+            ),
+            submission_gate=coordinator.can_submit,
+            wait_for_submission=lambda stop: coordinator.wait_until_allowed(stop),
+        )
+        self.assertEqual(
+            set(completion.value for completion in scheduler.completions()),
+            {"A", "B", "C", "D"},
+        )
+        self.assertEqual([case_id for case_id, _ in starts], ["A", "B", "C", "D"])
+        self.assertEqual(starts[2][1], 8.0)
+        self.assertEqual(waits, [8.0])
+        self.assertTrue(coordinator.can_submit())
+
+        coordinator.note_rate_limit(5.0)
+        stopped = threading.Event()
+        stopped.set()
+        blocked = runner.BoundedCaseScheduler(
+            ["pending"],
+            concurrency=1,
+            provider_call=lambda item: item,
+            should_stop=stopped.is_set,
+            submission_gate=coordinator.can_submit,
+            wait_for_submission=lambda stop: coordinator.wait_until_allowed(stop),
+        )
+        self.assertEqual(list(blocked.completions()), [])
+        self.assertEqual(blocked.pending_count, 1)
+        self.assertEqual(waits, [8.0])
+
+    def test_execution_history_aggregates_http_attempts_without_changing_logical_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            provider = TelemetryProvider()
+            outcome = execute_request(
+                self.request(
+                    root,
+                    self.case_ids(1),
+                    mode=EvalExecutionMode.FULL,
+                    run_id="http-telemetry",
+                ),
+                target_provider=provider,
+                judge_provider=provider,
+            )
+            self.assertEqual(outcome.api_calls, {"target": 1, "judge": 1})
+            metadata = runner.load_json_object(outcome.run_dir / "run.json")
+            telemetry = metadata["execution_history"][-1]["provider_telemetry"]
+            self.assertEqual(
+                telemetry["target"],
+                {
+                    "logical_calls_with_http_telemetry": 1,
+                    "http_attempts": 1,
+                    "retries": 0,
+                    "rate_limit_responses": 0,
+                    "retry_delay_seconds": 0.0,
+                    "recovered_after_retry": 0,
+                    "rate_limit_exhausted": 0,
+                },
+            )
+            self.assertEqual(
+                telemetry["judge"],
+                {
+                    "logical_calls_with_http_telemetry": 1,
+                    "http_attempts": 2,
+                    "retries": 1,
+                    "rate_limit_responses": 1,
+                    "retry_delay_seconds": 5.0,
+                    "recovered_after_retry": 1,
+                    "rate_limit_exhausted": 0,
+                },
+            )
+
     def test_parallel_interrupt_resume_and_selected_scope_preserve_case_attempts(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -375,8 +529,55 @@ class ParallelExecutionTests(unittest.TestCase):
             self.assertFalse(any(item["case_id"] == case_ids[3] for item in attempts))
             metadata = runner.load_json_object(first.run_dir / "run.json")
             self.assertEqual(metadata["console"]["target_concurrency"], 2)
-            self.assertEqual(metadata["execution_history"][-1]["target_concurrency"], 2)
-            self.assertEqual(metadata["parallel_metrics"]["target_peak_in_flight"], 2)
+            self.assertEqual(metadata["execution_history"][-1]["target_concurrency"], 1)
+            self.assertEqual(metadata["parallel_metrics"]["target_peak_in_flight"], 1)
+
+    def test_selected_judge_resume_overrides_concurrency_without_rerunning_successes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(4)
+            initial = execute_request(
+                self.request(
+                    root,
+                    case_ids,
+                    mode=EvalExecutionMode.FULL,
+                    run_id="judge-rate-limit",
+                    target_concurrency=1,
+                    judge_concurrency=2,
+                ),
+                target_provider=SuccessProvider(),
+                judge_provider=SelectiveJudgeRateLimitProvider(case_ids[0]),
+            )
+            self.assertEqual(initial.api_calls, {"target": 4, "judge": 4})
+            selected = (case_ids[1], case_ids[3])
+            resumed = execute_request(
+                self.request(
+                    root,
+                    selected,
+                    mode=EvalExecutionMode.RESUME,
+                    source=initial.run_dir,
+                    target_concurrency=1,
+                    judge_concurrency=1,
+                ),
+                judge_provider=SuccessProvider(),
+            )
+            self.assertEqual(resumed.api_calls, {"target": 0, "judge": 2})
+            judgments = runner.load_jsonl(initial.run_dir / "judgments.jsonl")
+            attempts = {
+                case_id: [record for record in judgments if record["case_id"] == case_id]
+                for case_id in case_ids
+            }
+            self.assertEqual(len(attempts[case_ids[0]]), 1)
+            self.assertEqual(len(attempts[case_ids[1]]), 2)
+            self.assertEqual(len(attempts[case_ids[2]]), 1)
+            self.assertEqual(len(attempts[case_ids[3]]), 2)
+            metadata = runner.load_json_object(initial.run_dir / "run.json")
+            self.assertEqual(metadata["console"]["judge_concurrency"], 2)
+            self.assertEqual(
+                [item["judge_concurrency"] for item in metadata["execution_history"]],
+                [2, 1],
+            )
+            self.assertEqual(metadata["parallel_metrics"]["judge_peak_in_flight"], 1)
 
     def test_full_run_keeps_stage_barrier_and_independent_concurrency(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

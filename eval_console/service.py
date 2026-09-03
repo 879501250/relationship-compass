@@ -6,7 +6,6 @@ import json
 import os
 from copy import deepcopy
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +27,7 @@ from .secrets import SecretResolver
 
 ProgressCallback = Callable[[str, dict[str, Any], int, int], None]
 ActivityCallback = Callable[[str, dict[str, Any], int, int], None]
+RateLimitCallback = Callable[[str, float, bool], None]
 StopRequested = Callable[[], bool]
 
 
@@ -216,6 +216,7 @@ def execute_request(
     target_provider: Any | None = None,
     judge_provider: Any | None = None,
     should_stop: StopRequested | None = None,
+    rate_limit: RateLimitCallback | None = None,
 ) -> RunOutcome:
     """Execute an explicit Target/Judge stage mode with durable per-stage artifacts."""
     if request.mode is EvalExecutionMode.RESUME:
@@ -260,7 +261,7 @@ def execute_request(
             current_stage_before_calls = before_calls
             _execute_judge_stage(
                 run_dir, request, judge_provider, stage_plan.judge_cases,
-                progress, activity, should_stop, resume=False
+                progress, activity, should_stop, rate_limit, resume=False
             )
         elif request.mode is EvalExecutionMode.RESUME:
             if request.source_run_dir is None:
@@ -279,7 +280,7 @@ def execute_request(
                 current_stage_before_calls = _api_call_counts(run_dir)
                 _execute_target_stage(
                     prepared, run_dir, request, target_provider, stage_plan.target_cases,
-                    progress, activity, should_stop, resume=True
+                    progress, activity, should_stop, rate_limit, resume=True
                 )
             if not _stop_requested(should_stop):
                 if stage_plan.judge_cases:
@@ -290,7 +291,7 @@ def execute_request(
                     current_stage_before_calls = _api_call_counts(run_dir)
                     _execute_judge_stage(
                         run_dir, request, judge_provider, stage_plan.judge_cases,
-                        progress, activity, should_stop, resume=True
+                        progress, activity, should_stop, rate_limit, resume=True
                     )
         else:
             prepared = _prepare_current_cases(request)
@@ -312,7 +313,7 @@ def execute_request(
             current_stage_before_calls = before_calls
             _execute_target_stage(
                 prepared, run_dir, request, target_provider, stage_plan.target_cases,
-                progress, activity, should_stop, resume=False,
+                progress, activity, should_stop, rate_limit, resume=False,
                 metadata_extra=_console_metadata(
                     definition,
                     request,
@@ -331,7 +332,7 @@ def execute_request(
                 if judge_case_ids:
                     _execute_judge_stage(
                         run_dir, request, judge_provider, judge_case_ids,
-                        progress, activity, should_stop, resume=False
+                        progress, activity, should_stop, rate_limit, resume=False
                     )
                 else:
                     _complete_empty_judge_stage(run_dir)
@@ -626,6 +627,7 @@ def _execute_target_stage(
     progress: ProgressCallback | None,
     activity: ActivityCallback | None,
     should_stop: StopRequested | None,
+    rate_limit: RateLimitCallback | None,
     *,
     resume: bool,
     metadata_extra: dict[str, Any] | None = None,
@@ -642,6 +644,9 @@ def _execute_target_stage(
         on_case_start=lambda record, started, total: _emit_activity(activity, "TARGET", record, started, total),
         on_case_complete=lambda record, completed, total: _emit_progress(run_dir, request, progress, "TARGET", record, completed, total),
         should_stop=should_stop,
+        on_rate_limit=lambda delay, extended: _emit_rate_limit(
+            rate_limit, "TARGET", delay, extended
+        ),
         case_ids=case_ids,
         origin_mode=request.mode.value,
     )
@@ -655,6 +660,7 @@ def _execute_judge_stage(
     progress: ProgressCallback | None,
     activity: ActivityCallback | None,
     should_stop: StopRequested | None,
+    rate_limit: RateLimitCallback | None,
     *,
     resume: bool,
 ) -> None:
@@ -665,6 +671,9 @@ def _execute_judge_stage(
         on_case_start=lambda record, started, total: _emit_activity(activity, "JUDGE", record, started, total),
         on_case_complete=lambda record, completed, total: _emit_progress(run_dir, request, progress, "JUDGE", record, completed, total),
         should_stop=should_stop,
+        on_rate_limit=lambda delay, extended: _emit_rate_limit(
+            rate_limit, "JUDGE", delay, extended
+        ),
         case_ids=case_ids,
         judge_concurrency=request.judge_concurrency,
     )
@@ -675,6 +684,13 @@ def _emit_activity(
 ) -> None:
     if activity is not None:
         activity(phase, record, started, total)
+
+
+def _emit_rate_limit(
+    callback: RateLimitCallback | None, phase: str, delay: float, extended: bool
+) -> None:
+    if callback is not None:
+        callback(phase, delay, extended)
 
 
 def _emit_progress(
@@ -775,19 +791,9 @@ def _resume_metadata(request: EvalRunRequest) -> dict[str, Any]:
 
 
 def _resume_request_with_persisted_concurrency(request: EvalRunRequest) -> EvalRunRequest:
-    """Keep Resume execution strategy fixed to the current Run artifact."""
-    metadata = _resume_metadata(request)
-    console = metadata["console"]
-    assert isinstance(console, dict)
-    values: dict[str, int] = {}
-    for field in ("target_concurrency", "judge_concurrency"):
-        value = console.get(field)
-        if not isinstance(value, int) or value < 1 or value > 32:
-            raise EvalConsoleError(
-                "Unsupported Run Artifact Version: current concurrency configuration is required"
-            )
-        values[field] = value
-    return replace(request, **values)
+    """Validate the current Run artifact without treating concurrency as identity."""
+    _resume_metadata(request)
+    return request
 
 
 def _validate_resume_profile_availability(
@@ -941,8 +947,6 @@ def _record_execution_metadata(
     console = metadata["console"]
     console["target_model"] = _requested_model(metadata.get("target"))
     console["judge_model"] = _requested_model(metadata.get("judge"))
-    console["target_concurrency"] = request.target_concurrency
-    console["judge_concurrency"] = request.judge_concurrency
     history = metadata.get("execution_history")
     if not isinstance(history, list):
         history = []
@@ -975,9 +979,64 @@ def _record_execution_metadata(
                 if isinstance(metadata.get("parallel_metrics"), dict)
                 else None
             ),
+            "provider_telemetry": _execution_provider_telemetry(run_dir, api_calls),
         }
     )
     runner.write_json(run_dir / "run.json", metadata)
+
+
+def _execution_provider_telemetry(
+    run_dir: Path, api_calls: dict[str, int]
+) -> dict[str, dict[str, int | float] | None]:
+    """Aggregate only this append-only execution's safe HTTP attempt evidence."""
+    sources = {
+        "target": run_dir / "responses.jsonl",
+        "judge": run_dir / "judgments.jsonl",
+    }
+    telemetry: dict[str, dict[str, int | float] | None] = {}
+    for stage, path in sources.items():
+        count = max(0, int(api_calls.get(stage, 0)))
+        records = runner.load_jsonl(path) if count and path.is_file() else []
+        recent = records[-count:] if count else []
+        observations = [
+            record.get("http_telemetry")
+            for record in recent
+            if isinstance(record.get("http_telemetry"), dict)
+        ]
+        if not observations:
+            telemetry[stage] = None
+            continue
+        telemetry[stage] = {
+            "logical_calls_with_http_telemetry": len(observations),
+            "http_attempts": sum(_telemetry_int(item, "http_attempts") for item in observations),
+            "retries": sum(_telemetry_int(item, "retry_count") for item in observations),
+            "rate_limit_responses": sum(
+                _telemetry_int(item, "rate_limit_count") for item in observations
+            ),
+            "retry_delay_seconds": sum(
+                _telemetry_float(item, "total_retry_delay_seconds") for item in observations
+            ),
+            "recovered_after_retry": sum(
+                item.get("recovered_after_retry") is True for item in observations
+            ),
+            "rate_limit_exhausted": sum(
+                _telemetry_int(item, "rate_limit_count") > 0
+                and item.get("recovered_after_retry") is not True
+                and item.get("final_http_status") == 429
+                for item in observations
+            ),
+        }
+    return telemetry
+
+
+def _telemetry_int(value: dict[str, Any], field: str) -> int:
+    item = value.get(field)
+    return item if isinstance(item, int) and not isinstance(item, bool) else 0
+
+
+def _telemetry_float(value: dict[str, Any], field: str) -> float:
+    item = value.get(field)
+    return float(item) if isinstance(item, (int, float)) and not isinstance(item, bool) else 0.0
 
 
 def friendly_error(error: BaseException) -> str:

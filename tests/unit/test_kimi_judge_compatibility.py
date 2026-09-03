@@ -324,6 +324,21 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             self.assertEqual(record["diagnostics"]["retry_attempt"], 3)
             self.assertEqual(record["diagnostics"]["max_retries"], 2)
             self.assertEqual(record["diagnostics"]["provider_http_attempts"], 3)
+            self.assertEqual(
+                record["http_telemetry"],
+                {
+                    "http_attempts": 3,
+                    "retry_count": 2,
+                    "rate_limit_count": 3,
+                    "total_retry_delay_seconds": 10.0,
+                    "recovered_after_retry": False,
+                    "final_http_status": 429,
+                    "retry_after_seconds": 5.0,
+                    "retry_delay_source": "retry_after",
+                    "retry_delays_seconds": [5.0, 5.0],
+                    "retry_delay_sources": ["retry_after", "retry_after"],
+                },
+            )
             self.assertEqual(sleeps, [5.0, 5.0])
             metadata = runner.load_json_object(run_dir / "run.json")
             self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
@@ -334,6 +349,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
         prepared = runner.prepare_cases([cases[0]], criteria)
         judgment = json.dumps(self.judgment_payload(prepared[0]), ensure_ascii=False)
         sleeps: list[float] = []
+        cooldown_events: list[tuple[float, bool]] = []
         judge = self.kimi_provider(
             {},
             urlopen=self.opener_from_events(
@@ -345,6 +361,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             sleep=sleeps.append,
             max_retries=2,
         )
+        coordinator = runner.ProviderRateLimitCoordinator(wait=sleeps.append)
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "retry-success"
             runner.execute_run(
@@ -356,7 +373,13 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 runner.execute_judge(
-                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                    run_dir,
+                    judge,
+                    case_ids=runner.planned_judge_case_ids(run_dir),
+                    rate_limit_coordinator=coordinator,
+                    on_rate_limit=lambda delay, extended: cooldown_events.append(
+                        (delay, extended)
+                    ),
                 )["judged"],
                 1,
             )
@@ -365,7 +388,23 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             self.assertEqual(
                 record["structured_output_normalization"], "markdown_json_fence"
             )
+            self.assertEqual(
+                record["http_telemetry"],
+                {
+                    "http_attempts": 2,
+                    "retry_count": 1,
+                    "rate_limit_count": 1,
+                    "total_retry_delay_seconds": 5.0,
+                    "recovered_after_retry": True,
+                    "final_http_status": 200,
+                    "retry_after_seconds": 5.0,
+                    "retry_delay_source": "retry_after",
+                    "retry_delays_seconds": [5.0],
+                    "retry_delay_sources": ["retry_after"],
+                },
+            )
             self.assertEqual(sleeps, [5.0])
+            self.assertEqual(cooldown_events, [(5.0, False)])
             metadata = runner.load_json_object(run_dir / "run.json")
             self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
             runner.validate_result_artifacts(run_dir)

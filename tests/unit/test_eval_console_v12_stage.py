@@ -29,6 +29,7 @@ from eval_console.cli import (  # noqa: E402
     _GracefulStop,
     _interactive_history_stage,
     _request_from_args,
+    _resume_concurrency_defaults,
     _resume_request_with_inherited_configuration,
     build_parser,
 )
@@ -986,6 +987,24 @@ class StageDecouplingTests(unittest.TestCase):
                     metadata,
                 )
 
+    def test_resume_concurrency_defaults_use_the_latest_execution_for_each_stage(self) -> None:
+        metadata: dict[str, object] = {
+            "console": {"target_concurrency": 2, "judge_concurrency": 2},
+            "execution_history": [
+                {
+                    "target_concurrency": 2,
+                    "judge_concurrency": 2,
+                    "actual_api_calls": {"target": 4, "judge": 4},
+                },
+                {
+                    "target_concurrency": 1,
+                    "judge_concurrency": 1,
+                    "actual_api_calls": {"target": 0, "judge": 3},
+                },
+            ],
+        }
+        self.assertEqual(_resume_concurrency_defaults(metadata), (2, 1))
+
     def test_resume_preflight_rejects_missing_or_changed_original_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1030,6 +1049,8 @@ class StageDecouplingTests(unittest.TestCase):
                 side_effect=[history[0], "auto", True, "start"],
             ), mock.patch(
                 "eval_console.cli._yes_no", return_value=False
+            ), mock.patch(
+                "builtins.input", return_value=""
             ), mock.patch(
                 "eval_console.cli._interactive_profile",
                 side_effect=AssertionError("Resume must not open the Provider picker"),

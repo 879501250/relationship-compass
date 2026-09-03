@@ -175,6 +175,24 @@ class _ActivityReporter:
                 f"等待 {snapshot.pending}）"
             )
 
+    def rate_limit(self, phase: str, delay: float, extended: bool) -> None:
+        """Report one 429 state change without adding a polling log stream."""
+        if self._stopped.is_set():
+            return
+        snapshot = self.snapshot()
+        action = "已延长" if extended else "已开始"
+        message = (
+            f"[RATE LIMIT] {_phase_label(phase)} Provider 返回 HTTP 429；"
+            f"共享 cooldown {action}：{delay:.1f} 秒。"
+        )
+        detail = (
+            f"暂停安排新的 {_phase_label(phase)} Case"
+            f"（运行中 {snapshot.running}，等待 {snapshot.pending}）。"
+        )
+        if self._tty:
+            print("\r" + " " * 100 + "\r", end="")
+        print(f"  {message}\n  {detail}")
+
     def snapshot(self) -> _ActivitySnapshot:
         """Return a locked snapshot for deterministic tests and interrupt UI."""
         with self._lock:
@@ -308,7 +326,11 @@ def build_parser() -> argparse.ArgumentParser:
     resume = subparsers.add_parser("resume", help="按当前 Case/Stage 状态继续或重试历史运行")
     resume.add_argument("--from-run", required=True, type=Path)
     _add_run_arguments(resume, include_eval=False, include_execution_mode=False)
-    resume.set_defaults(func=_command_resume)
+    resume.set_defaults(
+        func=_command_resume,
+        target_concurrency=None,
+        judge_concurrency=None,
+    )
 
     validate = subparsers.add_parser("validate", help="检查 Eval、Provider 配置和输出目录")
     validate.add_argument("--profiles-file", type=Path, default=runner.DEFAULT_PROVIDER_PROFILES)
@@ -440,6 +462,11 @@ def _command_resume(args: argparse.Namespace) -> int:
         ]
     args.source_run = run_dir
     args.execution_mode = "resume"
+    default_target, default_judge = _resume_concurrency_defaults(metadata)
+    if args.target_concurrency is None:
+        args.target_concurrency = default_target
+    if args.judge_concurrency is None:
+        args.judge_concurrency = default_judge
     request = _request_from_args(args, eval_id, list(case_ids))
     request = _resume_request_with_inherited_configuration(request, metadata)
     return _execute_and_print(request)
@@ -503,8 +530,6 @@ def _resume_request_with_inherited_configuration(
         judge_profile=inherited_profiles["Judge"],
         resume_target_model=inherited_models["Target"],
         resume_judge_model=inherited_models["Judge"],
-        target_concurrency=_saved_concurrency(console, "target_concurrency"),
-        judge_concurrency=_saved_concurrency(console, "judge_concurrency"),
     )
 
 
@@ -515,6 +540,45 @@ def _saved_concurrency(console: dict[str, object], field: str) -> int:
             "Unsupported Run Artifact Version：当前 Console Run 缺少有效并发配置。"
         )
     return value
+
+
+def _resume_concurrency_defaults(metadata: dict[str, object]) -> tuple[int, int]:
+    """Prefer the most recent execution strategy while preserving initial provenance."""
+    console = metadata.get("console")
+    if not isinstance(console, dict):
+        raise EvalConsoleError("Unsupported Run Artifact Version：当前 Console Run 缺少并发配置。")
+    initial_target = _saved_concurrency(console, "target_concurrency")
+    initial_judge = _saved_concurrency(console, "judge_concurrency")
+    history = metadata.get("execution_history")
+    if not isinstance(history, list):
+        return initial_target, initial_judge
+    return (
+        _latest_stage_concurrency(history, "target", initial_target),
+        _latest_stage_concurrency(history, "judge", initial_judge),
+    )
+
+
+def _latest_stage_concurrency(
+    history: list[object], stage: str, fallback: int
+) -> int:
+    field = f"{stage}_concurrency"
+    for require_executed_stage in (True, False):
+        for execution in reversed(history):
+            if not isinstance(execution, dict):
+                continue
+            value = execution.get(field)
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not 1 <= value <= 32
+            ):
+                continue
+            actual = execution.get("actual_api_calls")
+            calls = actual.get(stage) if isinstance(actual, dict) else None
+            ran_stage = isinstance(calls, int) and not isinstance(calls, bool) and calls > 0
+            if not require_executed_stage or ran_stage:
+                return value
+    return fallback
 
 
 def _command_validate(args: argparse.Namespace) -> int:
@@ -1348,8 +1412,9 @@ def _interactive_history_stage(
         target_model = None
         judge_model = None
         selector = JudgeCaseSelector.SELECTED
-        target_concurrency = 1
-        judge_concurrency = 1
+        target_concurrency, judge_concurrency = _interactive_resume_concurrency(
+            source.run_dir, source_metadata, stage_plan
+        )
     dry_run = _choose("运行模式", [("Dry Run（不调用真实 API）", True), ("真实 API 运行", False)])
     request = EvalRunRequest(
         eval_id=definition.eval_id,
@@ -1391,6 +1456,67 @@ def _interactive_history_stage(
         return _execute_and_print(request)
     print("未运行任何评测。")
     return 0
+
+
+def _interactive_resume_concurrency(
+    run_dir: Path, metadata: dict[str, object], stage_plan: object
+) -> tuple[int, int]:
+    """Ask only for the stages the current Resume planner will actually run."""
+    console = metadata.get("console")
+    if not isinstance(console, dict):
+        raise EvalConsoleError("Unsupported Run Artifact Version：当前 Console Run 缺少并发配置。")
+    initial_target = _saved_concurrency(console, "target_concurrency")
+    initial_judge = _saved_concurrency(console, "judge_concurrency")
+    recent_target, recent_judge = _resume_concurrency_defaults(metadata)
+    values = {"Target": recent_target, "Judge": recent_judge}
+    initials = {"Target": initial_target, "Judge": initial_judge}
+    planned = {
+        "Target": bool(getattr(stage_plan, "target_cases", ())),
+        "Judge": bool(getattr(stage_plan, "judge_cases", ())),
+    }
+    for role in ("Target", "Judge"):
+        if not planned[role]:
+            continue
+        previous = initials[role]
+        recent = values[role]
+        print(
+            f"{role} 初始并发：{previous}；上次 Execution 并发：{recent}。"
+        )
+        if previous > 1 and _historical_rate_limit_detected(run_dir, role):
+            print(
+                f"提示：上次运行检测到 {role} HTTP 429；"
+                f"可考虑本次降低并发，例如 1（不会自动修改）。"
+            )
+        values[role] = _prompt_concurrency_with_default(role, recent)
+    return values["Target"], values["Judge"]
+
+
+def _prompt_concurrency_with_default(role: str, default: int) -> int:
+    while True:
+        value = _read_interactive_input(f"本次 {role} 并发 [{default}]：").strip()
+        if not value:
+            return default
+        if value.isdigit() and 1 <= int(value) <= 32:
+            return int(value)
+        print("并发数必须介于 1 到 32 之间。")
+
+
+def _historical_rate_limit_detected(run_dir: Path, role: str) -> bool:
+    path = run_dir / ("responses.jsonl" if role == "Target" else "judgments.jsonl")
+    if not path.is_file():
+        return False
+    for record in runner.load_jsonl(path):
+        if record.get("error_code") == "RATE_LIMIT":
+            return True
+        telemetry = record.get("http_telemetry")
+        if isinstance(telemetry, dict):
+            count = telemetry.get("rate_limit_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                return True
+        diagnostics = record.get("diagnostics")
+        if isinstance(diagnostics, dict) and diagnostics.get("http_status") == 429:
+            return True
+    return False
 
 
 def build_interactive_request(
@@ -1527,7 +1653,7 @@ def _print_stage_request_summary(
     else:
         print("Judge：无需执行")
     if request.mode is EvalExecutionMode.RESUME:
-        print("Resume 将继续使用原运行的 Provider 与并发配置；如需更换 Judge，请使用 JUDGE_ONLY。")
+        print("Resume 将继续使用原运行的 Provider；本次可为需要的 Stage 单独调整并发。")
     if max(request.target_concurrency, request.judge_concurrency) > 1:
         print("停止提示：停止后不会安排新的 Case；已开始的请求完成后将保存进度。")
     print(f"运行模式：{'Dry Run（不调用真实 API）' if request.dry_run else '真实 API 运行'}")
@@ -1632,6 +1758,7 @@ def _execute_and_print(request: EvalRunRequest) -> int:
                 progress=activity.finish,
                 activity=on_activity,
                 should_stop=lambda: stop.requested,
+                rate_limit=activity.rate_limit,
             )
     finally:
         activity.close()
@@ -1668,8 +1795,12 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
         dry_run=args.dry_run,
         debug=args.debug,
         allow_dirty_debug=args.allow_dirty_debug,
-        target_concurrency=args.target_concurrency,
-        judge_concurrency=args.judge_concurrency,
+        target_concurrency=(
+            args.target_concurrency if isinstance(args.target_concurrency, int) else 1
+        ),
+        judge_concurrency=(
+            args.judge_concurrency if isinstance(args.judge_concurrency, int) else 1
+        ),
         run_id=args.run_id,
         target_model_override=getattr(args, "target_model", None),
         judge_model_override=getattr(args, "judge_model", None),
@@ -1801,6 +1932,7 @@ def _print_outcome(outcome: object) -> None:
             f"API 调用：Target {outcome.api_calls.get('target', 0)} / "
             f"Judge {outcome.api_calls.get('judge', 0)}"
         )
+        _print_provider_telemetry(metadata)
         print(f"结果目录：{outcome.run_dir}")
         return
     print("\nBehavioral Eval 结果\n" + "-" * 40)
@@ -1810,7 +1942,43 @@ def _print_outcome(outcome: object) -> None:
     print(f"INCOMPLETE（未完成）：{counts['INCOMPLETE']}")
     print(f"Cases：本次选择 {selected} / Eval 共 {total}")
     print(f"状态：{summary.get('completion_status')}（已报告 {summary_counts.get('total_cases', selected)} 个 Cases）")
+    _print_provider_telemetry(metadata)
     print(f"结果目录：{outcome.run_dir}")
+
+
+def _print_provider_telemetry(metadata: dict[str, object]) -> None:
+    history = metadata.get("execution_history")
+    execution = history[-1] if isinstance(history, list) and history else None
+    provider_telemetry = (
+        execution.get("provider_telemetry") if isinstance(execution, dict) else None
+    )
+    if not isinstance(provider_telemetry, dict):
+        print("Provider HTTP：HTTP Attempts：无历史数据")
+        return
+    shown = False
+    for role, label in (("target", "Target"), ("judge", "Judge")):
+        telemetry = provider_telemetry.get(role)
+        if telemetry is None:
+            continue
+        if not isinstance(telemetry, dict):
+            continue
+        shown = True
+        print(f"{label} HTTP：")
+        print(
+            f"  Logical Calls: {telemetry.get('logical_calls_with_http_telemetry', 0)}；"
+            f"HTTP Attempts: {telemetry.get('http_attempts', '无历史数据')}；"
+            f"Retries: {telemetry.get('retries', 0)}；"
+            f"HTTP 429: {telemetry.get('rate_limit_responses', 0)}"
+        )
+        retry_delay = telemetry.get("retry_delay_seconds")
+        retry_wait = float(retry_delay) if isinstance(retry_delay, (int, float)) else 0.0
+        print(
+            f"  Recovered After Retry: {telemetry.get('recovered_after_retry', 0)}；"
+            f"Rate-limit Exhausted: {telemetry.get('rate_limit_exhausted', 0)}；"
+            f"Retry Wait: {retry_wait:.1f}s"
+        )
+    if not shown:
+        print("Provider HTTP：HTTP Attempts：无历史数据")
 
 
 def _print_evals(evals: list[EvalDefinition]) -> None:
@@ -1843,6 +2011,7 @@ def _print_history(runs: list[HistoricalRun]) -> None:
                 f"Target 模型={run.target_model or '未知'}；"
                 f"API 调用 Target={run.target_api_calls} / Judge={run.judge_api_calls}"
             )
+            _print_history_provider_telemetry(run)
             print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
             continue
         passed = "?" if run.passed_cases is None else str(run.passed_cases)
@@ -1861,7 +2030,22 @@ def _print_history(runs: list[HistoricalRun]) -> None:
             f"     Target：{run.target_successes} SUCCESS / {run.target_errors} ERROR / {run.target_missing} MISSING；"
             f"Judge：{run.judge_completed} DONE / {run.judge_errors} ERROR / {run.judge_missing} MISSING"
         )
+        _print_history_provider_telemetry(run)
         print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
+
+
+def _print_history_provider_telemetry(run: HistoricalRun) -> None:
+    items: list[str] = []
+    if run.target_http_attempts is not None:
+        items.append(
+            f"Target HTTP Attempts {run.target_http_attempts}，429 {run.target_rate_limits or 0}，Retries {run.target_retries or 0}"
+        )
+    if run.judge_http_attempts is not None:
+        items.append(
+            f"Judge HTTP Attempts {run.judge_http_attempts}，429 {run.judge_rate_limits or 0}，Retries {run.judge_retries or 0}"
+        )
+    if items:
+        print("     " + "；".join(items))
 
 
 def _read_interactive_input(prompt: str) -> str:
