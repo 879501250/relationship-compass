@@ -28,6 +28,7 @@ from eval_console.discovery import HistoricalRun, discover_evals, discover_runs 
 from eval_console.cli import (  # noqa: E402
     _GracefulStop,
     _interactive_history_stage,
+    _print_provider_telemetry,
     _request_from_args,
     _resume_concurrency_defaults,
     _resume_request_with_inherited_configuration,
@@ -1004,6 +1005,35 @@ class StageDecouplingTests(unittest.TestCase):
             ],
         }
         self.assertEqual(_resume_concurrency_defaults(metadata), (2, 1))
+
+    def test_provider_http_summary_separates_logical_calls_from_telemetry_coverage(self) -> None:
+        output = io.StringIO()
+        metadata = {
+            "execution_history": [
+                {
+                    "actual_api_calls": {"target": 4, "judge": 0},
+                    "provider_telemetry": {
+                        "target": {
+                            "logical_calls_with_http_telemetry": 3,
+                            "http_attempts": 5,
+                            "retries": 2,
+                            "rate_limit_responses": 1,
+                            "retry_delay_seconds": 5.0,
+                            "recovered_after_retry": 1,
+                            "rate_limit_exhausted": 0,
+                        }
+                    },
+                }
+            ]
+        }
+
+        with redirect_stdout(output):
+            _print_provider_telemetry(metadata)
+
+        rendered = output.getvalue()
+        self.assertIn("Logical Calls: 4", rendered)
+        self.assertIn("Telemetry Coverage: 3/4", rendered)
+        self.assertNotIn("Logical Calls: 3", rendered)
 
     def test_resume_preflight_rejects_missing_or_changed_original_provider(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -229,7 +229,7 @@ Target / Judge 可以来自同一 relay，也可以使用不同 provider、endpo
 
 ## Eval Console V1.2B：有界并发
 
-Console Run 将 Target 与 Judge 执行策略分别持久化为 `target_concurrency` 与 `judge_concurrency`，默认均为 `1`，可配置范围为 `1–32`。FULL 模式分别询问两个值；TARGET_ONLY 只询问 Target，JUDGE_ONLY 只询问 Judge。Resume 固定继承原 Run 的两个值，不能临时改写。
+Console Run 将 Target 与 Judge 执行策略分别持久化为 `target_concurrency` 与 `judge_concurrency`，默认均为 `1`，可配置范围为 `1–32`。FULL 模式分别询问两个值；TARGET_ONLY 只询问 Target，JUDGE_ONLY 只询问 Judge。初始 Run 的并发值保留为 top-level provenance；Resume 默认采用各 Stage 最近一次实际执行的并发值，也允许本次执行单独覆盖。并发是 execution strategy，不是 Provider/model semantic identity；每次真实使用的值均记录在 `execution_history`。
 
 每个阶段只按 Planner 已给出的 Case scope 以 FIFO 方式启动最多 N 个 Provider 调用。不会把全部 Case 预先提交到 executor queue；一个完成结果由主线程安全写入 JSONL、更新 `run.json` 与 API logical-call 计数后，才补充下一个 Case。物理 JSONL 可按完成先后排列，最新 attempt 索引与界面展示仍按 `case_id` 和 Eval canonical order 判定。
 
@@ -238,6 +238,10 @@ Console Run 将 Target 与 Judge 执行策略分别持久化为 `target_concurre
 ## Retry、resume 与错误恢复
 
 HTTP adapter 仅对 429、timeout、network reset 和选定 5xx 使用有限 1/2/4/8 秒 backoff。401/403、invalid request/model、unsupported parameter 与 model mismatch 不自动重试。
+
+一次 Target 或 Judge Provider 调用始终计为一个 HTTP logical call；同一次调用中的 429、timeout 或 network retry 会增加 HTTP attempts，不会增加 logical-call 计数。Console 同时显示实际 logical calls 与 `Telemetry Coverage`，避免把有 HTTP telemetry 的记录数误当作调用总数。
+
+每个 logical call 的 `retry_delays_seconds`、`retry_after_seconds` 与 `total_retry_delay_seconds` 记录 Provider 或 policy 选定并规范化后的 retry delay，例如 `Retry-After: 5` 恒为 `5.0`，无 header 的回退 backoff 也记录其原始决策值。共享限流协调器内部的 `remaining_cooldown` 则是基于 monotonic deadline 的实时剩余时间，允许随调度产生小数差异；它只用于等待、submission gate 和 Console 倒计时，绝不回写 retry telemetry。
 
 Target `responses.jsonl` 与 Judge `judgments.jsonl` 均为 append-only attempt evidence。Target 有效回答是该 case 最新成功 attempt；resume 跳过成功，只重试 `retryable=true` 的 `TARGET_ERROR`：
 

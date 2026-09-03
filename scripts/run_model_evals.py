@@ -1318,7 +1318,7 @@ def http_attempt_telemetry(
     final_http_status: int | None,
     recovered_after_retry: bool,
 ) -> dict[str, Any]:
-    """Build the safe, per-logical-call HTTP retry evidence persisted in artifacts."""
+    """Build safe HTTP retry evidence from selected delays, never elapsed cooldowns."""
     return {
         "http_attempts": attempts,
         "retry_count": retry_count,
@@ -1644,6 +1644,14 @@ class HTTPJSONProvider:
         retry_after_values: list[float] = []
         retry_count = 0
         rate_limit_count = 0
+
+        def record_selected_retry_delay(delay_seconds: float, source: str) -> float:
+            """Persist the normalized provider/policy decision before runtime waiting."""
+            selected_delay = max(0.0, float(delay_seconds))
+            retry_delays_seconds.append(selected_delay)
+            retry_delay_sources.append(source)
+            return selected_delay
+
         for attempt in range(self.max_retries + 1):
             try:
                 with self._urlopen(request, timeout=self.timeout_seconds) as response:
@@ -1727,13 +1735,15 @@ class HTTPJSONProvider:
                         else RETRY_DELAYS_SECONDS[attempt]
                     )
                     retry_count += 1
-                    retry_delays_seconds.append(delay)
-                    retry_delay_sources.append(
+                    selected_delay = record_selected_retry_delay(
+                        delay,
                         "retry_after"
                         if code == "RATE_LIMIT" and retry_after is not None
                         else "fallback_backoff"
                     )
-                    self._wait_for_retry(delay, rate_limited=code == "RATE_LIMIT")
+                    self._wait_for_retry(
+                        selected_delay, rate_limited=code == "RATE_LIMIT"
+                    )
                     continue
                 safe_diagnostics["http_telemetry"] = http_attempt_telemetry(
                     attempts=attempt + 1,
@@ -1760,9 +1770,10 @@ class HTTPJSONProvider:
                 if attempt < self.max_retries:
                     delay = RETRY_DELAYS_SECONDS[attempt]
                     retry_count += 1
-                    retry_delays_seconds.append(delay)
-                    retry_delay_sources.append("fallback_backoff")
-                    self._wait_for_retry(delay, rate_limited=False)
+                    selected_delay = record_selected_retry_delay(
+                        delay, "fallback_backoff"
+                    )
+                    self._wait_for_retry(selected_delay, rate_limited=False)
                     continue
                 raise ProviderTimeout(
                     safe_diagnostics={
@@ -1783,9 +1794,10 @@ class HTTPJSONProvider:
                 if attempt < self.max_retries:
                     delay = RETRY_DELAYS_SECONDS[attempt]
                     retry_count += 1
-                    retry_delays_seconds.append(delay)
-                    retry_delay_sources.append("fallback_backoff")
-                    self._wait_for_retry(delay, rate_limited=False)
+                    selected_delay = record_selected_retry_delay(
+                        delay, "fallback_backoff"
+                    )
+                    self._wait_for_retry(selected_delay, rate_limited=False)
                     continue
                 if is_timeout:
                     raise ProviderTimeout(
@@ -3697,6 +3709,7 @@ def judge_attempt_record(
                     "error_code": "INVALID_STRUCTURED_OUTPUT",
                     "retryable": False,
                     "diagnostics": judge_error_diagnostics(result, parse_error=str(exc)),
+                    "http_telemetry": provider_http_telemetry(result=result),
                 }
             )
         else:

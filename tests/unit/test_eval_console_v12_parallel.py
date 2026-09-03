@@ -425,6 +425,18 @@ class ParallelExecutionTests(unittest.TestCase):
         self.assertEqual(blocked.pending_count, 1)
         self.assertEqual(waits, [8.0])
 
+    def test_rate_limit_remaining_cooldown_is_runtime_state(self) -> None:
+        clock = {"now": 100.0}
+        coordinator = runner.ProviderRateLimitCoordinator(
+            monotonic=lambda: clock["now"], wait=lambda _delay: None
+        )
+
+        coordinator.note_rate_limit(5.0)
+        self.assertEqual(coordinator.remaining_cooldown(), 5.0)
+        clock["now"] = 101.0
+
+        self.assertEqual(coordinator.remaining_cooldown(), 4.0)
+
     def test_execution_history_aggregates_http_attempts_without_changing_logical_calls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -1952,30 +1952,44 @@ def _print_provider_telemetry(metadata: dict[str, object]) -> None:
     provider_telemetry = (
         execution.get("provider_telemetry") if isinstance(execution, dict) else None
     )
-    if not isinstance(provider_telemetry, dict):
+    if not isinstance(execution, dict):
         print("Provider HTTP：HTTP Attempts：无历史数据")
         return
     shown = False
+    actual_api_calls = execution.get("actual_api_calls")
     for role, label in (("target", "Target"), ("judge", "Judge")):
-        telemetry = provider_telemetry.get(role)
-        if telemetry is None:
-            continue
-        if not isinstance(telemetry, dict):
+        logical_calls = (
+            actual_api_calls.get(role, 0)
+            if isinstance(actual_api_calls, dict)
+            and isinstance(actual_api_calls.get(role, 0), int)
+            else 0
+        )
+        telemetry = (
+            provider_telemetry.get(role)
+            if isinstance(provider_telemetry, dict)
+            else None
+        )
+        if telemetry is None and logical_calls == 0:
             continue
         shown = True
+        coverage = (
+            telemetry.get("logical_calls_with_http_telemetry", 0)
+            if isinstance(telemetry, dict)
+            else 0
+        )
         print(f"{label} HTTP：")
         print(
-            f"  Logical Calls: {telemetry.get('logical_calls_with_http_telemetry', 0)}；"
-            f"HTTP Attempts: {telemetry.get('http_attempts', '无历史数据')}；"
-            f"Retries: {telemetry.get('retries', 0)}；"
-            f"HTTP 429: {telemetry.get('rate_limit_responses', 0)}"
+            f"  Logical Calls: {logical_calls}；Telemetry Coverage: {coverage}/{logical_calls}；"
+            f"HTTP Attempts: {telemetry.get('http_attempts', '无历史数据') if isinstance(telemetry, dict) else '无历史数据'}；"
+            f"Retries: {telemetry.get('retries', 0) if isinstance(telemetry, dict) else 0}；"
+            f"HTTP 429: {telemetry.get('rate_limit_responses', 0) if isinstance(telemetry, dict) else 0}"
         )
-        retry_delay = telemetry.get("retry_delay_seconds")
+        retry_delay = telemetry.get("retry_delay_seconds") if isinstance(telemetry, dict) else 0.0
         retry_wait = float(retry_delay) if isinstance(retry_delay, (int, float)) else 0.0
         print(
-            f"  Recovered After Retry: {telemetry.get('recovered_after_retry', 0)}；"
-            f"Rate-limit Exhausted: {telemetry.get('rate_limit_exhausted', 0)}；"
-            f"Retry Wait: {retry_wait:.1f}s"
+            f"  Recovered After Retry: {telemetry.get('recovered_after_retry', 0) if isinstance(telemetry, dict) else 0}；"
+            f"Rate-limit Exhausted: {telemetry.get('rate_limit_exhausted', 0) if isinstance(telemetry, dict) else 0}；"
+            f"Selected Retry Delay: {retry_wait:.1f}s"
         )
     if not shown:
         print("Provider HTTP：HTTP Attempts：无历史数据")
