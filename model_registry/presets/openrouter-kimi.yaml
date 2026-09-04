@@ -1,0 +1,13 @@
+{
+  "id": "openrouter-kimi",
+  "vendor": "openrouter",
+  "credential": "openrouter-main",
+  "model_family": "kimi",
+  "model": "kimi-k2.6",
+  "base_url": "public",
+  "parameters": {
+    "temperature": 0.2,
+    "max_tokens": 4096
+  },
+  "description": "经 OpenRouter 调用 Kimi K2.6 的评测预设。"
+}

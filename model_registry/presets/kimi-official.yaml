@@ -1,0 +1,13 @@
+{
+  "id": "kimi-official",
+  "vendor": "moonshot",
+  "credential": "moonshot-main",
+  "model_family": "kimi",
+  "model": "kimi-k2.6",
+  "base_url": "official-cn",
+  "parameters": {
+    "temperature": 0.2,
+    "max_tokens": 4096
+  },
+  "description": "Moonshot 官方 Kimi K2.6 的保守评测预设。"
+}

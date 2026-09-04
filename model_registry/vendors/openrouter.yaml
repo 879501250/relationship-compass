@@ -1,0 +1,20 @@
+{
+  "id": "openrouter",
+  "name": "OpenRouter",
+  "website": "https://openrouter.ai",
+  "description": "多模型路由服务",
+  "protocol": "openai_compatible_chat",
+  "base_urls": [
+    {
+      "id": "public",
+      "url": "https://openrouter.ai/api/v1",
+      "model_families": ["gpt", "kimi", "claude", "deepseek"],
+      "model_overrides": {
+        "kimi-k2.6": {
+          "api_name": "moonshot/kimi-k2.6",
+          "capabilities": {"thinking": false}
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "moonshot",
+  "name": "Moonshot AI",
+  "website": "https://platform.moonshot.cn",
+  "description": "Moonshot 官方兼容 OpenAI Chat Completions 的 API",
+  "protocol": "openai_compatible_chat",
+  "base_urls": [
+    {
+      "id": "official-cn",
+      "url": "https://api.moonshot.cn/v1",
+      "model_families": ["kimi"]
+    },
+    {
+      "id": "official-global",
+      "url": "https://api.moonshot.ai/v1",
+      "model_families": ["kimi"]
+    }
+  ]
+}

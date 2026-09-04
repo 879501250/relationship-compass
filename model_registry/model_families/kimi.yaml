@@ -1,0 +1,16 @@
+{
+  "id": "kimi",
+  "name": "Kimi",
+  "defaults": {
+    "context_window": 131072,
+    "capabilities": {
+      "thinking": true,
+      "reasoning": true,
+      "structured_output": true
+    }
+  },
+  "models": {
+    "kimi-k2.6": {"api_name": "kimi-k2.6"},
+    "kimi-k3": {"api_name": "kimi-k3", "context_window": 256000}
+  }
+}
