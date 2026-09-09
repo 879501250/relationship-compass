@@ -7,8 +7,8 @@ from enum import Enum
 from pathlib import Path
 
 
-CURRENT_CONSOLE_SCHEMA_VERSION = 5
-EVAL_CONSOLE_VERSION = "1.2B"
+CURRENT_CONSOLE_SCHEMA_VERSION = 6
+EVAL_CONSOLE_VERSION = "1.3C"
 
 
 @dataclass(frozen=True)
@@ -118,6 +118,13 @@ class EvalRunRequest:
     judge_selector: JudgeCaseSelector = JudgeCaseSelector.SELECTED
     resume_target_model: str | None = None
     resume_judge_model: str | None = None
+    # Presets are the sole public execution identity from V1.3C onward.  The
+    # profile fields above remain temporarily readable for persisted V1.2B
+    # test fixtures; the Console CLI never creates a request through them.
+    target_preset_id: str | None = None
+    judge_preset_id: str | None = None
+    registry_root: Path | None = None
+    credential_store_path: Path | None = None
 
 
 @dataclass(frozen=True)
