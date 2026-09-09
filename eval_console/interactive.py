@@ -15,6 +15,8 @@ YES = {"y", "yes", "是"}
 NO = {"n", "no", "否"}
 BACK = {"b", "back", "返回", "上一步"}
 CANCEL = {"c", "cancel", "取消"}
+CLEAR = {"clear", "none", "清除"}
+CLEAR_VALUE = object()
 T = TypeVar("T")
 
 
@@ -33,6 +35,14 @@ class InteractiveReader:
     def optional(self, prompt: str, *, default: str | None = None) -> str | None:
         value = self.text(prompt, default=default)
         return value or None
+
+    def optional_value(self, prompt: str, *, default: str | None = None) -> str | object | None:
+        """Read optional text with distinct keep-default and clear semantics."""
+        value = self._read(prompt).strip()
+        if value.lower() in BACK: raise InteractiveBack()
+        if value.lower() in CANCEL: raise InteractiveCancel()
+        if value.lower() in CLEAR: return CLEAR_VALUE
+        return default if not value else value
 
     def secret(self, prompt: str, *, allow_back: bool = True) -> str:
         try: value = self.secret_fn(prompt)

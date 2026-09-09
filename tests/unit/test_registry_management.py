@@ -22,7 +22,7 @@ class CredentialSecretStoreTests(unittest.TestCase):
             store = LocalFileCredentialSecretStore(Path(raw) / "credentials.secrets.json")
             store.set("moonshot-main", "sk-abcdefgh")
             self.assertEqual(store.get("moonshot-main"), "sk-abcdefgh")
-            self.assertEqual(mask_token(store.get("moonshot-main")), "sk-****efgh")
+            self.assertEqual(mask_token(store.get("moonshot-main")), "********")
             self.assertEqual(mask_token("short"), "********")
             with mock.patch.object(Path, "replace", side_effect=OSError("disk failure")):
                 with self.assertRaisesRegex(ValueError, "无法保存"):

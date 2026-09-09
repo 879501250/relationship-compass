@@ -93,7 +93,8 @@ class LocalFileCredentialSecretStore(CredentialSecretStore):
 
 def mask_token(token: str | None) -> str:
     """Never return a complete token, including for short values."""
-    if not token or len(token) < 8:
+    if not token or len(token) <= 12:
         return "********"
-    prefix = token[:3].rstrip("-")
-    return f"{prefix}-****{token[-4:]}"
+    if len(token) <= 24:
+        return f"********{token[-4:]}"
+    return f"{token[:3]}****{token[-4:]}"

@@ -207,6 +207,10 @@ class ModelRegistry:
                         errors.append(f"Credential '{credential.id}': vendor '{vendor.id}' has no base URL '{base_url_id}'")
             if (credential.environment_variable is None) == (credential.secret_reference is None):
                 errors.append(f"Credential '{credential.id}': specify exactly one of env or secret_ref")
+            if credential.secret_reference is not None and credential.secret_reference.startswith("local:"):
+                expected = f"local:{credential.id}"
+                if credential.secret_reference != expected:
+                    errors.append(f"Credential '{credential.id}': local secret_ref must be '{expected}'.")
             if credential.expires_at is not None:
                 try:
                     from datetime import date
