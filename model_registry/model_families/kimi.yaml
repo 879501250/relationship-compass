@@ -4,13 +4,16 @@
   "defaults": {
     "context_window": 131072,
     "capabilities": {
-      "thinking": true,
-      "reasoning": true,
-      "structured_output": true
+      "structured_output": {"supported": true, "modes": ["json_object"]},
+      "thinking": {"supported": true, "allowed_values": ["enabled", "disabled"]},
+      "temperature": {"supported": false},
+      "top_p": {"supported": false},
+      "seed": {"supported": false},
+      "max_output_tokens": {"supported": true}
     }
   },
   "models": {
-    "kimi-k2.6": {"api_name": "kimi-k2.6"},
-    "kimi-k3": {"api_name": "kimi-k3", "context_window": 256000}
+    "kimi-k2.6": {},
+    "kimi-k3": {"context_window": 256000}
   }
 }

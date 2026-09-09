@@ -3,6 +3,7 @@
   "name": "DeepSeek",
   "website": "https://platform.deepseek.com",
   "description": "DeepSeek 官方 API",
+  "category": "official",
   "protocol": "openai_compatible_chat",
   "base_urls": [
     {

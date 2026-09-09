@@ -3,17 +3,10 @@
   "name": "DeepSeek",
   "defaults": {
     "context_window": 64000,
-    "capabilities": {
-      "thinking": false,
-      "reasoning": false,
-      "structured_output": true
-    }
+    "capabilities": {}
   },
   "models": {
-    "deepseek-chat": {"api_name": "deepseek-chat"},
-    "deepseek-reasoner": {
-      "api_name": "deepseek-reasoner",
-      "capabilities": {"thinking": true, "reasoning": true}
-    }
+    "deepseek-chat": {},
+    "deepseek-reasoner": {}
   }
 }

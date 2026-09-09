@@ -3,6 +3,7 @@
   "name": "OpenAI",
   "website": "https://platform.openai.com",
   "description": "OpenAI 官方 API",
+  "category": "official",
   "protocol": "openai_responses",
   "base_urls": [
     {

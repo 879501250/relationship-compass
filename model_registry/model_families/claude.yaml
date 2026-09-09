@@ -3,13 +3,9 @@
   "name": "Claude",
   "defaults": {
     "context_window": 200000,
-    "capabilities": {
-      "thinking": true,
-      "reasoning": true,
-      "structured_output": true
-    }
+    "capabilities": {}
   },
   "models": {
-    "claude-sonnet-4": {"api_name": "claude-sonnet-4"}
+    "claude-sonnet-4": {}
   }
 }

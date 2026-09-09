@@ -3,6 +3,7 @@
   "name": "OpenRouter",
   "website": "https://openrouter.ai",
   "description": "多模型路由服务",
+  "category": "relay",
   "protocol": "openai_compatible_chat",
   "base_urls": [
     {
@@ -11,8 +12,7 @@
       "model_families": ["gpt", "kimi", "claude", "deepseek"],
       "model_overrides": {
         "kimi-k2.6": {
-          "api_name": "moonshot/kimi-k2.6",
-          "capabilities": {"thinking": false}
+          "api_name": "moonshot/kimi-k2.6"
         }
       }
     }
