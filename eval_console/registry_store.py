@@ -1,0 +1,106 @@
+"""Transactional storage for user-managed Registry definitions."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import date
+import json
+import os
+from pathlib import Path
+import shutil
+import tempfile
+from typing import Any, Literal, Mapping
+
+from .model_registry import DEFAULT_MODEL_REGISTRY_ROOT, ModelRegistry, RegistryValidationError
+
+
+RegistryKind = Literal["vendors", "model_families", "credentials", "presets"]
+KINDS: tuple[RegistryKind, ...] = ("vendors", "model_families", "credentials", "presets")
+
+
+class RegistryStore:
+    """Validates a complete candidate overlay before every atomic change."""
+
+    def __init__(self, user_root: Path, *, builtin_root: Path = DEFAULT_MODEL_REGISTRY_ROOT) -> None:
+        self.user_root, self.builtin_root = user_root, builtin_root
+
+    def registry(self) -> ModelRegistry:
+        return ModelRegistry(self.builtin_root, user_root=self.user_root)
+
+    def create(self, kind: RegistryKind, document: Mapping[str, Any]) -> None:
+        identifier = self._identifier(document)
+        if self._builtin_has(kind, identifier):
+            raise ValueError("内置定义不可直接覆盖；请使用新的 ID 创建用户定义。")
+        target = self._path(kind, identifier)
+        if target.exists(): raise ValueError(f"{identifier} 已存在。")
+        self._commit_candidate(kind, identifier, dict(document), delete=False)
+
+    def update(self, kind: RegistryKind, identifier: str, document: Mapping[str, Any]) -> None:
+        if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接修改。")
+        if self._identifier(document) != identifier: raise ValueError("对象 ID 创建后不可修改。")
+        if not self._path(kind, identifier).is_file(): raise ValueError(f"未找到用户定义：{identifier}")
+        self._commit_candidate(kind, identifier, dict(document), delete=False)
+
+    def delete(self, kind: RegistryKind, identifier: str) -> None:
+        if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接删除。")
+        target = self._path(kind, identifier)
+        if not target.is_file(): raise ValueError(f"未找到用户定义：{identifier}")
+        references = self.references(kind, identifier)
+        if references: raise ValueError("该对象仍被引用：\n" + "\n".join(f"- {item}" for item in references))
+        self._commit_candidate(kind, identifier, None, delete=True)
+
+    def references(self, kind: RegistryKind, identifier: str) -> list[str]:
+        registry = self.registry()
+        if kind == "vendors":
+            return [f"Credential: {item.id}" for item in registry.credentials.values() if item.vendor_id == identifier] + [f"Preset: {item.id}" for item in registry.presets.values() if item.vendor_id == identifier]
+        if kind == "credentials":
+            return [f"Preset: {item.id}" for item in registry.presets.values() if item.credential_id == identifier]
+        if kind == "model_families":
+            return [f"Preset: {item.id}" for item in registry.presets.values() if item.model_family_id == identifier] + [f"Vendor: {vendor.id} / Base URL: {url.id}" for vendor in registry.vendors.values() for url in vendor.base_urls if identifier in url.model_families]
+        return []
+
+    def credential_status(self, credential_id: str, *, today: date | None = None) -> str:
+        credential = self.registry().credentials[credential_id]
+        if credential.expires_at is None: return "未设置过期时间"
+        remaining = (date.fromisoformat(credential.expires_at) - (today or date.today())).days
+        if remaining < 0: return "已过期"
+        return "即将过期" if remaining <= 30 else "有效"
+
+    def _commit_candidate(self, kind: RegistryKind, identifier: str, document: dict[str, Any] | None, *, delete: bool) -> None:
+        with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-") as raw:
+            candidate = Path(raw) / "registry"
+            if self.user_root.exists(): shutil.copytree(self.user_root, candidate)
+            target = candidate / kind / f"{identifier}.yaml"
+            if delete:
+                target.unlink(missing_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomically(target, document or {})
+            ModelRegistry(self.builtin_root, user_root=candidate)
+            actual = self._path(kind, identifier)
+            if delete:
+                actual.unlink()
+            else:
+                actual.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomically(actual, document or {})
+
+    def _builtin_has(self, kind: RegistryKind, identifier: str) -> bool:
+        registry = ModelRegistry(self.builtin_root)
+        return identifier in getattr(registry, {"vendors": "vendors", "model_families": "model_families", "credentials": "credentials", "presets": "presets"}[kind])
+
+    def _path(self, kind: RegistryKind, identifier: str) -> Path:
+        return self.user_root / kind / f"{identifier}.yaml"
+
+    @staticmethod
+    def _identifier(document: Mapping[str, Any]) -> str:
+        value = document.get("id")
+        if not isinstance(value, str) or not value: raise ValueError("ID 不能为空。")
+        return value
+
+
+def _write_json_atomically(path: Path, value: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rendered = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name); handle.write(rendered); handle.flush(); os.fsync(handle.fileno())
+    temporary.replace(path)

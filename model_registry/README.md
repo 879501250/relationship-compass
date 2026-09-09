@@ -12,3 +12,9 @@ Registry 只有四种定义：
 Resolver 输出 `ResolvedModelRuntime`。Preset 和未来 Run 只使用语义参数，例如 Kimi 的 `max_output_tokens`；Vendor/Base URL 的 `parameter_mapping` 再将它映射到 wire 参数 `max_completion_tokens`。能力由 Model Family 默认值、具体 Model、Vendor 和 Base URL 依次合并；未知、未支持或不在允许范围内的语义参数都会失败。
 
 当一个 Vendor 的多个 Base URL 同时支持同一 Model Family 时，必须由唯一 `default_for` 决定默认值；否则调用方必须显式选择 `base_url_id`，Resolver 返回 `AMBIGUOUS_BASE_URL`，绝不依赖文件顺序。
+
+## 本地交互管理
+
+`python -m eval_console` 的“配置模型与令牌”管理用户 overlay，而不修改仓库内建定义。用户 Registry 位于 `.eval_console/model_registry/`，内置 ID 不可覆盖或删除。
+
+Credential 的 metadata 保存稳定 ID、展示名称、Vendor、可选范围/过期时间/备注；Token 本身只保存在 `.eval_console/credentials.secrets.json`。该文件使用临时文件替换写入，Unix 尽力设为 `0600`，并已被 Git 忽略和安全打包排除。它是本机敏感文件：不要提交、分享或手动导出。列表与错误只显示掩码，Token 不会写入 Registry、运行产物或日志。

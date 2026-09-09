@@ -89,6 +89,11 @@ class Credential:
     vendor_id: str
     environment_variable: str | None
     secret_reference: str | None
+    name: str | None
+    base_url_ids: tuple[str, ...]
+    expires_at: str | None
+    created_at: str | None
+    updated_at: str | None
     description: str | None
     notes: str | None
 
@@ -96,6 +101,7 @@ class Credential:
 @dataclass(frozen=True)
 class Preset:
     id: str
+    name: str | None
     vendor_id: str
     base_url_id: str
     credential_id: str
@@ -143,8 +149,14 @@ class ResolvedModelRuntime:
 class ModelRegistry:
     """Pure V1.3A registry.  No legacy profile reader or migration exists."""
 
-    def __init__(self, root: Path | str = DEFAULT_MODEL_REGISTRY_ROOT) -> None:
+    def __init__(
+        self,
+        root: Path | str = DEFAULT_MODEL_REGISTRY_ROOT,
+        *,
+        user_root: Path | str | None = None,
+    ) -> None:
         self.root = Path(root)
+        self.user_root = Path(user_root) if user_root is not None else None
         self.vendors = _freeze(self._load_vendors())
         self.model_families = _freeze(self._load_families())
         self.credentials = _freeze(self._load_credentials())
@@ -187,8 +199,19 @@ class ModelRegistry:
         for credential in self.credentials.values():
             if credential.vendor_id not in self.vendors:
                 errors.append(f"Credential '{credential.id}': unknown vendor '{credential.vendor_id}'")
+            else:
+                vendor = self.vendors[credential.vendor_id]
+                for base_url_id in credential.base_url_ids:
+                    if _endpoint(vendor, base_url_id) is None:
+                        errors.append(f"Credential '{credential.id}': vendor '{vendor.id}' has no base URL '{base_url_id}'")
             if (credential.environment_variable is None) == (credential.secret_reference is None):
                 errors.append(f"Credential '{credential.id}': specify exactly one of env or secret_ref")
+            if credential.expires_at is not None:
+                try:
+                    from datetime import date
+                    date.fromisoformat(credential.expires_at)
+                except ValueError:
+                    errors.append(f"Credential '{credential.id}': expires_at must use YYYY-MM-DD")
         for preset in self.presets.values():
             vendor = self.vendors.get(preset.vendor_id)
             credential = self.credentials.get(preset.credential_id)
@@ -307,19 +330,27 @@ class ModelRegistry:
     def _load_credentials(self) -> dict[str, Credential]:
         result: dict[str, Credential] = {}
         for path, data in self._documents("credentials"):
-            _secret_guard(data, path); _fields(data, {"id", "vendor", "env", "secret_ref", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "vendor", "env", "secret_ref", "name", "base_url_ids", "expires_at", "created_at", "updated_at", "description", "notes"}, path)
             env = _optional(data, "env", path)
             if env and not _ENV.fullmatch(env): raise RegistryValidationError(f"{path}: env must be a valid environment variable name")
             identifier = _id(data, "id", path)
-            result[identifier] = Credential(identifier, _id(data, "vendor", path), env, _optional(data, "secret_ref", path), _optional(data, "description", path), _optional(data, "notes", path))
+            base_url_ids = tuple(_id_value(value, path, "base_url_ids") for value in data.get("base_url_ids", []))
+            if len(base_url_ids) != len(set(base_url_ids)):
+                raise RegistryValidationError(f"{path}: base_url_ids must be unique")
+            result[identifier] = Credential(
+                identifier, _id(data, "vendor", path), env, _optional(data, "secret_ref", path),
+                _optional(data, "name", path), base_url_ids, _optional(data, "expires_at", path),
+                _optional(data, "created_at", path), _optional(data, "updated_at", path),
+                _optional(data, "description", path), _optional(data, "notes", path),
+            )
         return result
 
     def _load_presets(self) -> dict[str, Preset]:
         result: dict[str, Preset] = {}
         for path, data in self._documents("presets"):
-            _secret_guard(data, path); _fields(data, {"id", "vendor", "base_url", "credential", "model_family", "model", "parameters", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "name", "vendor", "base_url", "credential", "model_family", "model", "parameters", "description", "notes"}, path)
             identifier = _id(data, "id", path)
-            result[identifier] = Preset(identifier, _id(data, "vendor", path), _id(data, "base_url", path), _id(data, "credential", path), _id(data, "model_family", path), _string(data, "model", path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
+            result[identifier] = Preset(identifier, _optional(data, "name", path), _id(data, "vendor", path), _id(data, "base_url", path), _id(data, "credential", path), _id(data, "model_family", path), _string(data, "model", path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
         return result
 
     @staticmethod
@@ -335,10 +366,15 @@ class ModelRegistry:
         return VendorBaseURL(_id(data, "id", path), _string(data, "url", path), families, defaults, _optional_protocol(data, "protocol", path), _optional(data, "type", path), _optional(data, "notes", path), _capabilities(data.get("capabilities", {}), f"{path}: base URL"), _mapping(data.get("parameter_mapping", {}), f"{path}: base URL"), _object(data, "transport_defaults", path), _freeze(overrides))
 
     def _documents(self, directory: str):
-        folder = self.root / directory
-        if not folder.is_dir(): raise RegistryValidationError(f"model registry directory does not exist: {folder}")
-        paths = sorted((*folder.glob("*.yaml"), *folder.glob("*.yml")))
-        if not paths: raise RegistryValidationError(f"model registry directory is empty: {folder}")
+        folders = [self.root / directory]
+        if self.user_root is not None:
+            folders.append(self.user_root / directory)
+        if not folders[0].is_dir(): raise RegistryValidationError(f"model registry directory does not exist: {folders[0]}")
+        paths = [
+            path for folder in folders if folder.is_dir()
+            for path in sorted((*folder.glob("*.yaml"), *folder.glob("*.yml")))
+        ]
+        if not paths: raise RegistryValidationError(f"model registry directory is empty: {folders[0]}")
         identifiers: set[str] = set()
         for path in paths:
             data = _json(path); identifier = _id(data, "id", path)

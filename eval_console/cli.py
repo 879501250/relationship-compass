@@ -55,6 +55,8 @@ from .service import (
     validate_configuration,
 )
 from .test_runner import TerminalTestReporter, TestSuiteRequest, TestSuiteRunner
+from .registry_cli import manage_registry
+from .interactive import InteractiveCancel as RegistryInteractiveCancel, InteractiveEOF as RegistryInteractiveEOF
 
 
 T = TypeVar("T")
@@ -648,7 +650,7 @@ def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool 
                 ("运行行为评测", lambda: _interactive_run(evals, profiles_file, results_root, debug, resolver)),
                 ("运行自动化测试", lambda: _interactive_tests()),
                 ("检查运行环境", lambda: _interactive_validate(profiles_file, results_root, debug)),
-                ("配置 Provider", lambda: _configure_providers(profiles_file, resolver)),
+                ("配置模型与令牌", lambda: manage_registry(runner.ROOT)),
                 ("查看历史运行", lambda: _print_history(discover_runs(results_root))),
                 ("继续 / 重试历史运行", lambda: _interactive_history_stage(
                     evals, profiles_file, results_root, debug, resolver, EvalExecutionMode.RESUME
@@ -662,20 +664,20 @@ def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool 
             choice = _choose(
                 "请选择操作", [(label, (label, action)) for label, action in options]
             )
-        except InteractiveInputClosed:
+        except (InteractiveInputClosed, RegistryInteractiveEOF):
             print("\n检测到输入流已关闭，Eval Console 已安全退出。")
             return 0
-        except InteractiveInputCancelled:
+        except (InteractiveInputCancelled, RegistryInteractiveCancel):
             print("\n已取消操作，Eval Console 已退出。")
             return 0
         if choice[0] == "退出":
             return 0
         try:
             result = choice[1]()
-        except InteractiveInputClosed:
+        except (InteractiveInputClosed, RegistryInteractiveEOF):
             print("\n检测到输入流已关闭，Eval Console 已安全退出。")
             return 0
-        except InteractiveInputCancelled:
+        except (InteractiveInputCancelled, RegistryInteractiveCancel):
             print("\n操作已取消，正在返回主菜单。")
             continue
         if result not in (None, 0):

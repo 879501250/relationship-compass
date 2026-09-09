@@ -8,11 +8,12 @@ from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIPPED_DIRECTORIES = {".git", ".idea", ".pytest_cache", "__pycache__", ".work"}
+SKIPPED_DIRECTORIES = {".git", ".idea", ".pytest_cache", "__pycache__", ".work", ".eval_console"}
 SKIPPED_FILES = {
     ".DS_Store",
     ".env",
     ".env.local",
+    ".eval_console",
     "provider_profiles.local.yaml",
     "Thumbs.db",
 }
@@ -31,6 +32,7 @@ def is_forbidden_package_entry(entry_name: str) -> bool:
         or "__pycache__" in parts
         or ".work" in parts
         or ".idea" in parts
+        or ".eval_console" in parts
     )
 
 
@@ -99,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("安全打包完成")
     print(f"文件数：{len(entries)}")
-    print("已排除：.env、.env.*、provider_profiles.local.yaml、*.local.yaml、*.local.yml、.idea、.work、__pycache__、*.pyc、.DS_Store、Thumbs.db")
+    print("已排除：.env、.env.*、.eval_console、provider_profiles.local.yaml、*.local.yaml、*.local.yml、.idea、.work、__pycache__、*.pyc、.DS_Store、Thumbs.db")
     print("Secret / Local Metadata 检查：PASS")
     print(f"Unicode 文件名：PASS（{unicode_entries} 条）")
     print(f"输出：{_display_output_path(output)}")
