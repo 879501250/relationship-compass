@@ -81,6 +81,7 @@ class ModelFamily:
     context_window: int | None
     capabilities: Mapping[str, Mapping[str, Any]]
     models: Mapping[str, ModelDefinition]
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,6 +224,8 @@ class ModelRegistry:
                 errors.append(f"Preset '{preset.id}': unknown credential '{preset.credential_id}'")
             elif credential.vendor_id != vendor.id:
                 errors.append(f"Preset '{preset.id}': credential '{credential.id}' belongs to vendor '{credential.vendor_id}', but preset vendor is '{vendor.id}'")
+            elif credential.base_url_ids and preset.base_url_id not in credential.base_url_ids:
+                errors.append(f"Preset '{preset.id}': credential '{credential.id}' is not scoped to base URL '{preset.base_url_id}'")
             if family is None:
                 errors.append(f"Preset '{preset.id}': unknown model family '{preset.model_family_id}'")
                 continue
@@ -266,6 +269,8 @@ class ModelRegistry:
         if credential.vendor_id != vendor.id:
             raise RegistryResolutionError(f"credential '{credential.id}' belongs to vendor '{credential.vendor_id}', not '{vendor.id}'")
         endpoint, selection = self._select_base_url(vendor, family.id, choices["base_url_id"])
+        if credential.base_url_ids and endpoint.id not in credential.base_url_ids:
+            raise RegistryResolutionError(f"credential '{credential.id}' is not scoped to base URL '{endpoint.id}'")
         parameters = _merge(preset.parameters if preset else {}, semantic_parameters or {})
         parts = self._resolve_parts(vendor, endpoint, family, model, parameters)
         return ResolvedModelRuntime(
@@ -314,7 +319,7 @@ class ModelRegistry:
     def _load_families(self) -> dict[str, ModelFamily]:
         result: dict[str, ModelFamily] = {}
         for path, data in self._documents("model_families"):
-            _secret_guard(data, path); _fields(data, {"id", "name", "defaults", "models"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "name", "description", "defaults", "models"}, path)
             defaults = _object(data, "defaults", path); _fields(defaults, {"context_window", "capabilities"}, path, "defaults")
             models: dict[str, ModelDefinition] = {}
             for model_id, config in _object_required(data, "models", path).items():
@@ -324,7 +329,7 @@ class ModelRegistry:
                 models[model_id] = ModelDefinition(model_id, _optional(config, "api_name", path), _positive(config, "context_window", path), _capabilities(config.get("capabilities", {}), f"{path}: model '{model_id}'"))
             if not models: raise RegistryValidationError(f"{path}: models must not be empty")
             identifier = _id(data, "id", path)
-            result[identifier] = ModelFamily(identifier, _string(data, "name", path), _positive(defaults, "context_window", path), _capabilities(defaults.get("capabilities", {}), f"{path}: defaults"), _freeze(models))
+            result[identifier] = ModelFamily(identifier, _string(data, "name", path), _positive(defaults, "context_window", path), _capabilities(defaults.get("capabilities", {}), f"{path}: defaults"), _freeze(models), _optional(data, "description", path))
         return result
 
     def _load_credentials(self) -> dict[str, Credential]:
@@ -334,7 +339,7 @@ class ModelRegistry:
             env = _optional(data, "env", path)
             if env and not _ENV.fullmatch(env): raise RegistryValidationError(f"{path}: env must be a valid environment variable name")
             identifier = _id(data, "id", path)
-            base_url_ids = tuple(_id_value(value, path, "base_url_ids") for value in data.get("base_url_ids", []))
+            base_url_ids = tuple(_entity_id_value(value, path, "base_url_ids") for value in data.get("base_url_ids", []))
             if len(base_url_ids) != len(set(base_url_ids)):
                 raise RegistryValidationError(f"{path}: base_url_ids must be unique")
             result[identifier] = Credential(
@@ -468,6 +473,12 @@ def _id(data: Mapping[str, Any], field: str, path: Path) -> str:
 
 def _id_value(value: Any, path: Path, field: str) -> str:
     if not isinstance(value, str) or not _ID.fullmatch(value): raise RegistryValidationError(f"{path}: '{field}' entries must be lowercase identifiers")
+    return value
+
+
+def _entity_id_value(value: Any, path: Path, field: str) -> str:
+    if not isinstance(value, str) or not _ENTITY_ID.fullmatch(value):
+        raise RegistryValidationError(f"{path}: '{field}' entries must be lowercase identifiers")
     return value
 
 

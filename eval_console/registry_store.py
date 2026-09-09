@@ -35,11 +35,25 @@ class RegistryStore:
         if target.exists(): raise ValueError(f"{identifier} 已存在。")
         self._commit_candidate(kind, identifier, dict(document), delete=False)
 
+    def validate_create(self, kind: RegistryKind, document: Mapping[str, Any]) -> None:
+        """Validate a create operation without writing the user overlay."""
+        identifier = self._identifier(document)
+        if self._builtin_has(kind, identifier):
+            raise ValueError("内置定义不可直接覆盖；请使用新的 ID 创建用户定义。")
+        if self._path(kind, identifier).exists(): raise ValueError(f"{identifier} 已存在。")
+        self._validate_candidate(kind, identifier, dict(document), delete=False)
+
     def update(self, kind: RegistryKind, identifier: str, document: Mapping[str, Any]) -> None:
         if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接修改。")
         if self._identifier(document) != identifier: raise ValueError("对象 ID 创建后不可修改。")
         if not self._path(kind, identifier).is_file(): raise ValueError(f"未找到用户定义：{identifier}")
         self._commit_candidate(kind, identifier, dict(document), delete=False)
+
+    def validate_update(self, kind: RegistryKind, identifier: str, document: Mapping[str, Any]) -> None:
+        if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接修改。")
+        if self._identifier(document) != identifier: raise ValueError("对象 ID 创建后不可修改。")
+        if not self._path(kind, identifier).is_file(): raise ValueError(f"未找到用户定义：{identifier}")
+        self._validate_candidate(kind, identifier, dict(document), delete=False)
 
     def delete(self, kind: RegistryKind, identifier: str) -> None:
         if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接删除。")
@@ -48,6 +62,13 @@ class RegistryStore:
         references = self.references(kind, identifier)
         if references: raise ValueError("该对象仍被引用：\n" + "\n".join(f"- {item}" for item in references))
         self._commit_candidate(kind, identifier, None, delete=True)
+
+    def validate_delete(self, kind: RegistryKind, identifier: str) -> None:
+        if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接删除。")
+        if not self._path(kind, identifier).is_file(): raise ValueError(f"未找到用户定义：{identifier}")
+        references = self.references(kind, identifier)
+        if references: raise ValueError("该对象仍被引用：\n" + "\n".join(f"- {item}" for item in references))
+        self._validate_candidate(kind, identifier, None, delete=True)
 
     def references(self, kind: RegistryKind, identifier: str) -> list[str]:
         registry = self.registry()
@@ -66,7 +87,28 @@ class RegistryStore:
         if remaining < 0: return "已过期"
         return "即将过期" if remaining <= 30 else "有效"
 
+    def read_user_document(self, kind: RegistryKind, identifier: str) -> dict[str, Any]:
+        """Return a mutable metadata document without exposing built-in entries."""
+        if self._builtin_has(kind, identifier): raise ValueError("内置定义不可直接修改。")
+        path = self._path(kind, identifier)
+        if not path.is_file(): raise ValueError(f"未找到用户定义：{identifier}")
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("用户 Registry 文档无法读取。") from error
+        if not isinstance(value, dict): raise ValueError("用户 Registry 文档格式无效。")
+        return deepcopy(value)
+
     def _commit_candidate(self, kind: RegistryKind, identifier: str, document: dict[str, Any] | None, *, delete: bool) -> None:
+        self._validate_candidate(kind, identifier, document, delete=delete)
+        actual = self._path(kind, identifier)
+        if delete:
+            actual.unlink()
+        else:
+            actual.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomically(actual, document or {})
+
+    def _validate_candidate(self, kind: RegistryKind, identifier: str, document: dict[str, Any] | None, *, delete: bool) -> None:
         with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-") as raw:
             candidate = Path(raw) / "registry"
             if self.user_root.exists(): shutil.copytree(self.user_root, candidate)
@@ -77,12 +119,6 @@ class RegistryStore:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _write_json_atomically(target, document or {})
             ModelRegistry(self.builtin_root, user_root=candidate)
-            actual = self._path(kind, identifier)
-            if delete:
-                actual.unlink()
-            else:
-                actual.parent.mkdir(parents=True, exist_ok=True)
-                _write_json_atomically(actual, document or {})
 
     def _builtin_has(self, kind: RegistryKind, identifier: str) -> bool:
         registry = ModelRegistry(self.builtin_root)

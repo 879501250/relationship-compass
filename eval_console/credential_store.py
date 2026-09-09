@@ -25,6 +25,9 @@ class CredentialSecretStore(ABC):
     @abstractmethod
     def exists(self, credential_id: str) -> bool: ...
 
+    @abstractmethod
+    def list_ids(self) -> set[str]: ...
+
 
 class LocalFileCredentialSecretStore(CredentialSecretStore):
     """Atomically stores local tokens without pretending to encrypt them."""
@@ -52,6 +55,9 @@ class LocalFileCredentialSecretStore(CredentialSecretStore):
 
     def exists(self, credential_id: str) -> bool:
         return self.get(credential_id) is not None
+
+    def list_ids(self) -> set[str]:
+        return set(self._read())
 
     def _read(self) -> dict[str, dict[str, str]]:
         if not self.path.is_file():
