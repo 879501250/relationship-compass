@@ -185,7 +185,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
                 allow_dirty_debug=True,
                 run_id="selected-subset",
             )
-            validate_request(request)
+            validate_request(request, allow_test_providers=True)
             target = RecordingProvider(["answer 1", "answer 2", "answer 3"])
             judge = RecordingProvider()
             outcome = execute_request(
@@ -217,7 +217,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
                     "phase",
                     "provider",
                     "model",
-                    "judge_profile",
+                    "judge_preset_id",
                     "duration_seconds",
                 }.issubset(log_records[0])
             )

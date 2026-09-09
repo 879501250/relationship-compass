@@ -938,7 +938,7 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(resumed_execution["actual_api_calls"], {"target": 0, "judge": 1})
             self.assertTrue(resumed_execution["api_call_plan_match"])
 
-    def test_cli_resume_inherits_saved_profiles_and_rejects_explicit_mismatch(self) -> None:
+    def test_cli_resume_rejects_legacy_profile_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(1)
@@ -947,46 +947,9 @@ class StageDecouplingTests(unittest.TestCase):
             args = build_parser().parse_args(["resume", "--from-run", str(source.run_dir)])
             args.source_run = source.run_dir
             args.execution_mode = "resume"
-            request = _resume_request_with_inherited_configuration(
-                _request_from_args(args, source.metadata["console"]["eval_id"], list(case_ids)),
-                metadata,
-            )
-            self.assertEqual(request.target_profile, "fake")
-            self.assertEqual(request.judge_profile, "fake")
-            self.assertEqual(request.resume_target_model, "stage-test-model")
-            self.assertEqual(request.resume_judge_model, "stage-test-model")
-            plan = plan_stage_execution(source.run_dir, case_ids, EvalExecutionMode.RESUME)
-            self.assertEqual(plan.target_cases, ())
-            self.assertEqual(plan.judge_cases, case_ids)
-
-            same_args = build_parser().parse_args(
-                [
-                    "resume", "--from-run", str(source.run_dir),
-                    "--target-profile", "fake", "--judge-profile", "fake",
-                    "--target-model", "stage-test-model", "--judge-model", "stage-test-model",
-                ]
-            )
-            same_args.source_run = source.run_dir
-            same_args.execution_mode = "resume"
-            _resume_request_with_inherited_configuration(
-                _request_from_args(
-                    same_args, source.metadata["console"]["eval_id"], list(case_ids)
-                ),
-                metadata,
-            )
-
-            mismatch_args = build_parser().parse_args(
-                ["resume", "--from-run", str(source.run_dir), "--judge-profile", "judge-b"]
-            )
-            mismatch_args.source_run = source.run_dir
-            mismatch_args.execution_mode = "resume"
-            with self.assertRaisesRegex(EvalConsoleError, "Resume configuration mismatch"):
-                _resume_request_with_inherited_configuration(
-                    _request_from_args(
-                        mismatch_args, source.metadata["console"]["eval_id"], list(case_ids)
-                    ),
-                    metadata,
-                )
+            request = _request_from_args(args, source.metadata["console"]["eval_id"], list(case_ids))
+            with self.assertRaisesRegex(EvalConsoleError, "旧 Provider Profile schema"):
+                _resume_request_with_inherited_configuration(request, metadata)
 
     def test_resume_concurrency_defaults_use_the_latest_execution_for_each_stage(self) -> None:
         metadata: dict[str, object] = {
@@ -1035,37 +998,17 @@ class StageDecouplingTests(unittest.TestCase):
         self.assertIn("Telemetry Coverage: 3/4", rendered)
         self.assertNotIn("Logical Calls: 3", rendered)
 
-    def test_resume_preflight_rejects_missing_or_changed_original_provider(self) -> None:
+    def test_legacy_profile_resume_is_rejected_before_provider_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(1)
             source = self.full_with_judge_error(root, case_ids, run_id="resume-provider-check")
             metadata = runner.load_json_object(source.run_dir / "run.json")
-            request = _resume_request_with_inherited_configuration(
-                self.request(root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir),
-                metadata,
-            )
-            missing_profiles = root / "missing-profiles.json"
-            missing_profiles.write_text('{"profiles": {}}', encoding="utf-8")
-            with self.assertRaisesRegex(EvalConsoleError, "原 Judge Provider Profile 不存在"):
-                preflight_request(replace(request, profiles_file=missing_profiles))
+            request = self.request(root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir)
+            with self.assertRaisesRegex(EvalConsoleError, "旧 Provider Profile schema"):
+                _resume_request_with_inherited_configuration(request, metadata)
 
-            with mock.patch(
-                "eval_console.service._create_profile_provider", return_value=StageProvider()
-            ):
-                _, judge, _, judge_plan = preflight_request(request)
-            self.assertIsNotNone(judge)
-            self.assertTrue(judge_plan["enabled"])
-
-            changed = StageProvider()
-            changed.model = "changed-judge-model"
-            with mock.patch(
-                "eval_console.service._create_profile_provider", return_value=changed
-            ):
-                with self.assertRaisesRegex(EvalConsoleError, "Resume configuration mismatch"):
-                    preflight_request(request)
-
-    def test_interactive_resume_reuses_saved_profiles_without_profile_picker(self) -> None:
+    def test_legacy_profile_interactive_resume_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             case_ids = self.case_ids(1)
@@ -1073,32 +1016,10 @@ class StageDecouplingTests(unittest.TestCase):
             history = discover_runs(root / "results")
             self.assertEqual(len(history), 1)
             self.assertIsInstance(history[0], HistoricalRun)
-            output = io.StringIO()
-            with redirect_stdout(output), mock.patch(
-                "eval_console.cli._choose",
-                side_effect=[history[0], "auto", True, "start"],
-            ), mock.patch(
-                "eval_console.cli._yes_no", return_value=False
-            ), mock.patch(
-                "builtins.input", return_value=""
-            ), mock.patch(
-                "eval_console.cli._interactive_profile",
-                side_effect=AssertionError("Resume must not open the Provider picker"),
-            ), mock.patch("eval_console.cli._execute_and_print", return_value=0) as execute:
-                result = _interactive_history_stage(
-                    discover_evals(),
-                    self.write_profiles(root),
-                    root / "results",
-                    False,
-                    object(),
-                    EvalExecutionMode.RESUME,
-                )
-            self.assertEqual(result, 0)
-            self.assertIn("运行确认", output.getvalue())
-            request = execute.call_args.args[0]
-            self.assertEqual(request.target_profile, "fake")
-            self.assertEqual(request.judge_profile, "fake")
-            self.assertEqual(request.resume_judge_model, "stage-test-model")
+            metadata = runner.load_json_object(source.run_dir / "run.json")
+            request = self.request(root, case_ids, mode=EvalExecutionMode.RESUME, source=source.run_dir)
+            with self.assertRaisesRegex(EvalConsoleError, "旧 Provider Profile schema"):
+                _resume_request_with_inherited_configuration(request, metadata)
 
     def test_resume_selected_judge_error_does_not_mutate_unselected_case(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1191,21 +1112,22 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(judge.judge_calls, 13)
             self.assertEqual(outcome.api_calls, {"target": 0, "judge": 13})
 
-    def test_cli_maps_stage_mode_source_and_selector_without_breaking_full_default(self) -> None:
+    def test_cli_maps_registry_stage_mode_source_and_selector(self) -> None:
         definition = discover_evals()[0]
         args = build_parser().parse_args(
             [
                 "run", definition.eval_id, "--mode", "judge-only", "--source-run", "C:/tmp/source",
-                "--judge-profile", "fake", "--judge-selector", "judge-error-or-missing",
+                "--judge-preset", "kimi-official", "--judge-selector", "judge-error-or-missing",
             ]
         )
         request = _request_from_args(args, definition.eval_id, [definition.cases[0].case_id])
         self.assertEqual(request.mode, EvalExecutionMode.JUDGE_ONLY)
         self.assertEqual(request.judge_selector, JudgeCaseSelector.JUDGE_ERROR_OR_MISSING)
-        self.assertEqual(request.target_profile, None)
-        self.assertEqual(request.judge_profile, "fake")
+        self.assertEqual(request.target_preset_id, None)
+        self.assertEqual(request.judge_preset_id, "kimi-official")
         default_args = build_parser().parse_args(["run", definition.eval_id, "--profile", "fake"])
-        self.assertEqual(_request_from_args(default_args, definition.eval_id, [definition.cases[0].case_id]).mode, EvalExecutionMode.FULL)
+        with self.assertRaisesRegex(EvalConsoleError, "Model Registry"):
+            _request_from_args(default_args, definition.eval_id, [definition.cases[0].case_id])
         resume_args = build_parser().parse_args(["resume", "--from-run", "C:/tmp/source"])
         self.assertEqual(resume_args.command, "resume")
         stderr = io.StringIO()

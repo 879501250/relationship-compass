@@ -621,7 +621,7 @@ class InteractiveRequestTests(unittest.TestCase):
         with self.assertRaisesRegex(CaseSelectionError, "起始编号不能大于结束编号"):
             parse_case_selection("4-2", ("RC-001", "RC-002", "RC-003", "RC-004"))
 
-    def test_existing_non_interactive_cli_arguments_remain_supported(self) -> None:
+    def test_legacy_non_interactive_profile_arguments_are_rejected(self) -> None:
         args = build_parser().parse_args(
             [
                 "run",
@@ -640,15 +640,12 @@ class InteractiveRequestTests(unittest.TestCase):
             ]
         )
         definition = discover_evals()[0]
-        request = _request_from_args(
-            args,
-            definition.eval_id,
-            [definition.cases[0].case_id, definition.cases[2].case_id, definition.cases[4].case_id],
-        )
-        self.assertTrue(request.dry_run)
-        self.assertEqual(request.target_concurrency, 1)
-        self.assertEqual(request.judge_concurrency, 1)
-        self.assertTrue(request.continue_on_error)
+        with self.assertRaisesRegex(console_cli.EvalConsoleError, "Model Registry"):
+            _request_from_args(
+                args,
+                definition.eval_id,
+                [definition.cases[0].case_id, definition.cases[2].case_id, definition.cases[4].case_id],
+            )
 
 
 class InteractiveInputRobustnessTests(unittest.TestCase):
@@ -1065,7 +1062,7 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                 self.assertIn(expected, rendered)
             self.assertNotIn("secret-value", rendered)
 
-    def test_interactive_environment_check_renders_role_configs_without_secret(self) -> None:
+    def test_interactive_environment_check_uses_registry_without_secret(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(
             os.environ, {"MOONSHOT_JUDGE_MODEL": "kimi-k2.6"}, clear=True
         ):
@@ -1108,34 +1105,12 @@ class InteractiveInputRobustnessTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            resolver = SecretResolver(root / ".env.local")
-            resolver.set_session("TARGET_READY_KEY", "target-secret")
-            resolver.set_session("MOONSHOT_API_KEY", "moonshot-secret")
             output = io.StringIO()
-            with mock.patch("eval_console.cli.SecretResolver", return_value=resolver), mock.patch(
-                "sys.stdout", output
-            ):
+            with mock.patch("sys.stdout", output):
                 self.assertEqual(console_cli._interactive_validate(profiles_file, root / "results", False), 0)
             rendered = output.getvalue()
-            for expected in (
-                "可用 Target Profiles",
-                "[可用] target-ready",
-                "[缺少模型 / API Key] target-missing",
-                "Profile=target-ready",
-                "Model=target-model",
-                "API Base URL=https://target.example/v1",
-                "可用 Judge Profiles",
-                "reference-judge-kimi-official",
-                "Model=kimi-k2.6",
-                "Structured Output=json_object",
-                "Thinking=disabled",
-                "Max Output Tokens=4096",
-                "Token Parameter=max_completion_tokens",
-                "Max Retries=2",
-            ):
+            for expected in ("Model Registry", "Preset", "本地令牌"):
                 self.assertIn(expected, rendered)
-            self.assertNotIn("target-secret", rendered)
-            self.assertNotIn("moonshot-secret", rendered)
 
 
 if __name__ == "__main__":
