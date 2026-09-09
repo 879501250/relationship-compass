@@ -14,6 +14,9 @@ from eval_console.registry_runtime import (
     RegistryRuntimeError,
     RegistryRuntimeResolver,
     ResolvedRegistryRuntime,
+    runtime_audit_snapshot,
+    runtime_identity_snapshot,
+    sanitize_url,
 )
 
 
@@ -58,6 +61,24 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
 
     def test_unsupported_protocol_fails_closed(self) -> None:
         runtime = mock.Mock(protocol="anthropic_messages", preset_id="unsupported")
-        binding = ResolvedRegistryRuntime(runtime, "token", "environment", {}, "hash")
+        binding = ResolvedRegistryRuntime(runtime, "token", "environment", {}, {}, "hash")
         with self.assertRaisesRegex(RegistryRuntimeError, "尚不支持"):
             RegistryProviderFactory.create(binding, role="target")
+
+    def test_identity_covers_capabilities_but_not_credential_source(self) -> None:
+        registry = ModelRegistry()
+        runtime = registry.resolve(preset_id="kimi-official")
+        identity = runtime_identity_snapshot(runtime)
+        audit = runtime_audit_snapshot(runtime, credential_source="environment")
+        self.assertIn("resolved_capabilities", identity)
+        self.assertNotIn("credential_source", identity)
+        self.assertEqual(audit["credential_source"], "environment")
+        modified = dict(identity)
+        modified["resolved_capabilities"] = {"thinking": {"supported": False}}
+        self.assertNotEqual(str(identity), str(modified))
+
+    def test_url_sanitization_removes_credentials_query_and_fragment(self) -> None:
+        self.assertEqual(
+            sanitize_url("https://user:pass@example.test/v1?api_key=secret#part"),
+            "https://example.test/v1",
+        )

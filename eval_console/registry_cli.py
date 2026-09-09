@@ -16,9 +16,12 @@ from .registry_store import RegistryStore
 DraftStep = Callable[[dict[str, Any]], None]
 
 
-def manage_registry(root: Path) -> int:
-    store = RegistryStore(root / ".eval_console" / "model_registry")
-    secrets = LocalFileCredentialSecretStore(root / ".eval_console" / "credentials.secrets.json")
+def manage_registry(
+    root: Path, *, registry_root: Path | None = None, credential_store_path: Path | None = None
+) -> int:
+    """Manage exactly the Registry/secret paths selected by the Console context."""
+    store = RegistryStore(registry_root or root / ".eval_console" / "model_registry")
+    secrets = LocalFileCredentialSecretStore(credential_store_path or root / ".eval_console" / "credentials.secrets.json")
     service = CredentialService(store, secrets)
     reader = InteractiveReader()
     try:

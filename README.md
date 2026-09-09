@@ -233,15 +233,15 @@ python scripts/run_model_evals.py validate
 python -m eval_console
 ```
 
-首次启动时，评测控制台会检查 Eval、结果目录和本地 Provider 配置。缺少 `model_evals/provider_profiles.local.yaml` 时，可以直接按照中文首次配置向导创建；不需要手工复制文件或编辑 YAML。之后可从菜单完成：运行自动化测试、配置 Target / Judge、选择 Case、Dry Run（不调用真实 API）或真实 API 运行。
+首次启动时，评测控制台会检查 Eval、结果目录、Model Registry、Credential 与 Preset。普通用户不需要创建 `provider_profiles.local.yaml`：在“配置模型与令牌”中维护本地 Registry overlay 和令牌，然后为 Target/Judge 选择 Preset。
 
-API key 输入始终隐藏。可选「仅本次 Console session 使用」或保存到 Git 忽略的 `.env.local`。密钥不写入 provider profile、运行日志、结果、summary 或 ZIP 包。
+Token 不写入 Registry、运行日志、结果、summary 或 ZIP 包；可从环境变量或 Git 忽略的 `.eval_console/credentials.secrets.json` 本地存储解析。
 
 推荐交互路径：
 
 ```text
 1. 启动评测控制台。
-2. 按首次配置向导配置 Target、Judge 与 API Key。
+2. 在“配置模型与令牌”中配置 Credential 与 Preset。
 3. 运行自动化测试。
 4. 使用 Dry Run 检查配置。
 5. 确认后执行真实 API 运行。
@@ -270,7 +270,7 @@ API key 输入始终隐藏。可选「仅本次 Console session 使用」或保�
 
 ```text
 python -m eval_console history
-python -m eval_console rerun-failed --from-run model_evals/results/v<version>/api_canonical/<run-id> --mode failed-and-errors --target-profile <target-profile> --judge-profile <judge-profile>
+python -m eval_console resume --from-run model_evals/results/v<version>/api_canonical/<run-id>
 ```
 
 #### 自动化测试
@@ -300,19 +300,20 @@ python scripts/package_skill.py --output .work/relationship-compass.zip
 ```text
 python -m eval_console interactive
 python -m eval_console validate
-python -m eval_console validate --target-profile <target-profile> --judge-profile <judge-profile>
+python -m eval_console validate --target-preset <target-preset> --judge-preset <judge-preset>
 ```
 
-不带 profile 的 `validate` 校验 eval、profile 文件结构和结果目录可写性；同时传入 Target/Judge profile 时还会离线 preflight 配置、模型与所需环境变量，不会发起 API 请求。当前仓库的 runner-backed eval ID 由 `model_evals/cases.yaml` 自动派生为 `model-evals-cases`：
+`validate` 校验 eval、Registry、Preset readiness、令牌状态与结果目录；同时传入 Target/Judge Preset 时会离线 preflight，不会发起 API 请求。当前仓库的 runner-backed eval ID 由 `model_evals/cases.yaml` 自动派生为 `model-evals-cases`：
 
 ```text
-python -m eval_console run model-evals-cases --cases all --profile <configured-profile> --dry-run
-python -m eval_console run model-evals-cases --case model-realtime-one-best --profile <configured-profile> --dry-run
-python -m eval_console run model-evals-cases --cases model-realtime-one-best,model-serious-disclosure --profile <configured-profile> --dry-run
-python -m eval_console run model-evals-cases --cases 1,3,5-10 --target-profile <target-profile> --judge-profile <judge-profile>
+python -m eval_console run model-evals-cases --cases all --target-preset kimi-official --judge-preset kimi-official --dry-run
+python -m eval_console run model-evals-cases --case model-realtime-one-best --target-preset kimi-official --judge-preset kimi-official --dry-run
+python -m eval_console run model-evals-cases --mode target-only --cases 1,3,5-10 --target-preset kimi-official --dry-run
 ```
 
 `--dry-run` 会加载 definition、解析 selector、校验 provider/judge、解析 output path 并显示预期 API 调用数，但不会调用 API。`--debug` 才输出 traceback；正常模式只给可执行的错误提示。原 runner 对正式 API run 的 clean-worktree gate 保持有效；需要在脏工作区调试时，显式传 `--allow-dirty-debug`，该 run 不能作为 formal reference。
+
+`--profile`、`--target-profile` 与 `--judge-profile` 仅保留在底层 `scripts/run_model_evals.py` 的 Legacy / developer 接口中；Eval Console 新运行会明确拒绝它们。
 
 如需生成可移植 ZIP 包（包含中文路径），使用：
 

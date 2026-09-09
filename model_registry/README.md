@@ -11,6 +11,8 @@ Registry 只有四种定义：
 
 Resolver 输出 `ResolvedModelRuntime`。Preset 和未来 Run 只使用语义参数，例如 Kimi 的 `max_output_tokens`；Vendor/Base URL 的 `parameter_mapping` 再将它映射到 wire 参数 `max_completion_tokens`。能力由 Model Family 默认值、具体 Model、Vendor 和 Base URL 依次合并；未知、未支持或不在允许范围内的语义参数都会失败。
 
+Eval Console 以 Preset 作为新运行的唯一配置来源。它将 Runtime Identity Snapshot（模型、端点、协议、参数、capabilities、transport defaults、credential ID）计算为 hash，用于 Resume；Runtime Audit Snapshot 则额外记录 preset、credential source 和可展示 provenance。两种快照都不包含 Token，端点会移除用户名、密码、query 与 fragment。
+
 当一个 Vendor 的多个 Base URL 同时支持同一 Model Family 时，必须由唯一 `default_for` 决定默认值；否则调用方必须显式选择 `base_url_id`，Resolver 返回 `AMBIGUOUS_BASE_URL`，绝不依赖文件顺序。
 
 ## 本地交互管理

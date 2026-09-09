@@ -417,8 +417,8 @@ def _add_run_arguments(
     parser.add_argument("--judge-preset", help="Registry 中用于 Judge 的 Preset ID")
     parser.add_argument("--registry-root", type=Path, help="用户 Registry overlay 目录")
     parser.add_argument("--credential-store", type=Path, help="本地 Registry 令牌存储路径")
-    # Kept hidden solely so historic artifacts and in-repo V1.2 fixtures can
-    # be inspected.  V1.3C help and interactive flows expose Presets only.
+    # Parse these only to issue a deterministic migration error; they never
+    # reach the Console service or create a Run.
     parser.add_argument("--profile", help=argparse.SUPPRESS)
     parser.add_argument("--target-profile", help=argparse.SUPPRESS)
     parser.add_argument("--judge-profile", help=argparse.SUPPRESS)
@@ -503,24 +503,7 @@ def _resume_request_with_inherited_configuration(
     console = metadata["console"]
     assert isinstance(console, dict)
     if "target_preset_id" not in console and "judge_preset_id" not in console:
-        expected_legacy = {
-            "Target": (console.get("target_profile"), console.get("target_model"), request.target_profile, request.target_model_override),
-            "Judge": (console.get("judge_profile"), console.get("judge_model"), request.judge_profile, request.judge_model_override),
-        }
-        profiles: dict[str, str | None] = {}
-        models: dict[str, str | None] = {}
-        for role, (profile, model, supplied_profile, supplied_model) in expected_legacy.items():
-            saved_profile = profile if isinstance(profile, str) else None
-            saved_model = model if isinstance(model, str) else None
-            if supplied_profile is not None and supplied_profile != saved_profile:
-                raise EvalConsoleError(f"Resume configuration mismatch: 原 {role} Profile：{saved_profile or '未记录'}；当前指定：{supplied_profile}。")
-            if supplied_model is not None and supplied_model != saved_model:
-                raise EvalConsoleError(f"Resume configuration mismatch: 原 {role} Model：{saved_model or '未记录'}；当前指定：{supplied_model}。")
-            profiles[role], models[role] = saved_profile, saved_model
-        return replace(
-            request, target_profile=profiles["Target"], judge_profile=profiles["Judge"],
-            resume_target_model=models["Target"], resume_judge_model=models["Judge"],
-        )
+        raise EvalConsoleError("该运行使用旧 Provider Profile schema，当前版本仅支持读取，无法安全 Resume。")
     expected = {
         "Target": (console.get("target_preset_id"), request.target_preset_id),
         "Judge": (console.get("judge_preset_id"), request.judge_preset_id),
@@ -591,7 +574,11 @@ def _latest_stage_concurrency(
 
 
 def _command_validate(args: argparse.Namespace) -> int:
-    report = validate_configuration(runner.DEFAULT_PROVIDER_PROFILES, args.results_root.expanduser().resolve())
+    report = validate_configuration(
+        args.results_root.expanduser().resolve(),
+        registry_root=(getattr(args, "registry_root", None).expanduser().resolve() if getattr(args, "registry_root", None) else None),
+        credential_store_path=(getattr(args, "credential_store", None).expanduser().resolve() if getattr(args, "credential_store", None) else None),
+    )
     print("\n运行环境检查")
     for check in report.checks:
         print(f"  [通过] {check}")
@@ -601,10 +588,6 @@ def _command_validate(args: argparse.Namespace) -> int:
         print(f"  [错误] {error}")
     target_preset = getattr(args, "target_preset", None)
     judge_preset = getattr(args, "judge_preset", None)
-    if not target_preset and not judge_preset and hasattr(args, "profiles_file"):
-        resolver = SecretResolver(runner.ROOT / ".env.local")
-        resolver.prepare_environment()
-        _print_provider_configuration(args.profiles_file.expanduser().resolve(), resolver)
     if target_preset or judge_preset:
         if not target_preset or not judge_preset:
             raise EvalConsoleError("Registry 预检查需要同时提供 --target-preset 和 --judge-preset。")
@@ -675,31 +658,15 @@ def registry_interactive_console(
             if choice == "tests":
                 _interactive_tests(); continue
             if choice == "registry":
-                manage_registry(runner.ROOT); continue
+                manage_registry(runner.ROOT, registry_root=registry_root, credential_store_path=credential_store_path); continue
             if choice == "history":
                 _print_history(discover_runs(results_root)); continue
             if choice == "validate":
-                report = validate_configuration(runner.DEFAULT_PROVIDER_PROFILES, results_root)
+                report = validate_configuration(results_root, registry_root=registry_root, credential_store_path=credential_store_path)
                 for item in (*report.checks, *report.warnings, *report.errors):
                     print(f"  {item}")
                 continue
-            definition = _choose("选择 Eval", [(f"{item.eval_id}：{item.title}", item) for item in evals])
-            target = _choose_registry_preset(resolver, "Target")
-            judge = _choose_registry_preset(resolver, "Judge")
-            request = EvalRunRequest(
-                eval_id=definition.eval_id,
-                case_ids=tuple(case.case_id for case in definition.cases),
-                target_profile=None,
-                judge_profile=None,
-                profiles_file=runner.DEFAULT_PROVIDER_PROFILES,
-                results_root=results_root,
-                debug=debug,
-                target_preset_id=target,
-                judge_preset_id=judge,
-                registry_root=registry_root,
-                credential_store_path=credential_store_path,
-            )
-            _execute_and_print(request)
+            _registry_interactive_run(evals, resolver, results_root, debug, registry_root, credential_store_path)
         except (InteractiveInputClosed, InteractiveInputCancelled):
             print("输入已结束，已安全退出控制台。")
             return 0
@@ -708,16 +675,74 @@ def registry_interactive_console(
 def _choose_registry_preset(resolver: RegistryRuntimeResolver, role: str) -> str:
     choices: list[tuple[str, str]] = []
     for preset_id, preset in sorted(resolver.registry.presets.items()):
-        try:
-            binding = resolver.resolve_preset(preset_id)
-            availability = "可用"
-            del binding
-        except ValueError as error:
-            availability = f"不可用：{error}"
+        readiness = resolver.assess_preset_readiness(preset_id)
+        availability = "可用" if readiness.runnable else f"不可运行：{readiness.blocking_errors[0]}"
         choices.append((f"{preset_id}（{preset.model_id}，{availability}）", preset_id))
     if not choices:
         raise EvalConsoleError("Registry 中尚无 Preset；请先在“配置模型与令牌”中创建。")
     return _choose(f"选择 {role} Preset", choices)
+
+
+def _registry_interactive_run(
+    evals: list[EvalDefinition], resolver: RegistryRuntimeResolver, results_root: Path,
+    debug: bool, registry_root: Path | None, credential_store_path: Path | None,
+) -> int:
+    selected = _choose("选择运行方式", [
+        ("Full Run", EvalExecutionMode.FULL), ("Target Only", EvalExecutionMode.TARGET_ONLY),
+        ("Judge Only", EvalExecutionMode.JUDGE_ONLY), ("Resume Existing Run", EvalExecutionMode.RESUME), ("返回", None),
+    ])
+    if selected is None:
+        return 0
+    source_run: Path | None = None
+    if selected in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME}:
+        runs = discover_runs(results_root)
+        if not runs:
+            raise EvalConsoleError("没有可用的历史 Run。")
+        historical = _choose("选择历史 Run", [(_run_label(item), item) for item in runs])
+        source_run = historical.run_dir
+        metadata = runner.load_json_object(source_run / "run.json")
+        console = metadata.get("console") if isinstance(metadata.get("console"), dict) else {}
+        if selected is EvalExecutionMode.RESUME and not isinstance(console.get("registry_runtime"), dict):
+            raise EvalConsoleError("该运行使用旧 Provider Profile schema，当前版本仅支持读取，无法安全 Resume。")
+        eval_id = console.get("eval_id")
+        definition = find_eval(eval_id) if isinstance(eval_id, str) else evals[0]
+        case_ids = [record["case_id"] for record in metadata.get("cases", []) if isinstance(record, dict) and isinstance(record.get("case_id"), str)]
+    else:
+        definition = _choose("选择 Eval", [(f"{item.eval_id}：{item.title}", item) for item in evals])
+        case_ids = _interactive_case_selection(definition, results_root)
+    target = _choose_registry_preset(resolver, "Target") if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
+    judge = _choose_registry_preset(resolver, "Judge") if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None
+    if selected is EvalExecutionMode.RESUME:
+        metadata = runner.load_json_object(source_run / "run.json")
+        console = metadata["console"]
+        assert isinstance(console, dict)
+        target = console.get("target_preset_id") if isinstance(console.get("target_preset_id"), str) else None
+        judge = console.get("judge_preset_id") if isinstance(console.get("judge_preset_id"), str) else None
+    target_concurrency = _interactive_concurrency("Target") if target else 1
+    judge_concurrency = _interactive_concurrency("Judge") if judge else 1
+    continue_on_error = _yes_no("遇到错误后继续其他 Case？", default=True)
+    dry_run = _choose("执行方式", [("Dry Run：不会调用真实模型 API", True), ("Real Run：调用真实模型 API", False)])
+    request = EvalRunRequest(
+        eval_id=definition.eval_id, case_ids=tuple(case_ids), target_profile=None, judge_profile=None,
+        profiles_file=runner.DEFAULT_PROVIDER_PROFILES, results_root=results_root, dry_run=dry_run, debug=debug,
+        target_concurrency=target_concurrency, judge_concurrency=judge_concurrency, continue_on_error=continue_on_error,
+        mode=selected, source_run_dir=source_run, target_preset_id=target, judge_preset_id=judge,
+        registry_root=registry_root, credential_store_path=credential_store_path,
+    )
+    target_provider, judge_provider, target_plan, judge_plan = preflight_request(request)
+    _print_registry_preflight_summary(request, target_plan, judge_plan)
+    if not dry_run and not _yes_no("确认开始真实 API 调用？", default=False):
+        print("已取消，未调用真实模型 API。")
+        return 0
+    return _execute_and_print(request, preflight=(target_provider, judge_provider, target_plan, judge_plan))
+
+
+def _print_registry_preflight_summary(request: EvalRunRequest, target: dict[str, object], judge: dict[str, object]) -> None:
+    print("\n运行前摘要")
+    print(f"  Mode：{request.mode.value}；Eval：{request.eval_id}；Cases：{len(request.case_ids)}；continue-on-error：{request.continue_on_error}")
+    _print_stage_preflight("Target", target)
+    _print_stage_preflight("Judge", judge)
+    print(f"  预计请求：Target {target.get('api_calls', 0)}，Judge {judge.get('api_calls', 0)}，总计 {int(target.get('api_calls', 0)) + int(judge.get('api_calls', 0))}")
 
 
 def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool = False) -> int:
@@ -1812,8 +1837,12 @@ def _interactive_profile(profiles_file: Path, role: str) -> ProviderProfile:
     return _choose(label, [(_profile_label(profile, role), profile) for profile in profiles])
 
 
-def _execute_and_print(request: EvalRunRequest) -> int:
-    target, judge, target_plan, judge_plan = preflight_request(request)
+def _execute_and_print(
+    request: EvalRunRequest,
+    *,
+    preflight: tuple[object | None, object | None, dict[str, object], dict[str, object]] | None = None,
+) -> int:
+    target, judge, target_plan, judge_plan = preflight or preflight_request(request)
     print("\n运行前检查")
     _print_stage_preflight("Target", target_plan)
     _print_stage_preflight("Judge", judge_plan)
@@ -1869,20 +1898,20 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
     mode = _execution_mode_from_args(args)
     target_preset = getattr(args, "target_preset", None)
     judge_preset = getattr(args, "judge_preset", None)
-    target_profile = getattr(args, "target_profile", None) or getattr(args, "profile", None)
-    judge_profile = getattr(args, "judge_profile", None) or getattr(args, "profile", None)
+    if any(getattr(args, field, None) for field in ("profile", "target_profile", "judge_profile", "target_model", "judge_model")):
+        raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。新运行请使用 --target-preset / --judge-preset。")
     requires_target = mode in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY}
     requires_judge = mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY}
-    if (requires_target and not (target_preset or target_profile)) or (requires_judge and not (judge_preset or judge_profile)):
+    if (requires_target and not target_preset) or (requires_judge and not judge_preset):
         raise EvalConsoleError(
             "请按所选模式提供所需的 --target-preset / --judge-preset。"
         )
     return EvalRunRequest(
         eval_id=eval_id,
         case_ids=tuple(case_ids),
-        target_profile=target_profile,
-        judge_profile=judge_profile,
-        profiles_file=args.profiles_file.expanduser().resolve(),
+        target_profile=None,
+        judge_profile=None,
+        profiles_file=runner.DEFAULT_PROVIDER_PROFILES,
         results_root=args.results_root.expanduser().resolve(),
         dry_run=args.dry_run,
         debug=args.debug,
@@ -1894,8 +1923,6 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
             args.judge_concurrency if isinstance(args.judge_concurrency, int) else 1
         ),
         run_id=args.run_id,
-        target_model_override=getattr(args, "target_model", None),
-        judge_model_override=getattr(args, "judge_model", None),
         continue_on_error=not getattr(args, "stop_on_error", False),
         mode=mode,
         source_run_dir=(

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .discovery import discover_evals, discover_provider_profiles, find_eval
+from .discovery import discover_evals, find_eval
 from .models import (
     CURRENT_CONSOLE_SCHEMA_VERSION,
     CaseStagePlan,
@@ -27,8 +27,6 @@ from .registry_runtime import (
     RegistryRuntimeError,
     RegistryRuntimeResolver,
 )
-from .model_registry import ModelRegistry
-from .secrets import SecretResolver
 
 
 ProgressCallback = Callable[[str, dict[str, Any], int, int], None]
@@ -59,7 +57,10 @@ class EvaluationInterrupted(EvalConsoleError):
 
 
 def validate_configuration(
-    profiles_file: Path, results_root: Path | None = None
+    results_root: Path | None = None,
+    *,
+    registry_root: Path | None = None,
+    credential_store_path: Path | None = None,
 ) -> ValidationReport:
     """Validate Eval definitions, Registry metadata, and output path offline."""
     checks: list[str] = []
@@ -73,11 +74,23 @@ def validate_configuration(
     except (OSError, ValueError, runner.ModelEvalError) as exc:
         errors.append(f"Eval 定义：{exc}")
     try:
-        registry = ModelRegistry(user_root=runner.ROOT / ".eval_console" / "model_registry")
-        checks.append(f"Model Registry：已校验 {len(registry.presets)} 个 Preset")
-        if not registry.presets:
-            warnings.append("Model Registry 尚无 Preset。")
-    except (OSError, ValueError) as exc:
+        resolver = RegistryRuntimeResolver.for_project(
+            runner.ROOT, registry_root=registry_root, credential_store_path=credential_store_path
+        )
+        readiness = [resolver.assess_preset_readiness(preset_id) for preset_id in resolver.registry.presets]
+        runnable = sum(item.runnable for item in readiness)
+        blocked = len(readiness) - runnable
+        checks.append(f"Model Registry：已校验 {len(readiness)} 个 Preset；可运行 {runnable}，阻塞 {blocked}")
+        for item in readiness:
+            if item.blocking_errors:
+                warnings.append(f"Preset {item.preset_id}：{item.blocking_errors[0]}")
+        local_ids = resolver.secret_store.list_ids()
+        local_credentials = {item.id for item in resolver.registry.credentials.values() if item.secret_reference == f"local:{item.id}"}
+        orphan = local_ids - local_credentials
+        checks.append(f"本地令牌：已保存 {len(local_ids)}，孤立 {len(orphan)}")
+        if orphan:
+            warnings.append("本地令牌含未引用 Credential：" + ", ".join(sorted(orphan)))
+    except (OSError, ValueError, RegistryRuntimeError) as exc:
         errors.append(f"Model Registry：{exc}")
     output_path = (results_root or runner.RESULTS_BASE).expanduser()
     if output_path.exists() and not output_path.is_dir():
@@ -95,7 +108,7 @@ def validate_configuration(
     return ValidationReport(tuple(checks), tuple(warnings), tuple(errors))
 
 
-def validate_request(request: EvalRunRequest) -> None:
+def validate_request(request: EvalRunRequest, *, allow_test_providers: bool = False) -> None:
     """Check Console-specific selections before provider preflight or API work."""
     try:
         definition = find_eval(request.eval_id)
@@ -117,34 +130,16 @@ def validate_request(request: EvalRunRequest) -> None:
         raise EvalConsoleError("Judge 并发数必须介于 1 到 32 之间。")
     needs_target = request.mode in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY}
     needs_judge = request.mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY}
-    uses_registry = request.target_preset_id is not None or request.judge_preset_id is not None
-    if uses_registry:
-        if needs_target and not request.target_preset_id:
-            raise EvalConsoleError("Target 运行必须指定 Target Preset。")
-        if needs_judge and not request.judge_preset_id:
-            raise EvalConsoleError("Judge 运行必须指定 Judge Preset。")
-        if request.target_model_override or request.judge_model_override:
-            raise EvalConsoleError("Registry Preset 是唯一模型身份；Console 不支持本次模型覆盖。")
+    if allow_test_providers and not request.target_preset_id and not request.judge_preset_id:
         if request.mode in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME} and request.source_run_dir is None:
             raise EvalConsoleError("仅 Judge 或继续运行必须指定历史 Run。")
         return
-    profiles = {profile.name: profile for profile in discover_provider_profiles(request.profiles_file)}
-    if needs_target:
-        target = profiles.get(request.target_profile)
-        if target is None:
-            raise EvalConsoleError(
-                _missing_profile_message(request.target_profile, request.profiles_file, profiles)
-            )
-        if not target.supports_target:
-            raise EvalConsoleError(f"Profile {target.name!r} 未定义 Target 配置。")
-    if needs_judge:
-        judge = profiles.get(request.judge_profile)
-        if judge is None:
-            raise EvalConsoleError(
-                _missing_profile_message(request.judge_profile, request.profiles_file, profiles)
-            )
-        if not judge.supports_judge:
-            raise EvalConsoleError(f"Profile {judge.name!r} 未定义 Judge 配置。")
+    if needs_target and not request.target_preset_id:
+        raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。Target 运行请使用 --target-preset。")
+    if needs_judge and not request.judge_preset_id:
+        raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。Judge 运行请使用 --judge-preset。")
+    if request.target_profile or request.judge_profile or request.target_model_override or request.judge_model_override:
+        raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。新运行请使用 --target-preset / --judge-preset。")
     if request.mode in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME} and request.source_run_dir is None:
         raise EvalConsoleError("仅 Judge 或继续运行必须指定历史 Run。")
 
@@ -176,22 +171,12 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
         needs_judge = request.mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} or bool(
             stage_plan and stage_plan.judge_cases
         )
-        if request.mode is EvalExecutionMode.RESUME and stage_plan is not None and not _uses_registry(request):
-            _validate_resume_profile_availability(request, stage_plan)
-        resolver = (
-            RegistryRuntimeResolver.for_project(
-                runner.ROOT,
-                registry_root=request.registry_root,
-                credential_store_path=request.credential_store_path,
-            )
-            if _uses_registry(request)
-            else None
+        resolver = RegistryRuntimeResolver.for_project(
+            runner.ROOT, registry_root=request.registry_root, credential_store_path=request.credential_store_path,
         )
         if needs_target:
             try:
-                target = _create_registry_provider(resolver, request.target_preset_id, "target") if resolver else _create_profile_provider(
-                    request, "target", request.target_profile, request.target_model_override
-                )
+                target = _create_registry_provider(resolver, request.target_preset_id, "target")
             except (runner.ModelEvalError, RegistryRuntimeError) as exc:
                 _raise_resume_credential_error(request, "Target", exc)
                 raise
@@ -204,9 +189,7 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
             target_plan["enabled"] = True
         if needs_judge:
             try:
-                judge = _create_registry_provider(resolver, request.judge_preset_id, "judge") if resolver else _create_profile_provider(
-                    request, "judge", request.judge_profile, request.judge_model_override
-                )
+                judge = _create_registry_provider(resolver, request.judge_preset_id, "judge")
             except (runner.ModelEvalError, RegistryRuntimeError) as exc:
                 _raise_resume_credential_error(request, "Judge", exc)
                 raise
@@ -252,7 +235,7 @@ def execute_request(
     if (needs_target and target_provider is None) or (needs_judge and judge_provider is None):
         target_provider, judge_provider, target_plan, judge_plan = preflight_request(request)
     else:
-        validate_request(request)
+        validate_request(request, allow_test_providers=True)
         target_plan = _provider_plan(target_provider, "target", request) if needs_target else {"enabled": False, "api_calls": 0}
         judge_plan = _provider_plan(judge_provider, "judge", request) if needs_judge else {"enabled": False, "api_calls": 0}
     try:
@@ -614,11 +597,7 @@ def _create_judge_only_run(
         metadata["console"]["target_preset_id"] = source_console.get("target_preset_id")
         metadata["console"]["judge_preset_id"] = request.judge_preset_id
         metadata["console"]["registry_runtime"] = {
-            "target": (
-                source_console.get("registry_runtime", {}).get("target")
-                if isinstance(source_console.get("registry_runtime"), dict)
-                else None
-            ),
+            "target": (source_console.get("registry_runtime", {}).get("target") if isinstance(source_console.get("registry_runtime"), dict) else None),
             "judge": None,
         }
     else:
@@ -836,30 +815,6 @@ def _resume_request_with_persisted_concurrency(request: EvalRunRequest) -> EvalR
     return request
 
 
-def _validate_resume_profile_availability(
-    request: EvalRunRequest, stage_plan: StagePlan
-) -> None:
-    available = {item.name: item for item in discover_provider_profiles(request.profiles_file)}
-    required = (
-        ("Target", request.target_profile, bool(stage_plan.target_cases), "supports_target"),
-        ("Judge", request.judge_profile, bool(stage_plan.judge_cases), "supports_judge"),
-    )
-    for label, profile_name, needed, capability in required:
-        if not needed:
-            continue
-        if not profile_name:
-            raise EvalConsoleError(
-                f"无法继续该运行：原 {label} Provider Profile 缺失。"
-                "Resume 要求使用原运行配置；如需使用新的 Judge，请使用 JUDGE_ONLY。"
-            )
-        profile = available.get(profile_name)
-        if profile is None or not bool(getattr(profile, capability)):
-            raise EvalConsoleError(
-                f"无法继续该运行：原 {label} Provider Profile 不存在或不支持该角色："
-                f"{profile_name}。Resume 要求使用原运行配置；如需使用新的 Judge，请使用 JUDGE_ONLY。"
-            )
-
-
 def _raise_resume_credential_error(
     request: EvalRunRequest, label: str, error: BaseException
 ) -> None:
@@ -879,35 +834,20 @@ def _validate_resume_provider_configuration(
     judge: Any | None,
 ) -> None:
     metadata = _resume_metadata(request)
-    if _uses_registry(request):
-        console = metadata.get("console") if isinstance(metadata.get("console"), dict) else {}
-        saved = console.get("registry_runtime") if isinstance(console.get("registry_runtime"), dict) else {}
-        checks = (
-            ("Target", bool(stage_plan.target_cases), target, saved.get("target")),
-            ("Judge", bool(stage_plan.judge_cases), judge, saved.get("judge")),
-        )
-        for label, needed, provider, expected in checks:
-            if not needed:
-                continue
-            actual = _registry_runtime_record(provider)
-            if not isinstance(expected, dict) or not isinstance(actual, dict) or expected.get("runtime_hash") != actual.get("runtime_hash"):
-                raise EvalConsoleError(
-                    f"Resume configuration mismatch: 原 {label} Preset 运行身份已变化。"
-                    "Resume 必须继续使用原 Registry Runtime；如需使用新的 Judge，请使用 JUDGE_ONLY。"
-                )
-        return
+    console = metadata.get("console") if isinstance(metadata.get("console"), dict) else {}
+    saved = console.get("registry_runtime") if isinstance(console.get("registry_runtime"), dict) else {}
     checks = (
-        ("Target", bool(stage_plan.target_cases), target, metadata.get("target")),
-        ("Judge", bool(stage_plan.judge_cases), judge, metadata.get("judge")),
+        ("Target", bool(stage_plan.target_cases), target, saved.get("target")),
+        ("Judge", bool(stage_plan.judge_cases), judge, saved.get("judge")),
     )
     for label, needed, provider, expected in checks:
         if not needed:
             continue
-        actual = runner.provider_metadata(provider) if provider is not None else None
-        if not isinstance(expected, dict) or actual != expected:
+        actual = _registry_runtime_record(provider)
+        if not isinstance(expected, dict) or not isinstance(actual, dict) or expected.get("runtime_hash") != actual.get("runtime_hash"):
             raise EvalConsoleError(
-                f"Resume configuration mismatch: 原 {label} Provider 配置已变化。"
-                "Resume 必须继续使用原运行配置；如需使用新的 Judge，请使用 JUDGE_ONLY。"
+                f"Resume configuration mismatch: 原 {label} Preset 运行身份已变化。"
+                "Resume 必须继续使用原 Registry Runtime；如需使用新的 Judge，请使用 JUDGE_ONLY。"
             )
 
 
@@ -1110,32 +1050,6 @@ def friendly_error(error: BaseException) -> str:
     return message
 
 
-def _create_profile_provider(
-    request: EvalRunRequest, role: str, profile: str | None, model_override: str | None = None
-) -> Any:
-    if not profile:
-        raise EvalConsoleError(f"{role.title()} 运行缺少 Provider Profile。")
-    arguments = [
-        "provider-check",
-        "--role",
-        role,
-        "--profile",
-        profile,
-        "--profiles-file",
-        str(request.profiles_file),
-    ]
-    if model_override:
-        arguments.extend(("--model", model_override))
-    args = runner.build_parser().parse_args(arguments)
-    if role == "judge":
-        args.model_env = "OPENAI_JUDGE_MODEL"
-    return runner.create_provider(args, role=role)
-
-
-def _uses_registry(request: EvalRunRequest) -> bool:
-    return request.target_preset_id is not None or request.judge_preset_id is not None
-
-
 def _create_registry_provider(
     resolver: RegistryRuntimeResolver | None, preset_id: str | None, role: str
 ) -> Any:
@@ -1146,25 +1060,20 @@ def _create_registry_provider(
     # Deliberately private and secret-free: persisted only through the helpers
     # below, never through the provider's HTTP configuration manifest.
     provider._registry_runtime_record = {
-        **dict(binding.snapshot),
+        "identity_snapshot": dict(binding.identity_snapshot),
+        "audit_snapshot": dict(binding.audit_snapshot),
         "runtime_hash": binding.runtime_hash,
     }
     return provider
 
 
+def _uses_registry(request: EvalRunRequest) -> bool:
+    return request.target_preset_id is not None or request.judge_preset_id is not None
+
+
 def _registry_runtime_record(provider: Any | None) -> dict[str, Any] | None:
     value = getattr(provider, "_registry_runtime_record", None) if provider is not None else None
     return deepcopy(value) if isinstance(value, dict) else None
-
-
-def _missing_profile_message(name: str, profiles_file: Path, profiles: dict[str, Any]) -> str:
-    available = ", ".join(sorted(profiles)) or "无"
-    return (
-        f"未找到 Provider Profile：{name!r}。\n"
-        f"配置文件：{profiles_file}\n"
-        f"可用 Profile：{available}\n"
-        "请选择一个有效 Profile。"
-    )
 
 
 def _append_log(
@@ -1187,7 +1096,7 @@ def _append_log(
         "status": record.get("status"),
         "provider": record.get("provider") or judge.get("provider"),
         "model": record.get("requested_model") or record.get("model") or judge.get("requested_model"),
-        "judge_profile": request.judge_profile,
+        "judge_preset_id": request.judge_preset_id,
         "duration_seconds": _record_duration(record),
         "error_code": record.get("error_code"),
     }

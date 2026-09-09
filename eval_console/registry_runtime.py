@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from .credential_store import CredentialSecretStore, LocalFileCredentialSecretStore
 from .model_registry import Credential, ModelRegistry, ModelRegistryError, ResolvedModelRuntime
@@ -26,8 +27,14 @@ class ResolvedRegistryRuntime:
     runtime: ResolvedModelRuntime
     token: str
     credential_source: str
-    snapshot: Mapping[str, Any]
+    identity_snapshot: Mapping[str, Any]
+    audit_snapshot: Mapping[str, Any]
     runtime_hash: str
+
+    @property
+    def snapshot(self) -> Mapping[str, Any]:
+        """Backward-compatible name for the persisted, secret-free audit view."""
+        return self.audit_snapshot
 
     def __repr__(self) -> str:
         return f"ResolvedRegistryRuntime(preset_id={self.runtime.preset_id!r}, token='********')"
@@ -82,14 +89,39 @@ class RegistryRuntimeResolver:
             raise RegistryRuntimeError(str(error)) from error
         credential = self.registry.credentials[runtime.credential_id]
         token, source = self._resolve_token(credential)
-        snapshot = runtime_snapshot(runtime, credential_source=source)
+        identity = runtime_identity_snapshot(runtime)
+        audit = runtime_audit_snapshot(runtime, credential_source=source)
         return ResolvedRegistryRuntime(
             runtime=runtime,
             token=token,
             credential_source=source,
-            snapshot=snapshot,
-            runtime_hash=_snapshot_hash(snapshot),
+            identity_snapshot=identity,
+            audit_snapshot=audit,
+            runtime_hash=_snapshot_hash(identity),
         )
+
+    def assess_preset_readiness(self, preset_id: str) -> "PresetReadiness":
+        """Check Registry, credentials and provider construction without HTTP."""
+        try:
+            runtime = self.registry.resolve(preset_id=preset_id)
+        except ModelRegistryError as error:
+            return PresetReadiness(preset_id, False, False, False, False, False, False, (), (str(error),))
+        credential = self.registry.credentials[runtime.credential_id]
+        expired = credential.expires_at is not None and date.fromisoformat(credential.expires_at) < date.today()
+        protocol_supported = runtime.protocol in RegistryProviderFactory.SUPPORTED_PROTOCOLS
+        if expired:
+            return PresetReadiness(preset_id, True, False, True, protocol_supported, False, False, (), (f"Credential '{credential.id}' 已过期。",))
+        try:
+            binding = self.resolve_preset(preset_id)
+        except RegistryRuntimeError as error:
+            return PresetReadiness(preset_id, True, False, False, protocol_supported, False, False, (), (str(error),))
+        if not protocol_supported:
+            return PresetReadiness(preset_id, True, True, False, False, False, False, (), (f"当前 Eval Runner 不支持 {runtime.protocol}。",))
+        try:
+            RegistryProviderFactory.create(binding, role="judge")
+        except RegistryRuntimeError as error:
+            return PresetReadiness(preset_id, True, True, False, True, False, False, (), (str(error),))
+        return PresetReadiness(preset_id, True, True, False, True, True, True, (), ())
 
     def _resolve_token(self, credential: Credential) -> tuple[str, str]:
         if credential.expires_at is not None and date.fromisoformat(credential.expires_at) < date.today():
@@ -129,24 +161,74 @@ class RegistryProviderFactory:
         return runner.OpenAICompatibleChatProvider(**common)
 
 
-def runtime_snapshot(runtime: ResolvedModelRuntime, *, credential_source: str) -> dict[str, Any]:
-    """Return reproducibility identity with no credential value or locator leak."""
+@dataclass(frozen=True)
+class PresetReadiness:
+    preset_id: str
+    registry_valid: bool
+    credential_ready: bool
+    credential_expired: bool
+    protocol_supported: bool
+    parameter_mapping_supported: bool
+    provider_constructable: bool
+    warnings: tuple[str, ...]
+    blocking_errors: tuple[str, ...]
+
+    @property
+    def runnable(self) -> bool:
+        return self.registry_valid and self.credential_ready and self.protocol_supported and self.parameter_mapping_supported and self.provider_constructable
+
+
+def runtime_identity_snapshot(runtime: ResolvedModelRuntime) -> dict[str, Any]:
+    """Hash input: every provider/request behavior field, never a token/source."""
     return {
-        "preset_id": runtime.preset_id,
         "vendor_id": runtime.vendor_id,
         "base_url_id": runtime.base_url_id,
-        "base_url": runtime.base_url,
+        "endpoint": sanitize_url(runtime.base_url),
         "protocol": runtime.protocol,
         "model_family_id": runtime.model_family_id,
         "model_id": runtime.model_id,
+        "requested_model_name": runtime.requested_model_name,
         "api_model_name": runtime.api_model_name,
         "credential_id": runtime.credential_id,
-        "credential_source": credential_source,
         "semantic_parameters": _plain(runtime.semantic_parameters),
         "wire_parameters": _plain(runtime.wire_parameters),
         "transport_defaults": _plain(runtime.transport_defaults),
+        "resolved_capabilities": _plain(runtime.resolved_capabilities),
+    }
+
+
+def runtime_audit_snapshot(runtime: ResolvedModelRuntime, *, credential_source: str) -> dict[str, Any]:
+    """Artifact-facing provenance view; credential source is audit-only."""
+    return {
+        "preset_id": runtime.preset_id,
+        "vendor_id": runtime.vendor_id,
+        "vendor_name": runtime.vendor_name,
+        "base_url_id": runtime.base_url_id,
+        "endpoint": sanitize_url(runtime.base_url),
+        "protocol": runtime.protocol,
+        "model_family_id": runtime.model_family_id,
+        "model_id": runtime.model_id,
+        "requested_model_name": runtime.requested_model_name,
+        "api_model_name": runtime.api_model_name,
+        "credential_id": runtime.credential_id,
+        "credential_source": credential_source,
+        "identity": runtime_identity_snapshot(runtime),
         "provenance": _plain(runtime.provenance),
     }
+
+
+def runtime_snapshot(runtime: ResolvedModelRuntime, *, credential_source: str) -> dict[str, Any]:
+    """Compatibility alias for callers that persist the audit snapshot."""
+    return runtime_audit_snapshot(runtime, credential_source=credential_source)
+
+
+def sanitize_url(value: str) -> str:
+    """Remove credentials, query and fragment before any Console display/write."""
+    parts = urlsplit(value)
+    host = parts.hostname or ""
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def _provider_arguments(runtime: ResolvedModelRuntime, token: str, role: str) -> dict[str, Any]:
