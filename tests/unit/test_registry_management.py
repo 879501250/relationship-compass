@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 from datetime import date
+import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from eval_console.credential_service import CredentialService, CredentialTransactionError, CredentialUpdateDraft
 from eval_console.credential_store import LocalFileCredentialSecretStore, mask_token
 from eval_console.interactive import InteractiveBack, InteractiveCancel, InteractiveReader
-from eval_console.registry_cli import _run_wizard
+from eval_console.registry_cli import (
+    _create,
+    _run_wizard,
+    check_bootstrap_state,
+    quick_setup_first_model,
+)
 from eval_console.registry_store import RegistryStore
 
 
@@ -160,3 +168,79 @@ class InteractiveReaderTests(unittest.TestCase):
         def one(draft: dict[str, str]) -> None: draft["one"] = reader.text("one: ", required=True)
         def two(draft: dict[str, str]) -> None: draft["two"] = reader.text("two: ", required=True)
         self.assertEqual(_run_wizard([one, two]), {"one": "correct", "two": "second"})
+
+
+class RegistryBootstrapTests(unittest.TestCase):
+    def _services(self, raw: str) -> tuple[RegistryStore, LocalFileCredentialSecretStore, CredentialService]:
+        builtin = Path(raw) / "builtin"
+        self._write(builtin / "vendors" / "vendor.yaml", {
+            "id": "vendor", "name": "Vendor", "protocol": "openai_compatible_chat",
+            "base_urls": [{"id": "primary", "url": "https://api.example/v1", "model_families": ["family"], "default_for": ["family"]}],
+        })
+        self._write(builtin / "model_families" / "family.yaml", {
+            "id": "family", "name": "Family", "defaults": {"capabilities": {}}, "models": {"model": {}},
+        })
+        self._write(builtin / "credentials" / "sample.yaml", {
+            "id": "sample", "vendor": "vendor", "env": "MISSING_TEST_TOKEN",
+        })
+        self._write(builtin / "presets" / "sample.yaml", {
+            "id": "sample", "vendor": "vendor", "base_url": "primary", "credential": "sample",
+            "model_family": "family", "model": "model", "parameters": {},
+        })
+        store = RegistryStore(Path(raw) / "user", builtin_root=builtin)
+        secrets = LocalFileCredentialSecretStore(Path(raw) / "credentials.secrets.json")
+        return store, secrets, CredentialService(store, secrets)
+
+    def test_bootstrap_state_explains_empty_credential_and_preset_gaps(self) -> None:
+        registry = SimpleNamespace(
+            vendors={},
+            model_families={"family": SimpleNamespace(models={"model": object()})},
+            credentials={},
+            presets={},
+        )
+        store = mock.Mock()
+        store.registry.return_value = registry
+        secrets = LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "bootstrap-empty-secrets.json")
+        empty = check_bootstrap_state(store, secrets)
+        self.assertFalse(empty.ready)
+        self.assertEqual(empty.model_count, 1)
+        self.assertEqual(empty.credential_count, 0)
+        self.assertIn("Missing credential", "\n".join(empty.problems))
+        self.assertIn("Missing preset", "\n".join(empty.problems))
+
+        registry.credentials = {"key": object()}
+        missing_preset = check_bootstrap_state(store, secrets)
+        self.assertFalse(missing_preset.ready)
+        self.assertEqual(missing_preset.credential_count, 1)
+        self.assertIn("Missing preset", "\n".join(missing_preset.problems))
+
+    def test_quick_setup_creates_runnable_local_credential_and_never_echoes_token(self) -> None:
+        secret = "SECRET_TEST_TOKEN_DO_NOT_LEAK_123456"
+        with tempfile.TemporaryDirectory() as raw:
+            store, secrets, service = self._services(raw)
+            answers = iter(["1", "", "", "1", "", ""])
+            reader = InteractiveReader(
+                input_fn=lambda _prompt: next(answers),
+                secret_fn=lambda _prompt: secret,
+            )
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                state = quick_setup_first_model(reader, store, service, secrets)
+            self.assertTrue(state.ready)
+            self.assertTrue(secrets.exists("vendor-model-credential"))
+            self.assertIn("model-default", store.registry().presets)
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_preset_create_without_credential_shows_next_step_without_writing(self) -> None:
+        store = mock.Mock()
+        store.registry.return_value = SimpleNamespace(credentials={})
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            _create(InteractiveReader(input_fn=lambda _prompt: ""), store, mock.Mock(), "presets")
+        self.assertIn("创建 Preset 前需要先创建 Credential", output.getvalue())
+        store.create.assert_not_called()
+
+    @staticmethod
+    def _write(path: Path, value: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value), encoding="utf-8")

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import unittest
+from unittest import mock
 
-from eval_console.cli import _request_from_args, build_parser
+from eval_console.cli import _request_from_args, build_parser, registry_interactive_console
 from eval_console.discovery import discover_evals
 from eval_console.service import EvalConsoleError, validate_request
 
@@ -34,3 +36,16 @@ class RegistryCutoverTests(unittest.TestCase):
         ])
         with self.assertRaisesRegex(EvalConsoleError, "judge-preset"):
             _request_from_args(args, self.definition.eval_id, [self.definition.cases[0].case_id])
+
+    def test_interactive_cancel_exits_normally_without_traceback(self) -> None:
+        output = io.StringIO()
+        with mock.patch("eval_console.cli.offer_bootstrap_setup"), mock.patch("builtins.input", side_effect=KeyboardInterrupt), mock.patch("sys.stdout", output):
+            result = registry_interactive_console(
+                self.definition.source_path.parent / "results",
+                debug=False,
+                registry_root=None,
+                credential_store_path=None,
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("操作已取消", output.getvalue())
+        self.assertNotIn("Traceback", output.getvalue())

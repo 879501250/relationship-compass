@@ -20,3 +20,5 @@ Eval Console 以 Preset 作为新运行的唯一配置来源。它将 Runtime Id
 `python -m eval_console` 的“配置模型与令牌”管理用户 overlay，而不修改仓库内建定义。用户 Registry 位于 `.eval_console/model_registry/`，内置 ID 不可覆盖或删除。
 
 Credential 的 metadata 保存稳定 ID、展示名称、Vendor、可选范围/过期时间/备注；Token 本身只保存在 `.eval_console/credentials.secrets.json`。该文件使用临时文件替换写入，Unix 尽力设为 `0600`，并已被 Git 忽略和安全打包排除。它是本机敏感文件：不要提交、分享或手动导出。列表与错误只显示掩码，Token 不会写入 Registry、运行产物或日志。
+
+首次打开交互式 Eval Console 时，若没有 Runnable Preset，控制台会显示当前 Vendor、Model、Credential、Preset 和 Runnable Preset 数量，并提供“快速配置第一个模型”。流程只要求选择内建模型、创建本地 Token 或环境变量 Credential，再创建对应 Preset；完成后会立即执行本地 readiness check，不会发起 API 请求。按 Ctrl+C 会正常取消交互，不显示 traceback。

@@ -55,7 +55,7 @@ from .service import (
     validate_configuration,
 )
 from .test_runner import TerminalTestReporter, TestSuiteRequest, TestSuiteRunner
-from .registry_cli import manage_registry
+from .registry_cli import manage_registry, offer_bootstrap_setup
 from .registry_runtime import RegistryRuntimeResolver
 from .interactive import InteractiveCancel as RegistryInteractiveCancel, InteractiveEOF as RegistryInteractiveEOF
 
@@ -380,6 +380,12 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "debug", False):
             traceback.print_exc()
         return 1
+    except (InteractiveInputClosed, RegistryInteractiveEOF):
+        print("\n输入已结束，已安全退出 Eval Console。")
+        return 0
+    except (InteractiveInputCancelled, RegistryInteractiveCancel):
+        print("\n操作已取消。")
+        return 0
     except KeyboardInterrupt:
         print("\n评测开始前已取消。")
         return 130
@@ -634,42 +640,66 @@ def registry_interactive_console(
     registry_root: Path | None,
     credential_store_path: Path | None,
 ) -> int:
+    """Outer interactive boundary: cancellation is a normal console exit."""
+    try:
+        return _registry_interactive_loop(
+            results_root,
+            debug=debug,
+            registry_root=registry_root,
+            credential_store_path=credential_store_path,
+        )
+    except (InteractiveInputClosed, RegistryInteractiveEOF):
+        print("输入已结束，已安全退出 Eval Console。")
+        return 0
+    except (InteractiveInputCancelled, RegistryInteractiveCancel):
+        print("操作已取消。")
+        return 0
+
+
+def _registry_interactive_loop(
+    results_root: Path,
+    *,
+    debug: bool,
+    registry_root: Path | None,
+    credential_store_path: Path | None,
+) -> int:
     """V1.3C interactive entry: Presets are selected before every execution."""
+    offer_bootstrap_setup(
+        runner.ROOT,
+        registry_root=registry_root,
+        credential_store_path=credential_store_path,
+    )
     while True:
-        try:
-            evals = discover_evals()
-            resolver = RegistryRuntimeResolver.for_project(
-                runner.ROOT,
-                registry_root=registry_root,
-                credential_store_path=credential_store_path,
-            )
-            print("\nEval Console V1.3C（Registry Preset 运行身份）")
-            print(f"  已发现 {len(evals)} 个 Eval；可用 Preset：{', '.join(sorted(resolver.registry.presets)) or '无'}")
-            choice = _choose("请选择操作", [
-                ("运行行为评测", "run"),
-                ("运行自动化测试", "tests"),
-                ("检查运行环境", "validate"),
-                ("配置模型与令牌", "registry"),
-                ("查看历史运行", "history"),
-                ("退出", "exit"),
-            ])
-            if choice == "exit":
-                return 0
-            if choice == "tests":
-                _interactive_tests(); continue
-            if choice == "registry":
-                manage_registry(runner.ROOT, registry_root=registry_root, credential_store_path=credential_store_path); continue
-            if choice == "history":
-                _print_history(discover_runs(results_root)); continue
-            if choice == "validate":
-                report = validate_configuration(results_root, registry_root=registry_root, credential_store_path=credential_store_path)
-                for item in (*report.checks, *report.warnings, *report.errors):
-                    print(f"  {item}")
-                continue
-            _registry_interactive_run(evals, resolver, results_root, debug, registry_root, credential_store_path)
-        except (InteractiveInputClosed, InteractiveInputCancelled):
-            print("输入已结束，已安全退出控制台。")
+        evals = discover_evals()
+        resolver = RegistryRuntimeResolver.for_project(
+            runner.ROOT,
+            registry_root=registry_root,
+            credential_store_path=credential_store_path,
+        )
+        print("\nEval Console V1.3C（Registry Preset 运行身份）")
+        print(f"  已发现 {len(evals)} 个 Eval；可用 Preset：{', '.join(sorted(resolver.registry.presets)) or '无'}")
+        choice = _choose("请选择操作", [
+            ("运行行为评测", "run"),
+            ("运行自动化测试", "tests"),
+            ("检查运行环境", "validate"),
+            ("配置模型与令牌", "registry"),
+            ("查看历史运行", "history"),
+            ("退出", "exit"),
+        ])
+        if choice == "exit":
             return 0
+        if choice == "tests":
+            _interactive_tests(); continue
+        if choice == "registry":
+            manage_registry(runner.ROOT, registry_root=registry_root, credential_store_path=credential_store_path); continue
+        if choice == "history":
+            _print_history(discover_runs(results_root)); continue
+        if choice == "validate":
+            report = validate_configuration(results_root, registry_root=registry_root, credential_store_path=credential_store_path)
+            for item in (*report.checks, *report.warnings, *report.errors):
+                print(f"  {item}")
+            continue
+        _registry_interactive_run(evals, resolver, results_root, debug, registry_root, credential_store_path)
 
 
 def _choose_registry_preset(resolver: RegistryRuntimeResolver, role: str) -> str:
