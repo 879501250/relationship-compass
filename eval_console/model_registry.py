@@ -339,7 +339,7 @@ class ModelRegistry:
     def _load_credentials(self) -> dict[str, Credential]:
         result: dict[str, Credential] = {}
         for path, data in self._documents("credentials"):
-            _secret_guard(data, path); _fields(data, {"id", "vendor", "env", "secret_ref", "name", "base_url_ids", "expires_at", "created_at", "updated_at", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "vendor", "vendor_id", "env", "secret_ref", "name", "base_url_ids", "expires_at", "created_at", "updated_at", "description", "notes"}, path)
             env = _optional(data, "env", path)
             if env and not _ENV.fullmatch(env): raise RegistryValidationError(f"{path}: env must be a valid environment variable name")
             identifier = _id(data, "id", path)
@@ -347,7 +347,7 @@ class ModelRegistry:
             if len(base_url_ids) != len(set(base_url_ids)):
                 raise RegistryValidationError(f"{path}: base_url_ids must be unique")
             result[identifier] = Credential(
-                identifier, _id(data, "vendor", path), env, _optional(data, "secret_ref", path),
+                identifier, _id_alias(data, "vendor_id", "vendor", path), env, _optional(data, "secret_ref", path),
                 _optional(data, "name", path), base_url_ids, _optional(data, "expires_at", path),
                 _optional(data, "created_at", path), _optional(data, "updated_at", path),
                 _optional(data, "description", path), _optional(data, "notes", path),
@@ -357,9 +357,9 @@ class ModelRegistry:
     def _load_presets(self) -> dict[str, Preset]:
         result: dict[str, Preset] = {}
         for path, data in self._documents("presets"):
-            _secret_guard(data, path); _fields(data, {"id", "name", "vendor", "base_url", "credential", "model_family", "model", "parameters", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "name", "vendor", "vendor_id", "base_url", "base_url_id", "credential", "credential_id", "model_family", "model_family_id", "model", "model_id", "parameters", "description", "notes"}, path)
             identifier = _id(data, "id", path)
-            result[identifier] = Preset(identifier, _optional(data, "name", path), _id(data, "vendor", path), _id(data, "base_url", path), _id(data, "credential", path), _id(data, "model_family", path), _string(data, "model", path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
+            result[identifier] = Preset(identifier, _optional(data, "name", path), _id_alias(data, "vendor_id", "vendor", path), _id_alias(data, "base_url_id", "base_url", path), _id_alias(data, "credential_id", "credential", path), _id_alias(data, "model_family_id", "model_family", path), _string_alias(data, "model_id", "model", path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
         return result
 
     @staticmethod
@@ -473,6 +473,25 @@ def _id(data: Mapping[str, Any], field: str, path: Path) -> str:
     value = _string(data, field, path)
     if not _ENTITY_ID.fullmatch(value): raise RegistryValidationError(f"{path}: '{field}' must be a lowercase identifier")
     return value
+
+
+def _id_alias(data: Mapping[str, Any], canonical: str, legacy: str, path: Path) -> str:
+    """Accept legacy Registry documents while making new relationship names explicit."""
+    has_canonical, has_legacy = canonical in data, legacy in data
+    if has_canonical and has_legacy:
+        raise RegistryValidationError(f"{path}: specify only one of '{canonical}' or '{legacy}'")
+    if not has_canonical and not has_legacy:
+        raise RegistryValidationError(f"{path}: '{canonical}' is required")
+    return _id(data, canonical if has_canonical else legacy, path)
+
+
+def _string_alias(data: Mapping[str, Any], canonical: str, legacy: str, path: Path) -> str:
+    has_canonical, has_legacy = canonical in data, legacy in data
+    if has_canonical and has_legacy:
+        raise RegistryValidationError(f"{path}: specify only one of '{canonical}' or '{legacy}'")
+    if not has_canonical and not has_legacy:
+        raise RegistryValidationError(f"{path}: '{canonical}' is required")
+    return _string(data, canonical if has_canonical else legacy, path)
 
 
 def _id_value(value: Any, path: Path, field: str) -> str:

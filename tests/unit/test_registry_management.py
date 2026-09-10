@@ -218,17 +218,35 @@ class RegistryBootstrapTests(unittest.TestCase):
         secret = "SECRET_TEST_TOKEN_DO_NOT_LEAK_123456"
         with tempfile.TemporaryDirectory() as raw:
             store, secrets, service = self._services(raw)
-            answers = iter(["1", "", "", "1", "", ""])
-            reader = InteractiveReader(
-                input_fn=lambda _prompt: next(answers),
+            class QuickReader(InteractiveReader):
+                def choice(self, prompt: str, choices: object):
+                    prompts.append(prompt)
+                    if prompt == "选择已有 Credential":
+                        return "__create__"
+                    return list(choices)[0][1]
+
+                def text(self, prompt: str, **kwargs: object) -> str:
+                    if prompt == "名称: ":
+                        return "Vendor Personal"
+                    return super().text(prompt, **kwargs)
+
+            prompts: list[str] = []
+            reader = QuickReader(
+                input_fn=lambda _prompt: "",
                 secret_fn=lambda _prompt: secret,
             )
             output = io.StringIO()
             with mock.patch("sys.stdout", output):
                 state = quick_setup_first_model(reader, store, service, secrets)
             self.assertTrue(state.ready)
-            self.assertTrue(secrets.exists("vendor-model-credential"))
-            self.assertIn("model-default", store.registry().presets)
+            user_credential_ids = [item.id for item in store.registry().credentials.values() if item.id != "sample"]
+            user_preset_ids = [item for item in store.registry().presets if item != "sample"]
+            self.assertEqual(len(user_credential_ids), 1)
+            self.assertTrue(secrets.exists(user_credential_ids[0]))
+            self.assertEqual(len(user_preset_ids), 1)
+            self.assertTrue(user_credential_ids[0].startswith("cred_vendor_"))
+            self.assertTrue(user_preset_ids[0].startswith("preset_model_"))
+            self.assertEqual(prompts[:4], ["选择 Vendor", "选择 Model Family", "选择 Model", "选择已有 Credential"])
             self.assertNotIn(secret, output.getvalue())
 
     def test_preset_create_without_credential_shows_next_step_without_writing(self) -> None:
@@ -239,6 +257,28 @@ class RegistryBootstrapTests(unittest.TestCase):
             _create(InteractiveReader(input_fn=lambda _prompt: ""), store, mock.Mock(), "presets")
         self.assertIn("创建 Preset 前需要先创建 Credential", output.getvalue())
         store.create.assert_not_called()
+
+    def test_canonical_relationship_fields_allow_many_and_protect_credential_references(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = RegistryStore(Path(raw) / "user", builtin_root=ROOT / "model_registry")
+            secrets = LocalFileCredentialSecretStore(Path(raw) / "credentials.secrets.json")
+            service = CredentialService(store, secrets)
+            for identifier in ("cred_moonshot_a", "cred_moonshot_b"):
+                service.create({"id": identifier, "name": identifier, "vendor_id": "moonshot", "secret_ref": f"local:{identifier}"}, f"token-{identifier}")
+            stored_credential = json.loads((store.user_root / "credentials" / "cred_moonshot_a.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(stored_credential["vendor_id"], "moonshot")
+            self.assertNotIn("vendor", stored_credential)
+            for identifier in ("preset_a", "preset_b", "preset_c"):
+                store.create("presets", {"id": identifier, "name": identifier, "vendor_id": "moonshot", "base_url_id": "official-cn", "credential_id": "cred_moonshot_a", "model_family_id": "kimi", "model_id": "kimi-k2.6", "parameters": {}})
+            registry = store.registry()
+            self.assertEqual({item.id for item in registry.credentials.values() if item.vendor_id == "moonshot"} & {"cred_moonshot_a", "cred_moonshot_b"}, {"cred_moonshot_a", "cred_moonshot_b"})
+            self.assertEqual({item.id for item in registry.presets.values() if item.credential_id == "cred_moonshot_a"}, {"preset_a", "preset_b", "preset_c"})
+            with self.assertRaisesRegex(ValueError, "belongs to vendor"):
+                store.create("presets", {"id": "wrong_vendor", "vendor_id": "openai", "base_url_id": "official", "credential_id": "cred_moonshot_a", "model_family_id": "gpt", "model_id": "gpt-5", "parameters": {}})
+            with self.assertRaisesRegex(ValueError, "仍被引用"):
+                service.delete("cred_moonshot_a")
+            service.delete("cred_moonshot_b")
+            self.assertNotIn("cred_moonshot_b", store.registry().credentials)
 
     @staticmethod
     def _write(path: Path, value: dict[str, object]) -> None:

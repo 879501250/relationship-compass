@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 from .credential_service import CredentialService, CredentialUpdateDraft
 from .credential_store import LocalFileCredentialSecretStore, mask_token
@@ -93,7 +94,7 @@ def manage_registry(
         while True:
             _print_registry_summary(check_bootstrap_state(store, secrets))
             try:
-                choice = reader.choice("模型与令牌管理", [("快速配置第一个模型", "quick_setup"), ("Vendor 管理", "vendors"), ("Model Family 管理", "model_families"), ("令牌管理", "credentials"), ("Preset 管理", "presets"), ("检查 Registry", "check"), ("返回", "back")])
+                choice = reader.choice("模型与令牌管理", [("快速配置第一个模型", "quick_setup"), ("Vendor 管理", "vendors"), ("Model Family 管理", "model_families"), ("访问凭证管理", "credentials"), ("Preset 管理", "presets"), ("检查 Registry", "check"), ("返回", "back")])
             except InteractiveBack:
                 return 0
             if choice == "back": return 0
@@ -125,52 +126,30 @@ def quick_setup_first_model(
     service: CredentialService,
     secrets: LocalFileCredentialSecretStore,
 ) -> RegistryBootstrapState:
-    """Create one local or environment Credential and its compatible Preset."""
+    """Create a Vendor-first Credential/Preset pair without asking for IDs."""
     registry = store.registry()
-    choices = _quick_model_choices(registry)
-    if not choices:
-        raise ValueError("Registry 中没有可用于快速配置的 Model。")
-    vendor_id, base_url_id, family_id, model_id = reader.choice("选择模型", choices)
-    credential_id = reader.text(
-        "Credential ID: ", default=_default_identifier(vendor_id, model_id, "credential"), required=True
+    vendor_id = _choose_vendor(reader, registry)
+    family_id = _choose_vendor_family(reader, registry, vendor_id)
+    model_id = reader.choice(
+        "选择 Model", [(item, item) for item in sorted(registry.model_families[family_id].models)]
     )
-    credential_name = reader.text("Credential 名称: ", default=f"{model_id} 默认令牌", required=True)
-    credential_kind = reader.choice("Credential 来源", [("本地令牌（推荐）", "local"), ("环境变量", "environment")])
-    now = datetime.now().astimezone().isoformat(timespec="seconds")
-    credential: dict[str, Any] = {
-        "id": credential_id,
-        "name": credential_name,
-        "vendor": vendor_id,
-        "base_url_ids": [base_url_id],
-        "created_at": now,
-        "updated_at": now,
-    }
-    if credential_kind == "local":
-        token = reader.secret("请输入 Token（不回显）: ")
-        credential["secret_ref"] = f"local:{credential_id}"
-        service.create(credential, token)
-    else:
-        environment_variable = reader.text("环境变量名: ", required=True)
-        credential["env"] = environment_variable
-        store.create("credentials", credential)
-
-    preset_id = reader.text(
-        "Preset ID: ", default=_default_identifier(model_id, "default"), required=True
-    )
+    base_url_id = _choose_vendor_base_url(reader, registry, vendor_id, family_id)
+    credential_id = _choose_or_create_credential(reader, store, service, registry, vendor_id)
+    registry = store.registry()
     preset_name = reader.text("Preset 名称: ", default=f"{model_id} 默认配置", required=True)
-    preset = {
-        "id": preset_id,
-        "name": preset_name,
-        "vendor": vendor_id,
-        "base_url": base_url_id,
-        "credential": credential_id,
-        "model_family": family_id,
-        "model": model_id,
-        "parameters": {},
-    }
+    preset_id = _generated_identifier("preset", model_id, registry.presets)
+    preset = _preset_document(
+        preset_id, preset_name, vendor_id, base_url_id, credential_id, family_id, model_id
+    )
+    runtime = registry.resolve(
+        vendor_id=vendor_id, base_url_id=base_url_id, credential_id=credential_id,
+        model_family_id=family_id, model_id=model_id,
+    )
+    preset["parameters"] = _semantic_parameters(reader, runtime.resolved_capabilities)
     store.create("presets", preset)
     state = check_bootstrap_state(store, secrets)
     print("\n配置完成")
+    print(f"内部 ID: {preset_id}")
     print(f"Preset: {preset_id}")
     print(f"Status: {'Runnable' if preset_id in state.runnable_preset_ids else 'Not runnable'}")
     if preset_id not in state.runnable_preset_ids:
@@ -178,21 +157,96 @@ def quick_setup_first_model(
     return state
 
 
-def _quick_model_choices(registry: Any) -> list[tuple[str, tuple[str, str, str, str]]]:
-    choices: list[tuple[str, tuple[str, str, str, str]]] = []
-    for vendor in sorted(registry.vendors.values(), key=lambda item: item.id):
-        for endpoint in vendor.base_urls:
-            protocol = endpoint.protocol or vendor.protocol
-            if protocol not in RegistryProviderFactory.SUPPORTED_PROTOCOLS:
-                continue
-            for family_id in endpoint.model_families:
-                family = registry.model_families[family_id]
-                for model_id in sorted(family.models):
-                    choices.append((
-                        f"{model_id}（{vendor.name} / {endpoint.id}）",
-                        (vendor.id, endpoint.id, family_id, model_id),
-                    ))
-    return choices
+def _choose_vendor(reader: InteractiveReader, registry: Any) -> str:
+    choices = [
+        (vendor.name, vendor.id)
+        for vendor in sorted(registry.vendors.values(), key=lambda item: item.id)
+        if any((endpoint.protocol or vendor.protocol) in RegistryProviderFactory.SUPPORTED_PROTOCOLS for endpoint in vendor.base_urls)
+    ]
+    if not choices:
+        raise ValueError("Registry 中没有当前 Eval Runner 支持的 Vendor。")
+    return reader.choice("选择 Vendor", choices)
+
+
+def _choose_vendor_family(reader: InteractiveReader, registry: Any, vendor_id: str) -> str:
+    vendor = registry.vendors[vendor_id]
+    families = sorted({
+        family_id for endpoint in vendor.base_urls
+        if (endpoint.protocol or vendor.protocol) in RegistryProviderFactory.SUPPORTED_PROTOCOLS
+        for family_id in endpoint.model_families
+    })
+    if not families:
+        raise ValueError("该 Vendor 没有当前 Eval Runner 支持的 Model Family。")
+    return reader.choice("选择 Model Family", [(registry.model_families[item].name, item) for item in families])
+
+
+def _choose_vendor_base_url(reader: InteractiveReader, registry: Any, vendor_id: str, family_id: str) -> str:
+    vendor = registry.vendors[vendor_id]
+    choices = [
+        (endpoint.id, endpoint.id) for endpoint in vendor.base_urls
+        if family_id in endpoint.model_families
+        and (endpoint.protocol or vendor.protocol) in RegistryProviderFactory.SUPPORTED_PROTOCOLS
+    ]
+    if not choices:
+        raise ValueError("所选 Vendor/Model Family 没有可用 Base URL。")
+    return choices[0][1] if len(choices) == 1 else reader.choice("选择 Base URL", choices)
+
+
+def _choose_or_create_credential(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    service: CredentialService,
+    registry: Any,
+    vendor_id: str,
+) -> str:
+    candidates = [item for item in registry.credentials.values() if item.vendor_id == vendor_id]
+    choices = [(item.name or item.id, item.id) for item in candidates]
+    choices.append(("创建新的访问凭证", "__create__"))
+    selected = reader.choice("选择已有 Credential", choices)
+    if selected != "__create__":
+        return selected
+    return _create_credential_for_vendor(reader, store, service, registry, vendor_id)
+
+
+def _create_credential_for_vendor(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    service: CredentialService,
+    registry: Any,
+    vendor_id: str,
+) -> str:
+    document, token = _credential_wizard(reader, registry, vendor_id=vendor_id)
+    if document.get("env") is not None:
+        store.create("credentials", document)
+    else:
+        assert token is not None
+        service.create(document, token)
+    print(f"已保存访问凭证：{document['name']}（内部 ID: {document['id']}）")
+    return str(document["id"])
+
+
+def _generated_identifier(prefix: str, hint: str, existing: Any) -> str:
+    stem = "".join(character for character in hint.lower() if character.isalnum()) or "user"
+    while True:
+        identifier = f"{prefix}_{stem}_{uuid4().hex[:6]}"
+        if identifier not in existing:
+            return identifier
+
+
+def _preset_document(
+    identifier: str, name: str, vendor_id: str, base_url_id: str,
+    credential_id: str, family_id: str, model_id: str,
+) -> dict[str, Any]:
+    return {
+        "id": identifier,
+        "name": name,
+        "vendor_id": vendor_id,
+        "base_url_id": base_url_id,
+        "credential_id": credential_id,
+        "model_family_id": family_id,
+        "model_id": model_id,
+        "parameters": {},
+    }
 
 
 def _default_identifier(*parts: str) -> str:
@@ -227,7 +281,10 @@ def _print_registry_summary(state: RegistryBootstrapState) -> None:
 
 
 def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: CredentialService, secrets: LocalFileCredentialSecretStore, kind: str) -> None:
-    labels = {"vendors": "Vendor", "model_families": "Model Family", "credentials": "令牌", "presets": "Preset"}
+    if kind == "credentials":
+        _manage_credentials(reader, store, service, secrets)
+        return
+    labels = {"vendors": "Vendor", "model_families": "Model Family", "presets": "Preset"}
     while True:
         try:
             action = reader.choice(f"{labels[kind]} 管理", [("查看", "view"), ("新增", "create"), ("修改", "edit"), ("删除", "delete"), ("返回", "back")])
@@ -241,6 +298,47 @@ def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: Crede
             if action == "create": _create(reader, store, service, kind)
             elif action == "edit": _edit(reader, store, service, kind, items)
             else: _delete(reader, store, service, kind, items)
+        except InteractiveCancel:
+            print("已取消，草稿未保存。")
+        except InteractiveBack:
+            print("已返回上级菜单，草稿未保存。")
+        except (ValueError, KeyError) as error:
+            print(f"无法保存：{error}")
+
+
+def _manage_credentials(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    service: CredentialService,
+    secrets: LocalFileCredentialSecretStore,
+) -> None:
+    registry = store.registry()
+    vendor_id = _choose_vendor(reader, registry)
+    vendor = registry.vendors[vendor_id]
+    while True:
+        registry = store.registry()
+        credentials = [item for item in registry.credentials.values() if item.vendor_id == vendor_id]
+        print(f"\n{vendor.name} Credentials")
+        for index, item in enumerate(credentials, start=1):
+            print(f"  {index}. {item.name or item.id}")
+        choices: list[tuple[str, str]] = [
+            (item.name or item.id, item.id) for item in credentials
+        ]
+        choices.extend([("创建新的", "__create__"), ("返回", "__back__")])
+        selected = reader.choice("选择访问凭证", choices)
+        if selected == "__back__":
+            return
+        try:
+            if selected == "__create__":
+                _create_credential_for_vendor(reader, store, service, registry, vendor_id)
+                continue
+            action = reader.choice("Credential 操作", [("查看", "view"), ("修改", "edit"), ("删除", "delete"), ("返回", "back")])
+            if action == "view":
+                _view("credentials", {selected: registry.credentials[selected]}, store, secrets)
+            elif action == "edit":
+                _edit_credential(reader, store, service, selected)
+            elif action == "delete":
+                _delete_credential(reader, store, service, selected)
         except InteractiveCancel:
             print("已取消，草稿未保存。")
         except InteractiveBack:
@@ -295,16 +393,18 @@ def _create(reader: InteractiveReader, store: RegistryStore, service: Credential
         document = _family_wizard(reader, store.registry())
         if reader.confirm("确认保存 Model Family？", default=True, allow_back=True): store.create(kind, document); print("已保存。")
     elif kind == "credentials":
-        document, token = _credential_wizard(reader, store.registry())
-        if reader.confirm(f"保存令牌 {document['id']}（{mask_token(token)}）？", default=True, allow_back=True):
-            service.create(document, token); print("令牌元数据与本地 Secret Store 已保存。")
+        registry = store.registry()
+        _create_credential_for_vendor(reader, store, service, registry, _choose_vendor(reader, registry))
     else:
         registry = store.registry()
         if not registry.credentials:
             print("创建 Preset 前需要先创建 Credential。")
             return
         document = _preset_wizard(reader, registry)
-        if reader.confirm("确认保存 Preset？", default=True, allow_back=True): store.create(kind, document); print("已保存。")
+        if reader.confirm("确认保存 Preset？", default=True, allow_back=True):
+            store.create(kind, document)
+            readiness = check_bootstrap_state(store, service.secret_store)
+            print(f"已保存。Readiness: {'Runnable' if document['id'] in readiness.runnable_preset_ids else 'Not runnable'}")
 
 
 def _vendor_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -473,46 +573,78 @@ def _edit_capability_definition(reader: InteractiveReader, schema: Any, existing
     return result
 
 
-def _credential_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None, *, immutable_vendor: bool = False, collect_token: bool = True) -> tuple[dict[str, Any], str | None]:
-    draft, token_box = deepcopy(existing or {}), {}
+def _credential_wizard(
+    reader: InteractiveReader,
+    registry: Any,
+    existing: dict[str, Any] | None = None,
+    *,
+    vendor_id: str | None = None,
+    immutable_vendor: bool = False,
+    collect_token: bool = True,
+) -> tuple[dict[str, Any], str | None]:
+    draft, token_box = _canonical_relationship_fields(deepcopy(existing or {})), {}
     editing = existing is not None
-    if editing: print(f"Credential ID: {draft['id']}（不可修改）")
-    def identifier(state: dict[str, Any]) -> None: state["id"] = reader.text("Credential ID: ", required=True)
+    if editing: print(f"内部 Credential ID: {draft['id']}（不可修改）")
+    elif vendor_id is not None: draft["id"] = _generated_identifier("cred", vendor_id, registry.credentials)
+    def identifier(state: dict[str, Any]) -> None: state["id"] = _generated_identifier("cred", state["vendor_id"], registry.credentials)
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
     def vendor(state: dict[str, Any]) -> None:
-        if not immutable_vendor: state["vendor"] = reader.choice("选择 Vendor", [(item.name, item.id) for item in registry.vendors.values()])
-    def scope(state: dict[str, Any]) -> None:
-        restricted = reader.confirm("是否限制此令牌只能用于部分 Base URL？", default=bool(state.get("base_url_ids")), allow_back=True)
-        state["base_url_ids"] = reader.multi_choice("选择允许使用的 Base URL", [(item.id, item.id) for item in registry.vendors[state["vendor"]].base_urls]) if restricted else []
+        if vendor_id is not None: state["vendor_id"] = vendor_id
+        elif not immutable_vendor: state["vendor_id"] = _choose_vendor(reader, registry)
+    def source(state: dict[str, Any]) -> None:
+        current = "environment" if state.get("env") else "local"
+        selected = reader.choice("访问凭证来源", [("本地 Secret（推荐）", "local"), ("环境变量", "environment")])
+        if selected == "environment":
+            state["env"] = reader.text("环境变量名: ", default=state.get("env") if current == "environment" else None, required=True)
+            state.pop("secret_ref", None)
+        else:
+            state.pop("env", None)
+            state["secret_ref"] = f"local:{state['id']}"
+            if collect_token: token_box["token"] = reader.secret("请输入 Token（不回显）: ")
     def expiry(state: dict[str, Any]) -> None: _optional_field(reader, state, "expires_at", "过期日期 YYYY-MM-DD（可留空；clear 清除）")
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
-    def token(state: dict[str, Any]) -> None: token_box["token"] = reader.secret("请输入令牌（不回显）: ")
-    steps = ([] if editing else [identifier]) + [name, vendor, scope, expiry, notes]
-    if collect_token: steps.append(token)
+    if editing:
+        steps: list[DraftStep] = [name, expiry, notes]
+    else:
+        steps = [vendor, identifier, name, source, expiry, notes]
     draft = _run_wizard(steps, draft)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
-    draft.setdefault("secret_ref", f"local:{draft['id']}"); draft.setdefault("created_at", now); draft["updated_at"] = now
+    draft.setdefault("created_at", now); draft["updated_at"] = now
     return draft, token_box.get("token")
 
 
+def _canonical_relationship_fields(document: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a legacy user document to the explicit relationship field names."""
+    for canonical, legacy in (
+        ("vendor_id", "vendor"),
+        ("credential_id", "credential"),
+        ("base_url_id", "base_url"),
+        ("model_family_id", "model_family"),
+        ("model_id", "model"),
+    ):
+        if canonical not in document and legacy in document:
+            document[canonical] = document.pop(legacy)
+    return document
+
+
 def _preset_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    draft = deepcopy(existing or {})
+    draft = _canonical_relationship_fields(deepcopy(existing or {}))
     editing = existing is not None
-    if editing: print(f"Preset ID: {draft['id']}（不可修改）")
-    def identifier(state: dict[str, Any]) -> None: state["id"] = reader.text("Preset ID: ", required=True)
+    if editing: print(f"内部 Preset ID: {draft['id']}（不可修改）")
+    def identifier(state: dict[str, Any]) -> None: state["id"] = _generated_identifier("preset", state["model_id"], registry.presets)
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
-    def vendor(state: dict[str, Any]) -> None: state["vendor"] = reader.choice("选择 Vendor", [(item.name, item.id) for item in registry.vendors.values()])
-    def family(state: dict[str, Any]) -> None: state["model_family"] = reader.choice("选择 Model Family", [(key, key) for key in registry.model_families])
-    def model(state: dict[str, Any]) -> None: state["model"] = reader.choice("选择 Model", [(key, key) for key in registry.model_families[state["model_family"]].models])
-    def url(state: dict[str, Any]) -> None: state["base_url"] = reader.choice("选择 Base URL", [(item.id, item.id) for item in registry.vendors[state["vendor"]].base_urls if state["model_family"] in item.model_families])
+    def vendor(state: dict[str, Any]) -> None: state["vendor_id"] = _choose_vendor(reader, registry)
+    def family(state: dict[str, Any]) -> None: state["model_family_id"] = _choose_vendor_family(reader, registry, state["vendor_id"])
+    def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
+    def url(state: dict[str, Any]) -> None: state["base_url_id"] = _choose_vendor_base_url(reader, registry, state["vendor_id"], state["model_family_id"])
     def credential(state: dict[str, Any]) -> None:
-        candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor"] and (not item.base_url_ids or state["base_url"] in item.base_url_ids)]
-        if not candidates: raise ValueError("没有与 Vendor/Base URL scope 兼容的令牌。")
-        state["credential"] = reader.choice("选择令牌", [(item.name or item.id, item.id) for item in candidates])
+        candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor_id"] and (not item.base_url_ids or state["base_url_id"] in item.base_url_ids)]
+        if not candidates: raise ValueError("该 Vendor 尚无兼容的访问凭证；请先创建 Credential。")
+        state["credential_id"] = reader.choice("选择 Credential", [(item.name or item.id, item.id) for item in candidates])
     def description(state: dict[str, Any]) -> None: _optional_field(reader, state, "description", "描述（可留空；clear 清除）")
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
-    draft = _run_wizard(([] if editing else [identifier]) + [name, vendor, family, model, url, credential, description, notes], draft)
-    runtime = registry.resolve(vendor_id=draft["vendor"], base_url_id=draft["base_url"], credential_id=draft["credential"], model_family_id=draft["model_family"], model_id=draft["model"])
+    draft = _run_wizard([vendor, family, model, url, credential, name] + ([] if editing else [identifier]) + [description, notes], draft)
+    runtime = registry.resolve(vendor_id=draft["vendor_id"], base_url_id=draft["base_url_id"], credential_id=draft["credential_id"], model_family_id=draft["model_family_id"], model_id=draft["model_id"])
     draft["parameters"] = _semantic_parameters(reader, runtime.resolved_capabilities)
     return draft
 
@@ -521,22 +653,50 @@ def _edit(reader: InteractiveReader, store: RegistryStore, service: CredentialSe
     choices = [(getattr(item, "name", None) or item.id, item.id) for item in items.values() if (store.user_root / kind / f"{item.id}.yaml").is_file()]
     if not choices: print("没有可修改的用户定义；内置定义只读。"); return
     identifier, document = reader.choice("选择要修改的用户定义", choices), None
-    document = store.read_user_document(kind, identifier)
     if kind == "credentials":
-        document, _ = _credential_wizard(reader, store.registry(), document, immutable_vendor=True, collect_token=False)
-        replace = reader.confirm("确认更换令牌？", default=False, allow_back=True)
-        token = reader.secret("新令牌（不回显）: ") if replace else None
-        if reader.confirm("确认保存修改？", default=True, allow_back=True):
-            service.update(identifier, CredentialUpdateDraft(document, replace_token=replace, new_token=token if replace else None)); print("已保存。")
-    else:
-        document = _vendor_wizard(reader, store.registry(), document) if kind == "vendors" else _family_wizard(reader, store.registry(), document) if kind == "model_families" else _preset_wizard(reader, store.registry(), document)
-        if reader.confirm("确认保存修改？", default=True, allow_back=True): store.update(kind, identifier, document); print("已保存。")
+        _edit_credential(reader, store, service, identifier)
+        return
+    document = store.read_user_document(kind, identifier)
+    document = _vendor_wizard(reader, store.registry(), document) if kind == "vendors" else _family_wizard(reader, store.registry(), document) if kind == "model_families" else _preset_wizard(reader, store.registry(), document)
+    if reader.confirm("确认保存修改？", default=True, allow_back=True): store.update(kind, identifier, document); print("已保存。")
+
+
+def _edit_credential(reader: InteractiveReader, store: RegistryStore, service: CredentialService, identifier: str) -> None:
+    document = store.read_user_document("credentials", identifier)
+    document, token = _credential_wizard(
+        reader, store.registry(), document, immutable_vendor=True, collect_token=False
+    )
+    replace_token = document.get("secret_ref") is not None and reader.confirm("确认更换本地 Token？", default=False, allow_back=True)
+    token = reader.secret("新 Token（不回显）: ") if replace_token else None
+    if reader.confirm("确认保存修改？", default=True, allow_back=True):
+        if document.get("env") is not None:
+            service.update(identifier, CredentialUpdateDraft(document))
+        else:
+            service.update(
+                identifier,
+                CredentialUpdateDraft(document, replace_token=replace_token, new_token=token),
+            )
+        print("已保存。")
+
+
+def _delete_credential(reader: InteractiveReader, store: RegistryStore, service: CredentialService, identifier: str) -> None:
+    references = store.references("credentials", identifier)
+    if references:
+        print("无法删除。请先删除或迁移引用该 Credential 的 Preset：")
+        print("\n".join(f"- {item}" for item in references))
+        return
+    if reader.confirm("确认删除该 Credential？", default=False):
+        service.delete(identifier)
+        print("已删除。")
 
 
 def _delete(reader: InteractiveReader, store: RegistryStore, service: CredentialService, kind: str, items: Any) -> None:
     choices = [(getattr(item, "name", None) or item.id, item.id) for item in items.values() if (store.user_root / kind / f"{item.id}.yaml").is_file()]
     if not choices: print("没有可删除的用户定义；内置定义只读。"); return
     identifier = reader.choice("选择要删除的用户定义", choices)
+    if kind == "credentials":
+        _delete_credential(reader, store, service, identifier)
+        return
     if store.references(kind, identifier): raise ValueError("该对象仍被引用，不能删除。")
     if reader.confirm(f"确认删除 {identifier}？", default=False):
         if kind == "credentials": service.delete(identifier)
@@ -560,6 +720,12 @@ def _status(store: RegistryStore, service: CredentialService, secrets: LocalFile
     )
     if state.problems:
         print("\nProblems:\n" + "\n".join(f"- {item}" for item in state.problems))
+    by_vendor: dict[str, int] = {}
+    for credential in registry.credentials.values():
+        by_vendor[credential.vendor_id] = by_vendor.get(credential.vendor_id, 0) + 1
+    print("\nCredentials by Vendor:")
+    for vendor_id, count in sorted(by_vendor.items()):
+        print(f"{registry.vendors[vendor_id].name}: {count}")
 
 
 def _semantic_parameters(reader: InteractiveReader, capabilities: Any) -> dict[str, Any]:
