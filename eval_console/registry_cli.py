@@ -655,8 +655,7 @@ def _credential_wizard(
 ) -> tuple[dict[str, Any], str | None]:
     draft, token_box = _canonical_relationship_fields(deepcopy(existing or {})), {}
     editing = existing is not None
-    if editing: print(f"内部 Credential ID: {draft['id']}（不可修改）")
-    elif vendor_id is not None: draft["id"] = _generated_identifier("cred", vendor_id, registry.credentials)
+    if not editing and vendor_id is not None: draft["id"] = _generated_identifier("cred", vendor_id, registry.credentials)
     def identifier(state: dict[str, Any]) -> None: state["id"] = _generated_identifier("cred", state["vendor_id"], registry.credentials)
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
     def vendor(state: dict[str, Any]) -> None:
@@ -674,13 +673,10 @@ def _credential_wizard(
             state["secret_ref"] = f"local:{state['id']}"
             if collect_token: token_box["token"] = reader.secret("请输入 Token（不回显）: ")
     def expiry(state: dict[str, Any]) -> None: _optional_field(reader, state, "expires_at", "过期日期 YYYY-MM-DD（可留空；clear 清除）")
-    def status(state: dict[str, Any]) -> None:
-        state["status"] = reader.choice(
-            "状态", [("Active", "active"), ("Expired", "expired"), ("Disabled", "disabled")]
-        )
+    def description(state: dict[str, Any]) -> None: _optional_field(reader, state, "description", "描述（可留空；clear 清除）")
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
     if editing:
-        steps: list[DraftStep] = [name, expiry, status, notes]
+        steps: list[DraftStep] = [name, description, notes, expiry]
     else:
         steps = [vendor, identifier, name, source, expiry, notes]
     draft = _run_wizard(steps, draft)
@@ -746,6 +742,13 @@ def _edit_credential(reader: InteractiveReader, store: RegistryStore, service: C
     document, token = _credential_wizard(
         reader, _configuration_registry(store), document, immutable_vendor=True, collect_token=False
     )
+    current_status = document.get("status", "active")
+    selected_status = reader.choice(
+        "状态",
+        [(f"保持当前（{current_status}）", None), ("Active", "active"), ("Expired", "expired"), ("Disabled", "disabled")],
+    )
+    if selected_status is not None:
+        document["status"] = selected_status
     replace_token = document.get("secret_ref") is not None and reader.confirm("确认更换本地 Token？", default=False, allow_back=True)
     token = reader.secret("新 Token（不回显）: ") if replace_token else None
     if reader.confirm("确认保存修改？", default=True, allow_back=True):
