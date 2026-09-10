@@ -334,7 +334,6 @@ def build_parser() -> argparse.ArgumentParser:
         target_concurrency=None,
         judge_concurrency=None,
     )
-
     validate = subparsers.add_parser("validate", help="检查 Eval、Registry 和输出目录")
     validate.add_argument("--results-root", type=Path, default=runner.RESULTS_BASE)
     validate.add_argument("--target-preset")
@@ -429,8 +428,8 @@ def _add_run_arguments(
     parser.add_argument("--target-profile", help=argparse.SUPPRESS)
     parser.add_argument("--judge-profile", help=argparse.SUPPRESS)
     parser.add_argument("--profiles-file", type=Path, default=runner.DEFAULT_PROVIDER_PROFILES, help=argparse.SUPPRESS)
-    parser.add_argument("--target-model", help=argparse.SUPPRESS)
-    parser.add_argument("--judge-model", help=argparse.SUPPRESS)
+    parser.add_argument("--target-model", "--model", dest="target_model", help="覆盖 Target Preset 的默认模型（须受当前 Vendor/Base URL 支持）")
+    parser.add_argument("--judge-model", help="覆盖 Judge Preset 的默认模型（同 Model Family）")
     parser.add_argument("--results-root", type=Path, default=runner.RESULTS_BASE)
     parser.add_argument("--run-id")
     parser.add_argument("--dry-run", action="store_true", help="检查并显示计划，不调用真实 API")
@@ -1928,7 +1927,7 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
     mode = _execution_mode_from_args(args)
     target_preset = getattr(args, "target_preset", None)
     judge_preset = getattr(args, "judge_preset", None)
-    if any(getattr(args, field, None) for field in ("profile", "target_profile", "judge_profile", "target_model", "judge_model")):
+    if any(getattr(args, field, None) for field in ("profile", "target_profile", "judge_profile")):
         raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。新运行请使用 --target-preset / --judge-preset。")
     requires_target = mode in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY}
     requires_judge = mode in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY}
@@ -1953,6 +1952,8 @@ def _request_from_args(args: argparse.Namespace, eval_id: str, case_ids: list[st
             args.judge_concurrency if isinstance(args.judge_concurrency, int) else 1
         ),
         run_id=args.run_id,
+        target_model_override=getattr(args, "target_model", None),
+        judge_model_override=getattr(args, "judge_model", None),
         continue_on_error=not getattr(args, "stop_on_error", False),
         mode=mode,
         source_run_dir=(
@@ -2286,3 +2287,4 @@ def _validation_args(
         judge_profile=None,
         debug=debug,
     )
+# Modified by AI on 2026-09-10 15:20:16

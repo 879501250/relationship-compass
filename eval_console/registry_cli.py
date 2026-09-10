@@ -12,7 +12,7 @@ from uuid import uuid4
 from .credential_service import CredentialService, CredentialUpdateDraft
 from .credential_store import LocalFileCredentialSecretStore, mask_token
 from .interactive import CLEAR_VALUE, InteractiveBack, InteractiveCancel, InteractiveEOF, InteractiveReader
-from .registry_runtime import PresetReadiness, RegistryProviderFactory, RegistryRuntimeResolver
+from .registry_runtime import PresetReadiness, RegistryProviderFactory, RegistryRuntimeResolver, format_preset_readiness_failure
 from .registry_store import RegistryStore
 
 
@@ -45,20 +45,27 @@ def check_bootstrap_state(
     secrets: LocalFileCredentialSecretStore,
 ) -> RegistryBootstrapState:
     """Assess the current overlay and secret store without making HTTP calls."""
-    registry = store.registry()
-    resolver = RegistryRuntimeResolver(registry, secrets)
-    readiness = tuple(
-        resolver.assess_preset_readiness(identifier)
-        for identifier in sorted(registry.presets)
-    )
-    problems = _bootstrap_problems(registry, readiness)
+    registry = _configuration_registry(store)
+    readiness: list[PresetReadiness] = []
+    preset_ids = store.preset_ids() if isinstance(store, RegistryStore) else tuple(sorted(registry.presets))
+    for identifier in preset_ids:
+        try:
+            preset_registry = store.registry_for_preset(identifier) if isinstance(store, RegistryStore) else registry
+            readiness.append(
+                RegistryRuntimeResolver(preset_registry, secrets)
+                .assess_preset_readiness(identifier)
+            )
+        except ValueError as error:
+            readiness.append(PresetReadiness(identifier, False, False, False, False, False, False, (), (format_preset_readiness_failure(identifier, str(error)),)))
+    readiness_tuple = tuple(readiness)
+    problems = _bootstrap_problems(registry, readiness_tuple)
     return RegistryBootstrapState(
         vendor_count=len(registry.vendors),
         model_family_count=len(registry.model_families),
         model_count=sum(len(item.models) for item in registry.model_families.values()),
         credential_count=len(registry.credentials),
-        preset_count=len(registry.presets),
-        runnable_preset_ids=tuple(item.preset_id for item in readiness if item.runnable),
+        preset_count=len(preset_ids),
+        runnable_preset_ids=tuple(item.preset_id for item in readiness_tuple if item.runnable),
         problems=problems,
     )
 
@@ -94,7 +101,7 @@ def manage_registry(
         while True:
             _print_registry_summary(check_bootstrap_state(store, secrets))
             try:
-                choice = reader.choice("模型与令牌管理", [("快速配置第一个模型", "quick_setup"), ("Vendor 管理", "vendors"), ("Model Family 管理", "model_families"), ("访问凭证管理", "credentials"), ("Preset 管理", "presets"), ("检查 Registry", "check"), ("返回", "back")])
+                choice = reader.choice("模型与令牌管理", [("快速配置第一个模型", "quick_setup"), ("Vendor 管理", "vendors"), ("Model Family 管理", "model_families"), ("访问凭证管理", "credentials"), ("Preset 管理", "presets"), ("检查 Registry", "check"), ("系统管理", "system"), ("返回", "back")])
             except InteractiveBack:
                 return 0
             if choice == "back": return 0
@@ -102,10 +109,48 @@ def manage_registry(
                 quick_setup_first_model(reader, store, service, secrets)
                 continue
             if choice == "check": _status(store, service, secrets); continue
+            if choice == "system":
+                _system_management(reader, store, secrets)
+                continue
             _manage_kind(reader, store, service, secrets, choice)
     except InteractiveEOF:
         print("检测到输入流已关闭，已安全返回主菜单。")
     return 0
+
+
+def _system_management(reader: InteractiveReader, store: RegistryStore, secrets: LocalFileCredentialSecretStore) -> None:
+    while True:
+        choice = reader.choice("系统管理", [
+            ("查看 Registry 状态", "status"),
+            ("导出用户配置", "export"),
+            ("恢复默认 Registry", "restore"),
+            ("清理用户配置", "clear"),
+            ("返回", "back"),
+        ])
+        if choice == "back":
+            return
+        if choice == "status":
+            _print_registry_summary(check_bootstrap_state(store, secrets))
+        elif choice == "export":
+            exported = store.export_user_configuration(datetime.now().strftime("%Y%m%d-%H%M%S"))
+            print(f"已导出用户 Registry 配置：{exported}")
+            print("Token 保留在本地 Secret Store，未被导出。")
+        elif choice == "restore":
+            print("将恢复系统默认模型定义。不会删除 Credential 或 Preset。")
+            if reader.confirm("继续？", default=False):
+                store.restore_builtin_model_definitions()
+                print("已恢复内建 Vendor、Model Family 与 Model 定义。")
+        else:
+            print("这将清理用户 Credential、Preset 与本地 Secret Store。")
+            if not reader.confirm("我已理解此操作不可撤销，继续？", default=False, allow_back=True):
+                print("未执行清理。")
+            elif reader.text("再次输入 RESET 确认: ", allow_back=True) == "RESET":
+                for identifier in secrets.list_ids():
+                    secrets.delete(identifier)
+                store.clear_user_configuration()
+                print("用户配置已清理；内建 Registry 保持不变。")
+            else:
+                print("未执行清理。")
 
 
 def _registry_services(
@@ -120,6 +165,11 @@ def _registry_services(
     return store, secrets, CredentialService(store, secrets)
 
 
+def _configuration_registry(store: RegistryStore) -> Any:
+    """Keep management available when a separate user preset is malformed."""
+    return store.registry_without_presets() if isinstance(store, RegistryStore) else store.registry()
+
+
 def quick_setup_first_model(
     reader: InteractiveReader,
     store: RegistryStore,
@@ -127,7 +177,7 @@ def quick_setup_first_model(
     secrets: LocalFileCredentialSecretStore,
 ) -> RegistryBootstrapState:
     """Create a Vendor-first Credential/Preset pair without asking for IDs."""
-    registry = store.registry()
+    registry = _configuration_registry(store)
     vendor_id = _choose_vendor(reader, registry)
     family_id = _choose_vendor_family(reader, registry, vendor_id)
     model_id = reader.choice(
@@ -135,9 +185,9 @@ def quick_setup_first_model(
     )
     base_url_id = _choose_vendor_base_url(reader, registry, vendor_id, family_id)
     credential_id = _choose_or_create_credential(reader, store, service, registry, vendor_id)
-    registry = store.registry()
+    registry = _configuration_registry(store)
     preset_name = reader.text("Preset 名称: ", default=f"{model_id} 默认配置", required=True)
-    preset_id = _generated_identifier("preset", model_id, registry.presets)
+    preset_id = _generated_identifier("preset", model_id, store.preset_ids())
     preset = _preset_document(
         preset_id, preset_name, vendor_id, base_url_id, credential_id, family_id, model_id
     )
@@ -244,7 +294,7 @@ def _preset_document(
         "base_url_id": base_url_id,
         "credential_id": credential_id,
         "model_family_id": family_id,
-        "model_id": model_id,
+        "default_model_id": model_id,
         "parameters": {},
     }
 
@@ -260,7 +310,7 @@ def _bootstrap_problems(registry: Any, readiness: tuple[PresetReadiness, ...]) -
         problems.append("Missing model definition.")
     if not registry.credentials:
         problems.append("Missing credential: 请先创建 Credential。")
-    if not registry.presets:
+    if not readiness:
         problems.append("Missing preset: 请先创建 Preset。")
     for item in readiness:
         if not item.runnable:
@@ -280,6 +330,18 @@ def _print_registry_summary(state: RegistryBootstrapState) -> None:
     )
 
 
+def _preset_items(store: RegistryStore) -> dict[str, Any]:
+    """Return independently readable presets; a broken neighbor remains a warning."""
+    items: dict[str, Any] = {}
+    for identifier in store.preset_ids():
+        try:
+            registry = store.registry_for_preset(identifier)
+            items[identifier] = registry.presets[identifier]
+        except (KeyError, ValueError):
+            continue
+    return items
+
+
 def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: CredentialService, secrets: LocalFileCredentialSecretStore, kind: str) -> None:
     if kind == "credentials":
         _manage_credentials(reader, store, service, secrets)
@@ -291,8 +353,8 @@ def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: Crede
         except InteractiveBack:
             return
         if action == "back": return
-        registry = store.registry()
-        items = getattr(registry, {"vendors": "vendors", "model_families": "model_families", "credentials": "credentials", "presets": "presets"}[kind])
+        registry = _configuration_registry(store)
+        items = _preset_items(store) if kind == "presets" else getattr(registry, {"vendors": "vendors", "model_families": "model_families"}[kind])
         if action == "view": _view(kind, items, store, secrets); continue
         try:
             if action == "create": _create(reader, store, service, kind)
@@ -312,11 +374,11 @@ def _manage_credentials(
     service: CredentialService,
     secrets: LocalFileCredentialSecretStore,
 ) -> None:
-    registry = store.registry()
+    registry = _configuration_registry(store)
     vendor_id = _choose_vendor(reader, registry)
     vendor = registry.vendors[vendor_id]
     while True:
-        registry = store.registry()
+        registry = _configuration_registry(store)
         credentials = [item for item in registry.credentials.values() if item.vendor_id == vendor_id]
         print(f"\n{vendor.name} Credentials")
         for index, item in enumerate(credentials, start=1):
@@ -373,7 +435,16 @@ def _view(kind: str, items: Any, store: RegistryStore, secrets: LocalFileCredent
     for item in items.values():
         if kind == "credentials":
             scope = ", ".join(item.base_url_ids) or "全部 Base URL"
-            print(f"{item.id} | {item.name or item.id} | {item.vendor_id} | {scope} | {store.credential_status(item.id)} | {item.expires_at or '未设置'} | {mask_token(secrets.get(item.id))}")
+            print(
+                f"{item.name or item.id}\n"
+                f"  Vendor: {item.vendor_id}\n"
+                f"  Status: {item.status}\n"
+                f"  Created: {item.created_at or '未知'}\n"
+                f"  Updated: {item.updated_at or '未知'}\n"
+                f"  Last Used: {item.last_used_at or 'Never'}\n"
+                f"  Expires: {item.expires_at or 'Never'}\n"
+                f"  Scope: {scope}"
+            )
         elif kind == "vendors":
             print(f"{item.id} | {item.name} | Protocol={item.protocol or '按 Base URL'}")
             for url in item.base_urls:
@@ -387,16 +458,16 @@ def _view(kind: str, items: Any, store: RegistryStore, secrets: LocalFileCredent
 
 def _create(reader: InteractiveReader, store: RegistryStore, service: CredentialService, kind: str) -> None:
     if kind == "vendors":
-        document = _vendor_wizard(reader, store.registry())
+        document = _vendor_wizard(reader, _configuration_registry(store))
         if reader.confirm("确认保存 Vendor？", default=True, allow_back=True): store.create(kind, document); print("已保存。")
     elif kind == "model_families":
-        document = _family_wizard(reader, store.registry())
+        document = _family_wizard(reader, _configuration_registry(store))
         if reader.confirm("确认保存 Model Family？", default=True, allow_back=True): store.create(kind, document); print("已保存。")
     elif kind == "credentials":
-        registry = store.registry()
+        registry = _configuration_registry(store)
         _create_credential_for_vendor(reader, store, service, registry, _choose_vendor(reader, registry))
     else:
-        registry = store.registry()
+        registry = _configuration_registry(store)
         if not registry.credentials:
             print("创建 Preset 前需要先创建 Credential。")
             return
@@ -592,8 +663,9 @@ def _credential_wizard(
         if vendor_id is not None: state["vendor_id"] = vendor_id
         elif not immutable_vendor: state["vendor_id"] = _choose_vendor(reader, registry)
     def source(state: dict[str, Any]) -> None:
-        current = "environment" if state.get("env") else "local"
+        current = state.get("source") or ("environment" if state.get("env") else "local")
         selected = reader.choice("访问凭证来源", [("本地 Secret（推荐）", "local"), ("环境变量", "environment")])
+        state["source"] = selected
         if selected == "environment":
             state["env"] = reader.text("环境变量名: ", default=state.get("env") if current == "environment" else None, required=True)
             state.pop("secret_ref", None)
@@ -602,14 +674,18 @@ def _credential_wizard(
             state["secret_ref"] = f"local:{state['id']}"
             if collect_token: token_box["token"] = reader.secret("请输入 Token（不回显）: ")
     def expiry(state: dict[str, Any]) -> None: _optional_field(reader, state, "expires_at", "过期日期 YYYY-MM-DD（可留空；clear 清除）")
+    def status(state: dict[str, Any]) -> None:
+        state["status"] = reader.choice(
+            "状态", [("Active", "active"), ("Expired", "expired"), ("Disabled", "disabled")]
+        )
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
     if editing:
-        steps: list[DraftStep] = [name, expiry, notes]
+        steps: list[DraftStep] = [name, expiry, status, notes]
     else:
         steps = [vendor, identifier, name, source, expiry, notes]
     draft = _run_wizard(steps, draft)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
-    draft.setdefault("created_at", now); draft["updated_at"] = now
+    draft.setdefault("created_at", now); draft.setdefault("status", "active"); draft["updated_at"] = now
     return draft, token_box.get("token")
 
 
@@ -624,6 +700,8 @@ def _canonical_relationship_fields(document: dict[str, Any]) -> dict[str, Any]:
     ):
         if canonical not in document and legacy in document:
             document[canonical] = document.pop(legacy)
+    if "model_id" not in document and "default_model_id" in document:
+        document["model_id"] = document.pop("default_model_id")
     return document
 
 
@@ -635,7 +713,7 @@ def _preset_wizard(reader: InteractiveReader, registry: Any, existing: dict[str,
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
     def vendor(state: dict[str, Any]) -> None: state["vendor_id"] = _choose_vendor(reader, registry)
     def family(state: dict[str, Any]) -> None: state["model_family_id"] = _choose_vendor_family(reader, registry, state["vendor_id"])
-    def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
+    def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择默认 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
     def url(state: dict[str, Any]) -> None: state["base_url_id"] = _choose_vendor_base_url(reader, registry, state["vendor_id"], state["model_family_id"])
     def credential(state: dict[str, Any]) -> None:
         candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor_id"] and (not item.base_url_ids or state["base_url_id"] in item.base_url_ids)]
@@ -646,6 +724,7 @@ def _preset_wizard(reader: InteractiveReader, registry: Any, existing: dict[str,
     draft = _run_wizard([vendor, family, model, url, credential, name] + ([] if editing else [identifier]) + [description, notes], draft)
     runtime = registry.resolve(vendor_id=draft["vendor_id"], base_url_id=draft["base_url_id"], credential_id=draft["credential_id"], model_family_id=draft["model_family_id"], model_id=draft["model_id"])
     draft["parameters"] = _semantic_parameters(reader, runtime.resolved_capabilities)
+    draft["default_model_id"] = draft.pop("model_id")
     return draft
 
 
@@ -657,14 +736,15 @@ def _edit(reader: InteractiveReader, store: RegistryStore, service: CredentialSe
         _edit_credential(reader, store, service, identifier)
         return
     document = store.read_user_document(kind, identifier)
-    document = _vendor_wizard(reader, store.registry(), document) if kind == "vendors" else _family_wizard(reader, store.registry(), document) if kind == "model_families" else _preset_wizard(reader, store.registry(), document)
+    registry = store.registry_for_preset(identifier) if kind == "presets" else _configuration_registry(store)
+    document = _vendor_wizard(reader, registry, document) if kind == "vendors" else _family_wizard(reader, registry, document) if kind == "model_families" else _preset_wizard(reader, registry, document)
     if reader.confirm("确认保存修改？", default=True, allow_back=True): store.update(kind, identifier, document); print("已保存。")
 
 
 def _edit_credential(reader: InteractiveReader, store: RegistryStore, service: CredentialService, identifier: str) -> None:
     document = store.read_user_document("credentials", identifier)
     document, token = _credential_wizard(
-        reader, store.registry(), document, immutable_vendor=True, collect_token=False
+        reader, _configuration_registry(store), document, immutable_vendor=True, collect_token=False
     )
     replace_token = document.get("secret_ref") is not None and reader.confirm("确认更换本地 Token？", default=False, allow_back=True)
     token = reader.secret("新 Token（不回显）: ") if replace_token else None
@@ -705,17 +785,27 @@ def _delete(reader: InteractiveReader, store: RegistryStore, service: Credential
 
 
 def _status(store: RegistryStore, service: CredentialService, secrets: LocalFileCredentialSecretStore) -> None:
-    registry, status = store.registry(), service.status()
-    expired = sum(store.credential_status(item.id) == "已过期" for item in registry.credentials.values())
+    registry = _configuration_registry(store)
+    secret_ids = secrets.list_ids()
+    local_credentials = {
+        item.id for item in registry.credentials.values()
+        if item.secret_reference == f"local:{item.id}"
+    }
+    expired = sum(
+        item.status == "expired" or (
+            item.expires_at is not None and item.expires_at < datetime.now().date().isoformat()
+        )
+        for item in registry.credentials.values()
+    )
     state = check_bootstrap_state(store, secrets)
     _print_registry_summary(state)
     print(
         "\nRegistry Summary\n"
         f"Validation: PASS\n"
         f"Secret Store: {'Ready' if secrets.path.exists() else 'Empty'}\n"
-        f"Secrets: {len(status.secret_ids)}\n"
-        f"Orphan Secrets: {len(status.orphan_secret_ids)}\n"
-        f"Missing Secrets: {len(status.missing_secret_ids)}\n"
+        f"Secrets: {len(secret_ids)}\n"
+        f"Orphan Secrets: {len(secret_ids - local_credentials)}\n"
+        f"Missing Secrets: {len(local_credentials - secret_ids)}\n"
         f"Expired Credentials: {expired}"
     )
     if state.problems:
@@ -730,14 +820,34 @@ def _status(store: RegistryStore, service: CredentialService, secrets: LocalFile
 
 def _semantic_parameters(reader: InteractiveReader, capabilities: Any) -> dict[str, Any]:
     parameters: dict[str, Any] = {}
-    for name, rule in capabilities.items():
-        if not rule["supported"]: continue
-        values = rule.get("allowed_values") or rule.get("modes")
-        if values:
-            if reader.confirm(f"设置 {name}？", default=False): parameters[name] = reader.choice(name, [(str(value), value) for value in values])
-        elif name == "max_output_tokens":
-            value = reader.text("Max Output Tokens（可留空）: ")
-            if value:
-                if not value.isdigit() or int(value) <= 0: raise ValueError("Max Output Tokens 必须是正整数。")
-                parameters[name] = int(value)
+    structured = capabilities.get("structured_output", {})
+    if structured.get("supported"):
+        modes = set(structured.get("modes", ()))
+        choices: list[tuple[str, str | None]] = [("普通文本", None)]
+        if "json_object" in modes:
+            choices.append(("JSON Object", "json_object"))
+        if "strict_json_schema" in modes:
+            choices.append(("Strict JSON Schema（高级）", "strict_json_schema"))
+        selected = reader.choice("输出模式", choices)
+        if selected is not None:
+            parameters["structured_output"] = selected
+    thinking = capabilities.get("thinking", {})
+    if thinking.get("supported"):
+        values = set(thinking.get("allowed_values", ()))
+        choices = [("默认", None)]
+        if "enabled" in values:
+            choices.append(("开启推理", "enabled"))
+        if "disabled" in values:
+            choices.append(("关闭推理", "disabled"))
+        selected = reader.choice("推理模式", choices)
+        if selected is not None:
+            parameters["thinking"] = selected
+    tokens = capabilities.get("max_output_tokens", {})
+    if tokens.get("supported"):
+        value = reader.text("Max Output Tokens（留空表示使用模型默认限制）: ")
+        if value:
+            if not value.isdigit() or int(value) <= 0:
+                raise ValueError("Max Output Tokens 必须是正整数。")
+            parameters["max_output_tokens"] = int(value)
     return parameters
+# Modified by AI on 2026-09-10 15:20:16

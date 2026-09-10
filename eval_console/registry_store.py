@@ -27,6 +27,28 @@ class RegistryStore:
     def registry(self) -> ModelRegistry:
         return ModelRegistry(self.builtin_root, user_root=self.user_root)
 
+    def registry_without_presets(self) -> ModelRegistry:
+        """Load definitions needed to configure a preset without unrelated preset failures."""
+        return self._isolated_registry()
+
+    def registry_for_preset(self, identifier: str) -> ModelRegistry:
+        """Load one preset with its dependencies, isolating unrelated preset documents."""
+        return self._isolated_registry(identifier)
+
+    def preset_ids(self) -> tuple[str, ...]:
+        """List built-in and user preset ids even if a separate preset is malformed."""
+        identifiers = set(ModelRegistry(self.builtin_root).presets)
+        directory = self.user_root / "presets"
+        for path in directory.glob("*.y*ml") if directory.is_dir() else ():
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                identifiers.add(path.stem)
+                continue
+            value = document.get("id") if isinstance(document, dict) else None
+            identifiers.add(value if isinstance(value, str) and value else path.stem)
+        return tuple(sorted(identifiers))
+
     def create(self, kind: RegistryKind, document: Mapping[str, Any]) -> None:
         identifier = self._identifier(document)
         if self._builtin_has(kind, identifier):
@@ -99,6 +121,33 @@ class RegistryStore:
         if not isinstance(value, dict): raise ValueError("用户 Registry 文档格式无效。")
         return deepcopy(value)
 
+    def mark_credential_used(self, identifier: str, timestamp: str) -> None:
+        """Persist usage metadata for user credentials only; never touch secrets."""
+        document = self.read_user_document("credentials", identifier)
+        document["last_used_at"] = timestamp
+        self.update("credentials", identifier, document)
+
+    def restore_builtin_model_definitions(self) -> None:
+        """Discard only user Vendor/Model definitions; Credentials and Presets remain."""
+        for kind in ("vendors", "model_families"):
+            target = self.user_root / kind
+            if target.is_dir():
+                shutil.rmtree(target)
+
+    def clear_user_configuration(self) -> None:
+        """Remove the explicitly configured overlay after caller confirmation."""
+        if self.user_root.is_dir():
+            shutil.rmtree(self.user_root)
+
+    def export_user_configuration(self, timestamp: str) -> Path:
+        """Create a metadata-only Registry export; secrets live in a separate store."""
+        destination = self.user_root.parent / f"registry-export-{timestamp}"
+        if self.user_root.is_dir():
+            shutil.copytree(self.user_root, destination)
+        else:
+            destination.mkdir(parents=True, exist_ok=False)
+        return destination
+
     def _commit_candidate(self, kind: RegistryKind, identifier: str, document: dict[str, Any] | None, *, delete: bool) -> None:
         self._validate_candidate(kind, identifier, document, delete=delete)
         actual = self._path(kind, identifier)
@@ -118,7 +167,28 @@ class RegistryStore:
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _write_json_atomically(target, document or {})
+            if kind == "presets":
+                self._remove_other_presets(candidate, identifier)
+            elif kind == "credentials":
+                self._remove_other_presets(candidate)
             ModelRegistry(self.builtin_root, user_root=candidate)
+
+    def _isolated_registry(self, preset_id: str | None = None) -> ModelRegistry:
+        with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-") as raw:
+            candidate = Path(raw) / "registry"
+            if self.user_root.exists():
+                shutil.copytree(self.user_root, candidate)
+            self._remove_other_presets(candidate, preset_id)
+            return ModelRegistry(self.builtin_root, user_root=candidate)
+
+    @staticmethod
+    def _remove_other_presets(root: Path, keep_id: str | None = None) -> None:
+        directory = root / "presets"
+        if not directory.is_dir():
+            return
+        for path in directory.glob("*.y*ml"):
+            if keep_id is None or path.stem != keep_id:
+                path.unlink()
 
     def _builtin_has(self, kind: RegistryKind, identifier: str) -> bool:
         registry = ModelRegistry(self.builtin_root)
@@ -140,3 +210,4 @@ def _write_json_atomically(path: Path, value: Mapping[str, Any]) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name); handle.write(rendered); handle.flush(); os.fsync(handle.fileno())
     temporary.replace(path)
+# Modified by AI on 2026-09-10 15:20:16

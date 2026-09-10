@@ -27,6 +27,7 @@ from .registry_runtime import (
     RegistryRuntimeError,
     RegistryRuntimeResolver,
 )
+from .registry_store import RegistryStore
 
 
 ProgressCallback = Callable[[str, dict[str, Any], int, int], None]
@@ -138,7 +139,7 @@ def validate_request(request: EvalRunRequest, *, allow_test_providers: bool = Fa
         raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。Target 运行请使用 --target-preset。")
     if needs_judge and not request.judge_preset_id:
         raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。Judge 运行请使用 --judge-preset。")
-    if request.target_profile or request.judge_profile or request.target_model_override or request.judge_model_override:
+    if request.target_profile or request.judge_profile:
         raise EvalConsoleError("Eval Console V1.3C 已迁移至 Model Registry。新运行请使用 --target-preset / --judge-preset。")
     if request.mode in {EvalExecutionMode.JUDGE_ONLY, EvalExecutionMode.RESUME} and request.source_run_dir is None:
         raise EvalConsoleError("仅 Judge 或继续运行必须指定历史 Run。")
@@ -176,7 +177,7 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
         )
         if needs_target:
             try:
-                target = _create_registry_provider(resolver, request.target_preset_id, "target")
+                target = _create_registry_provider(resolver, request.target_preset_id, "target", request.target_model_override)
             except (runner.ModelEvalError, RegistryRuntimeError) as exc:
                 _raise_resume_credential_error(request, "Target", exc)
                 raise
@@ -189,7 +190,7 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
             target_plan["enabled"] = True
         if needs_judge:
             try:
-                judge = _create_registry_provider(resolver, request.judge_preset_id, "judge")
+                judge = _create_registry_provider(resolver, request.judge_preset_id, "judge", request.judge_model_override)
             except (runner.ModelEvalError, RegistryRuntimeError) as exc:
                 _raise_resume_credential_error(request, "Judge", exc)
                 raise
@@ -339,6 +340,8 @@ def execute_request(
         if interrupted:
             _mark_interrupted(run_dir)
         api_calls = _api_call_delta(before_calls, _api_call_counts(run_dir))
+        if not request.dry_run:
+            _mark_used_credentials(request, target_provider, judge_provider, api_calls)
         _record_execution_metadata(
             run_dir, request, stage_plan, api_calls, interrupted, execution_started_at
         )
@@ -1051,11 +1054,12 @@ def friendly_error(error: BaseException) -> str:
 
 
 def _create_registry_provider(
-    resolver: RegistryRuntimeResolver | None, preset_id: str | None, role: str
+    resolver: RegistryRuntimeResolver | None, preset_id: str | None, role: str,
+    model_override: str | None = None,
 ) -> Any:
     if resolver is None or not preset_id:
         raise EvalConsoleError(f"{role.title()} 运行缺少 Registry Preset。")
-    binding = resolver.resolve_preset(preset_id)
+    binding = resolver.resolve_preset(preset_id, model_id=model_override)
     provider = RegistryProviderFactory.create(binding, role=role)
     # Deliberately private and secret-free: persisted only through the helpers
     # below, never through the provider's HTTP configuration manifest.
@@ -1074,6 +1078,27 @@ def _uses_registry(request: EvalRunRequest) -> bool:
 def _registry_runtime_record(provider: Any | None) -> dict[str, Any] | None:
     value = getattr(provider, "_registry_runtime_record", None) if provider is not None else None
     return deepcopy(value) if isinstance(value, dict) else None
+
+
+def _mark_used_credentials(
+    request: EvalRunRequest, target: Any | None, judge: Any | None, api_calls: dict[str, int]
+) -> None:
+    """Best-effort user metadata update after a real provider call; dry-runs skip it."""
+    store = RegistryStore(request.registry_root or runner.ROOT / ".eval_console" / "model_registry")
+    for role, provider in (("target", target), ("judge", judge)):
+        if api_calls.get(role, 0) <= 0:
+            continue
+        record = _registry_runtime_record(provider)
+        identity = record.get("identity_snapshot") if isinstance(record, dict) else None
+        credential_id = identity.get("credential_id") if isinstance(identity, dict) else None
+        if not isinstance(credential_id, str):
+            continue
+        try:
+            store.mark_credential_used(credential_id, runner.utc_now())
+        except (OSError, ValueError):
+            # Built-in Credentials are read-only examples; usage metadata is
+            # deliberately local to a user-owned Credential document.
+            continue
 
 
 def _append_log(
@@ -1119,3 +1144,4 @@ def _record_duration(record: dict[str, Any]) -> float | None:
         )
     except ValueError:
         return None
+# Modified by AI on 2026-09-10 15:20:16

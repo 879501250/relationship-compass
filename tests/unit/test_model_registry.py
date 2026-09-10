@@ -38,6 +38,22 @@ class ModelRegistryContractTests(unittest.TestCase):
         self.assertEqual(default_runtime.provenance["base_url_selection"], "family_default")
         self.assertEqual(explicit_runtime.base_url_id, "official-global")
 
+    def test_preset_default_model_can_be_overridden_within_its_family(self) -> None:
+        runtime = self.registry.resolve(preset_id="kimi-official", model_id="kimi-k3")
+        self.assertEqual(runtime.model_id, "kimi-k3")
+        self.assertEqual(self.registry.presets["kimi-official"].default_model_id, "kimi-k2.6")
+
+    def test_supported_modes_is_normalized_to_runtime_modes(self) -> None:
+        with self._temporary_registry() as root:
+            family_path = root / "model_families/family.yaml"
+            family = json.loads(family_path.read_text(encoding="utf-8"))
+            family["defaults"]["capabilities"]["structured_output"] = {
+                "supported": True, "supported_modes": ["json_object"]
+            }
+            family_path.write_text(json.dumps(family), encoding="utf-8")
+            runtime = ModelRegistry(root).resolve(preset_id="preset", semantic_parameters={"structured_output": "json_object"})
+        self.assertEqual(runtime.resolved_capabilities["structured_output"]["modes"], ("json_object",))
+
     def test_base_url_ambiguity_never_uses_document_order(self) -> None:
         with self._temporary_registry() as root:
             vendor = self._vendor(urls=[self._url("one"), self._url("two")])
@@ -174,3 +190,4 @@ class ModelRegistryContractTests(unittest.TestCase):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data), encoding="utf-8")
+# Modified by AI on 2026-09-10 15:20:16

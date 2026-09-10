@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -82,12 +83,16 @@ class RegistryRuntimeResolver:
             environ=environ,
         )
 
-    def resolve_preset(self, preset_id: str) -> ResolvedRegistryRuntime:
+    def resolve_preset(self, preset_id: str, *, model_id: str | None = None) -> ResolvedRegistryRuntime:
         try:
-            runtime = self.registry.resolve(preset_id=preset_id)
+            runtime = self.registry.resolve(preset_id=preset_id, model_id=model_id)
         except ModelRegistryError as error:
             raise RegistryRuntimeError(str(error)) from error
         credential = self.registry.credentials[runtime.credential_id]
+        if credential.status == "disabled":
+            raise RegistryRuntimeError(f"Credential '{credential.id}' 已被禁用。")
+        if credential.status == "expired":
+            raise RegistryRuntimeError(f"Credential '{credential.id}' 已标记为过期。")
         token, source = self._resolve_token(credential)
         identity = runtime_identity_snapshot(runtime)
         audit = runtime_audit_snapshot(runtime, credential_source=source)
@@ -105,25 +110,33 @@ class RegistryRuntimeResolver:
         try:
             runtime = self.registry.resolve(preset_id=preset_id)
         except ModelRegistryError as error:
-            return PresetReadiness(preset_id, False, False, False, False, False, False, (), (str(error),))
+            return PresetReadiness(preset_id, False, False, False, False, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         credential = self.registry.credentials[runtime.credential_id]
+        if credential.status == "disabled":
+            return PresetReadiness(preset_id, True, False, False, True, False, False, (), (format_preset_readiness_failure(preset_id, f"Credential '{credential.id}' 已被禁用。"),))
+        if credential.status == "expired":
+            return PresetReadiness(preset_id, True, False, True, True, False, False, (), (format_preset_readiness_failure(preset_id, f"Credential '{credential.id}' 已标记为过期。"),))
         expired = credential.expires_at is not None and date.fromisoformat(credential.expires_at) < date.today()
         protocol_supported = runtime.protocol in RegistryProviderFactory.SUPPORTED_PROTOCOLS
         if expired:
-            return PresetReadiness(preset_id, True, False, True, protocol_supported, False, False, (), (f"Credential '{credential.id}' 已过期。",))
+            return PresetReadiness(preset_id, True, False, True, protocol_supported, False, False, (), (format_preset_readiness_failure(preset_id, f"Credential '{credential.id}' 已过期。"),))
         try:
             binding = self.resolve_preset(preset_id)
         except RegistryRuntimeError as error:
-            return PresetReadiness(preset_id, True, False, False, protocol_supported, False, False, (), (str(error),))
+            return PresetReadiness(preset_id, True, False, False, protocol_supported, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         if not protocol_supported:
-            return PresetReadiness(preset_id, True, True, False, False, False, False, (), (f"当前 Eval Runner 不支持 {runtime.protocol}。",))
+            return PresetReadiness(preset_id, True, True, False, False, False, False, (), (format_preset_readiness_failure(preset_id, f"当前 Eval Runner 不支持 {runtime.protocol}。"),))
         try:
             RegistryProviderFactory.create(binding, role="judge")
-        except RegistryRuntimeError as error:
-            return PresetReadiness(preset_id, True, True, False, True, False, False, (), (str(error),))
+        except (RegistryRuntimeError, runner.ModelEvalError) as error:
+            return PresetReadiness(preset_id, True, True, False, True, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         return PresetReadiness(preset_id, True, True, False, True, True, True, (), ())
 
     def _resolve_token(self, credential: Credential) -> tuple[str, str]:
+        if credential.status == "disabled":
+            raise RegistryRuntimeError(f"Credential '{credential.id}' 已被禁用。")
+        if credential.status == "expired":
+            raise RegistryRuntimeError(f"Credential '{credential.id}' 已标记为过期。")
         if credential.expires_at is not None and date.fromisoformat(credential.expires_at) < date.today():
             raise RegistryRuntimeError(f"Credential '{credential.id}' 已于 {credential.expires_at} 过期。")
         if credential.environment_variable is not None:
@@ -176,6 +189,24 @@ class PresetReadiness:
     @property
     def runnable(self) -> bool:
         return self.registry_valid and self.credential_ready and self.protocol_supported and self.parameter_mapping_supported and self.provider_constructable
+
+
+def format_preset_readiness_failure(preset_id: str, message: str) -> str:
+    """Render capability failures as an actionable, secret-free readiness report."""
+    result = ["Preset Readiness Failed", f"Preset: {preset_id}"]
+    mismatch = re.search(
+        r"semantic parameter 'structured_output' value ('[^']+') is not allowed; expected one of (.+)",
+        message,
+    )
+    if mismatch:
+        result.extend([
+            "Reason: Capability mismatch",
+            f"Required: {mismatch.group(1)}",
+            f"Supported: {mismatch.group(2)}",
+        ])
+    else:
+        result.extend(["Reason:", message])
+    return "\n".join(result)
 
 
 def runtime_identity_snapshot(runtime: ResolvedModelRuntime) -> dict[str, Any]:
@@ -318,3 +349,4 @@ def _plain(value: Any) -> Any:
 def _snapshot_hash(snapshot: Mapping[str, Any]) -> str:
     payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+# Modified by AI on 2026-09-10 15:20:16

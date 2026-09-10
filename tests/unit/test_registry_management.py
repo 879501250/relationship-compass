@@ -18,6 +18,7 @@ from eval_console.registry_cli import (
     check_bootstrap_state,
     quick_setup_first_model,
 )
+from eval_console.registry_runtime import RegistryRuntimeResolver
 from eval_console.registry_store import RegistryStore
 
 
@@ -280,7 +281,57 @@ class RegistryBootstrapTests(unittest.TestCase):
             service.delete("cred_moonshot_b")
             self.assertNotIn("cred_moonshot_b", store.registry().credentials)
 
+    def test_credential_lifecycle_usage_and_model_definition_restore_are_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = RegistryStore(Path(raw) / "user", builtin_root=ROOT / "model_registry")
+            secrets = LocalFileCredentialSecretStore(Path(raw) / "credentials.secrets.json")
+            service = CredentialService(store, secrets)
+            service.create({"id": "cred_lifecycle", "name": "Lifecycle", "vendor_id": "moonshot", "secret_ref": "local:cred_lifecycle", "status": "active", "created_at": "2026-09-10T00:00:00+00:00", "updated_at": "2026-09-10T00:00:00+00:00"}, "safe-token")
+            store.mark_credential_used("cred_lifecycle", "2026-09-11T00:00:00+00:00")
+            credential = store.registry().credentials["cred_lifecycle"]
+            self.assertEqual(credential.status, "active")
+            self.assertEqual(credential.last_used_at, "2026-09-11T00:00:00+00:00")
+            store.create("vendors", {"id": "temporary", "name": "Temporary", "protocol": "openai_compatible_chat", "base_urls": [{"id": "primary", "url": "https://temporary.example/v1", "model_families": ["kimi"], "default_for": ["kimi"]}]})
+            store.restore_builtin_model_definitions()
+            self.assertIn("cred_lifecycle", store.registry().credentials)
+            self.assertNotIn("temporary", store.registry().vendors)
+            store.clear_user_configuration()
+            self.assertFalse(store.user_root.exists())
+            self.assertIn("moonshot", store.registry().vendors)
+
+    def test_bad_preset_isolated_from_new_preset_and_expired_credential_is_not_runnable(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = RegistryStore(Path(raw) / "user", builtin_root=ROOT / "model_registry")
+            secrets = LocalFileCredentialSecretStore(Path(raw) / "credentials.secrets.json")
+            service = CredentialService(store, secrets)
+            service.create(
+                {"id": "cred_ready", "name": "Ready", "vendor_id": "moonshot", "source": "local", "secret_ref": "local:cred_ready"},
+                "safe-token",
+            )
+            bad_path = store.user_root / "presets" / "old_judge.yaml"
+            bad_path.parent.mkdir(parents=True, exist_ok=True)
+            bad_path.write_text(json.dumps({
+                "id": "old_judge", "vendor_id": "moonshot", "base_url_id": "official-cn",
+                "credential_id": "cred_ready", "model_family_id": "kimi",
+                "default_model_id": "kimi-k2.6", "parameters": {"structured_output": "strict_json_schema"},
+            }), encoding="utf-8")
+            store.create("presets", {
+                "id": "kimi_ready", "vendor_id": "moonshot", "base_url_id": "official-cn",
+                "credential_id": "cred_ready", "model_family_id": "kimi",
+                "default_model_id": "kimi-k2.6", "parameters": {"structured_output": "json_object"},
+            })
+            state = check_bootstrap_state(store, secrets)
+            self.assertIn("kimi_ready", state.runnable_preset_ids)
+            self.assertTrue(any("old_judge" in item and "Preset Readiness Failed" in item for item in state.problems))
+            document = store.read_user_document("credentials", "cred_ready")
+            document["status"] = "expired"
+            store.update("credentials", "cred_ready", document)
+            readiness = RegistryRuntimeResolver(store.registry_for_preset("kimi_ready"), secrets).assess_preset_readiness("kimi_ready")
+            self.assertFalse(readiness.runnable)
+            self.assertTrue(readiness.credential_expired)
+
     @staticmethod
     def _write(path: Path, value: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value), encoding="utf-8")
+# Modified by AI on 2026-09-10 15:20:16

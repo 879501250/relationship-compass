@@ -88,6 +88,7 @@ class ModelFamily:
 class Credential:
     id: str
     vendor_id: str
+    source: str
     environment_variable: str | None
     secret_reference: str | None
     name: str | None
@@ -95,6 +96,8 @@ class Credential:
     expires_at: str | None
     created_at: str | None
     updated_at: str | None
+    last_used_at: str | None
+    status: str
     description: str | None
     notes: str | None
 
@@ -111,6 +114,10 @@ class Preset:
     parameters: Mapping[str, Any]
     description: str | None
     notes: str | None
+
+    @property
+    def default_model_id(self) -> str:
+        return self.model_id
 
 
 @dataclass(frozen=True)
@@ -217,6 +224,8 @@ class ModelRegistry:
                     date.fromisoformat(credential.expires_at)
                 except ValueError:
                     errors.append(f"Credential '{credential.id}': expires_at must use YYYY-MM-DD")
+            if credential.status not in {"active", "expired", "disabled"}:
+                errors.append(f"Credential '{credential.id}': invalid status '{credential.status}'")
         for preset in self.presets.values():
             vendor = self.vendors.get(preset.vendor_id)
             credential = self.credentials.get(preset.credential_id)
@@ -261,11 +270,16 @@ class ModelRegistry:
                    "model_family_id": model_family_id, "model_id": model_id, "base_url_id": base_url_id}
         if preset:
             required = {"vendor_id": preset.vendor_id, "credential_id": preset.credential_id,
-                        "model_family_id": preset.model_family_id, "model_id": preset.model_id, "base_url_id": preset.base_url_id}
+                        "base_url_id": preset.base_url_id}
             for key, value in required.items():
                 if choices[key] is not None and choices[key] != value:
                     raise RegistryResolutionError(f"preset '{preset.id}' conflicts with explicit {key} '{choices[key]}'")
                 choices[key] = choices[key] or value
+            if choices["model_id"] is None:
+                choices["model_id"] = preset.model_id
+                choices["model_family_id"] = choices["model_family_id"] or preset.model_family_id
+            elif choices["model_family_id"] is None:
+                choices["model_family_id"] = self._family_id_for_model(choices["model_id"])
         vendor = self._lookup(self.vendors, choices["vendor_id"], "vendor")
         credential = self._lookup(self.credentials, choices["credential_id"], "credential")
         family = self._lookup(self.model_families, choices["model_family_id"], "model family")
@@ -306,6 +320,16 @@ class ModelRegistry:
         return {"api_model_name": override.get("api_name") or model.api_name or model.id,
                 "capabilities": capabilities, "wire_parameters": wire}
 
+    def _family_id_for_model(self, model_id: str) -> str:
+        if not isinstance(model_id, str) or not model_id:
+            raise RegistryResolutionError("model is required")
+        matches = [family.id for family in self.model_families.values() if model_id in family.models]
+        if not matches:
+            raise RegistryResolutionError(f"unknown model '{model_id}'")
+        if len(matches) != 1:
+            raise RegistryResolutionError(f"model '{model_id}' belongs to multiple model families")
+        return matches[0]
+
     def _load_vendors(self) -> dict[str, Vendor]:
         result: dict[str, Vendor] = {}
         for path, data in self._documents("vendors"):
@@ -339,7 +363,7 @@ class ModelRegistry:
     def _load_credentials(self) -> dict[str, Credential]:
         result: dict[str, Credential] = {}
         for path, data in self._documents("credentials"):
-            _secret_guard(data, path); _fields(data, {"id", "vendor", "vendor_id", "env", "secret_ref", "name", "base_url_ids", "expires_at", "created_at", "updated_at", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "vendor", "vendor_id", "source", "env", "secret_ref", "name", "base_url_ids", "expires_at", "created_at", "updated_at", "last_used_at", "status", "description", "notes"}, path)
             env = _optional(data, "env", path)
             if env and not _ENV.fullmatch(env): raise RegistryValidationError(f"{path}: env must be a valid environment variable name")
             identifier = _id(data, "id", path)
@@ -347,9 +371,10 @@ class ModelRegistry:
             if len(base_url_ids) != len(set(base_url_ids)):
                 raise RegistryValidationError(f"{path}: base_url_ids must be unique")
             result[identifier] = Credential(
-                identifier, _id_alias(data, "vendor_id", "vendor", path), env, _optional(data, "secret_ref", path),
+                identifier, _id_alias(data, "vendor_id", "vendor", path), _credential_source(data, env, path), env, _optional(data, "secret_ref", path),
                 _optional(data, "name", path), base_url_ids, _optional(data, "expires_at", path),
                 _optional(data, "created_at", path), _optional(data, "updated_at", path),
+                _optional(data, "last_used_at", path), _credential_status(data, path),
                 _optional(data, "description", path), _optional(data, "notes", path),
             )
         return result
@@ -357,9 +382,9 @@ class ModelRegistry:
     def _load_presets(self) -> dict[str, Preset]:
         result: dict[str, Preset] = {}
         for path, data in self._documents("presets"):
-            _secret_guard(data, path); _fields(data, {"id", "name", "vendor", "vendor_id", "base_url", "base_url_id", "credential", "credential_id", "model_family", "model_family_id", "model", "model_id", "parameters", "description", "notes"}, path)
+            _secret_guard(data, path); _fields(data, {"id", "name", "vendor", "vendor_id", "base_url", "base_url_id", "credential", "credential_id", "model_family", "model_family_id", "model", "model_id", "default_model_id", "parameters", "description", "notes"}, path)
             identifier = _id(data, "id", path)
-            result[identifier] = Preset(identifier, _optional(data, "name", path), _id_alias(data, "vendor_id", "vendor", path), _id_alias(data, "base_url_id", "base_url", path), _id_alias(data, "credential_id", "credential", path), _id_alias(data, "model_family_id", "model_family", path), _string_alias(data, "model_id", "model", path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
+            result[identifier] = Preset(identifier, _optional(data, "name", path), _id_alias(data, "vendor_id", "vendor", path), _id_alias(data, "base_url_id", "base_url", path), _id_alias(data, "credential_id", "credential", path), _id_alias(data, "model_family_id", "model_family", path), _model_alias(data, path), _object(data, "parameters", path), _optional(data, "description", path), _optional(data, "notes", path))
         return result
 
     @staticmethod
@@ -416,8 +441,6 @@ def _json(path: Path) -> Mapping[str, Any]:
     except (OSError, json.JSONDecodeError) as error: raise RegistryValidationError(f"{path}: invalid JSON-compatible YAML ({error})") from error
     if not isinstance(value, Mapping): raise RegistryValidationError(f"{path}: registry entry must be an object")
     return value
-
-
 def _validate_parameters(parameters: Mapping[str, Any], capabilities: Mapping[str, Mapping[str, Any]]) -> None:
     for name, value in parameters.items():
         rule = capabilities.get(name)
@@ -440,12 +463,15 @@ def _capabilities(value: Any, context: str) -> Mapping[str, Mapping[str, Any]]:
     result: dict[str, Mapping[str, Any]] = {}
     for name, rule in value.items():
         if not isinstance(name, str) or not _ID.fullmatch(name) or not isinstance(rule, Mapping): raise RegistryValidationError(f"{context}: capabilities must map semantic identifiers to objects")
-        unknown = set(rule) - {"supported", "allowed_values", "modes"}
+        unknown = set(rule) - {"supported", "allowed_values", "modes", "supported_modes"}
         if unknown or not isinstance(rule.get("supported"), bool): raise RegistryValidationError(f"{context}: capability '{name}' requires boolean supported and no unknown fields")
+        if "modes" in rule and "supported_modes" in rule:
+            raise RegistryValidationError(f"{context}: capability '{name}' must use either modes or supported_modes")
         item = {"supported": rule["supported"]}
         for key in ("allowed_values", "modes"):
-            if key in rule:
-                values = rule[key]
+            source_key = "supported_modes" if key == "modes" and "supported_modes" in rule else key
+            if source_key in rule:
+                values = rule[source_key]
                 if not isinstance(values, (list, tuple)) or not values or any(isinstance(x, (dict, list)) for x in values): raise RegistryValidationError(f"{context}: capability '{name}.{key}' must be a non-empty scalar list")
                 item[key] = tuple(_copy(x) for x in values)
         result[name] = _freeze(item)
@@ -473,8 +499,6 @@ def _id(data: Mapping[str, Any], field: str, path: Path) -> str:
     value = _string(data, field, path)
     if not _ENTITY_ID.fullmatch(value): raise RegistryValidationError(f"{path}: '{field}' must be a lowercase identifier")
     return value
-
-
 def _id_alias(data: Mapping[str, Any], canonical: str, legacy: str, path: Path) -> str:
     """Accept legacy Registry documents while making new relationship names explicit."""
     has_canonical, has_legacy = canonical in data, legacy in data
@@ -492,6 +516,31 @@ def _string_alias(data: Mapping[str, Any], canonical: str, legacy: str, path: Pa
     if not has_canonical and not has_legacy:
         raise RegistryValidationError(f"{path}: '{canonical}' is required")
     return _string(data, canonical if has_canonical else legacy, path)
+
+
+def _model_alias(data: Mapping[str, Any], path: Path) -> str:
+    fields = [field for field in ("default_model_id", "model_id", "model") if field in data]
+    if len(fields) != 1:
+        raise RegistryValidationError(f"{path}: specify exactly one default model field")
+    return _string(data, fields[0], path)
+
+
+def _credential_status(data: Mapping[str, Any], path: Path) -> str:
+    value = data.get("status", "active")
+    if value not in {"active", "expired", "disabled"}:
+        raise RegistryValidationError(f"{path}: status must be active, expired, or disabled")
+    return value
+
+
+def _credential_source(data: Mapping[str, Any], environment_variable: str | None, path: Path) -> str:
+    """Normalize source metadata without exposing or duplicating a secret value."""
+    derived = "environment" if environment_variable is not None else "local"
+    source = data.get("source", derived)
+    if source not in {"environment", "local"}:
+        raise RegistryValidationError(f"{path}: source must be environment or local")
+    if source != derived:
+        raise RegistryValidationError(f"{path}: source must match env or secret_ref")
+    return source
 
 
 def _id_value(value: Any, path: Path, field: str) -> str:
@@ -586,3 +635,4 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping): return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, (tuple, list)): return tuple(_freeze(item) for item in value)
     return value
+# Modified by AI on 2026-09-10 15:20:16
