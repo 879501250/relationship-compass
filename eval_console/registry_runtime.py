@@ -349,4 +349,3 @@ def _plain(value: Any) -> Any:
 def _snapshot_hash(snapshot: Mapping[str, Any]) -> str:
     payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-# Modified by AI on 2026-09-10 15:20:16

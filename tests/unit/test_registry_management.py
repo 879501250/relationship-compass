@@ -334,4 +334,3 @@ class RegistryBootstrapTests(unittest.TestCase):
     def _write(path: Path, value: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value), encoding="utf-8")
-# Modified by AI on 2026-09-10 15:20:16

@@ -635,4 +635,3 @@ def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping): return MappingProxyType({key: _freeze(item) for key, item in value.items()})
     if isinstance(value, (tuple, list)): return tuple(_freeze(item) for item in value)
     return value
-# Modified by AI on 2026-09-10 15:20:16

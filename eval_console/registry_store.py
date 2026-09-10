@@ -210,4 +210,3 @@ def _write_json_atomically(path: Path, value: Mapping[str, Any]) -> None:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name); handle.write(rendered); handle.flush(); os.fsync(handle.fileno())
     temporary.replace(path)
-# Modified by AI on 2026-09-10 15:20:16

@@ -1144,4 +1144,3 @@ def _record_duration(record: dict[str, Any]) -> float | None:
         )
     except ValueError:
         return None
-# Modified by AI on 2026-09-10 15:20:16

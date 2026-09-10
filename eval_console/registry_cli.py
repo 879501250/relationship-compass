@@ -850,4 +850,3 @@ def _semantic_parameters(reader: InteractiveReader, capabilities: Any) -> dict[s
                 raise ValueError("Max Output Tokens 必须是正整数。")
             parameters["max_output_tokens"] = int(value)
     return parameters
-# Modified by AI on 2026-09-10 15:20:16
