@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 from .credential_service import CredentialService, CredentialUpdateDraft
 from .credential_store import LocalFileCredentialSecretStore, mask_token
-from .formatting import format_datetime_for_display
+from .formatting import format_date_for_display, format_datetime_for_display
 from .interactive import CLEAR_VALUE, InteractiveBack, InteractiveCancel, InteractiveEOF, InteractiveReader
 from .registry_runtime import PresetReadiness, RegistryProviderFactory, RegistryRuntimeResolver, format_preset_readiness_failure
 from .registry_store import RegistryStore
@@ -54,7 +54,7 @@ def check_bootstrap_state(
             preset_registry = store.registry_for_preset(identifier) if isinstance(store, RegistryStore) else registry
             readiness.append(
                 RegistryRuntimeResolver(preset_registry, secrets)
-                .assess_preset_readiness(identifier)
+                .assess_preset_readiness(identifier, context="target")
             )
         except ValueError as error:
             readiness.append(PresetReadiness(identifier, False, False, False, False, False, False, (), (format_preset_readiness_failure(identifier, str(error)),)))
@@ -255,13 +255,27 @@ def _choose_or_create_credential(
     registry: Any,
     vendor_id: str,
 ) -> str:
-    candidates = [item for item in registry.credentials.values() if item.vendor_id == vendor_id]
+    candidates = _selectable_credentials(registry, vendor_id)
     choices = [(item.name or item.id, item.id) for item in candidates]
     choices.append(("创建新的访问凭证", "__create__"))
     selected = reader.choice("选择已有 Credential", choices)
     if selected != "__create__":
         return selected
     return _create_credential_for_vendor(reader, store, service, registry, vendor_id)
+
+
+def _selectable_credentials(registry: Any, vendor_id: str) -> list[Any]:
+    """Only offer active, unexpired Credentials for new runtime configuration."""
+    def selectable(item: Any) -> bool:
+        if item.vendor_id != vendor_id or item.status != "active":
+            return False
+        if item.expires_at is None:
+            return True
+        try:
+            return date.fromisoformat(item.expires_at) >= date.today()
+        except ValueError:
+            return False
+    return sorted((item for item in registry.credentials.values() if selectable(item)), key=lambda item: item.id)
 
 
 def _create_credential_for_vendor(
@@ -445,10 +459,10 @@ def _view(kind: str, items: Any, store: RegistryStore, secrets: LocalFileCredent
                 f"{item.name or item.id}\n"
                 f"  Vendor: {item.vendor_id}\n"
                 f"  Status: {item.status}\n"
-                f"  Created: {format_datetime_for_display(item.created_at)}\n"
-                f"  Updated: {format_datetime_for_display(item.updated_at)}\n"
-                f"  Last Used: {format_datetime_for_display(item.last_used_at)}\n"
-                f"  Expires: {format_datetime_for_display(item.expires_at)}\n"
+                f"  Created: {format_datetime_for_display(item.created_at, missing='未知')}\n"
+                f"  Updated: {format_datetime_for_display(item.updated_at, missing='未知')}\n"
+                f"  Last Used: {format_datetime_for_display(item.last_used_at, missing='从未使用')}\n"
+                f"  Expires: {format_date_for_display(item.expires_at, missing='永不过期')}\n"
                 f"  Scope: {scope}"
             )
         elif kind == "vendors":
@@ -474,14 +488,49 @@ def _create(reader: InteractiveReader, store: RegistryStore, service: Credential
         _create_credential_for_vendor(reader, store, service, registry, _choose_vendor(reader, registry))
     else:
         registry = _configuration_registry(store)
-        if not registry.credentials:
-            print("创建 Preset 前需要先创建 Credential。")
-            return
-        document = _preset_wizard(reader, registry)
+        document = _preset_wizard(reader, registry, store=store, service=service)
         if reader.confirm("确认保存 Preset？", default=True, allow_back=True):
             store.create(kind, document)
             readiness = check_bootstrap_state(store, service.secret_store)
             print(f"已保存。Readiness: {'Runnable' if document['id'] in readiness.runnable_preset_ids else 'Not runnable'}")
+
+
+def create_vendor_for_runtime(
+    root: Path, *, registry_root: Path | None = None, credential_store_path: Path | None = None
+) -> str | None:
+    """Create a Vendor from Runtime Selection without duplicating its wizard."""
+    store, _, _ = _registry_services(root, registry_root, credential_store_path)
+    reader = InteractiveReader()
+    document = _vendor_wizard(reader, _configuration_registry(store))
+    if not reader.confirm("确认保存 Vendor？", default=True, allow_back=True):
+        return None
+    store.create("vendors", document)
+    print(f"已保存 Vendor：{document['name']}")
+    return str(document["id"])
+
+
+def create_preset_for_runtime(
+    root: Path,
+    vendor_id: str,
+    *,
+    registry_root: Path | None = None,
+    credential_store_path: Path | None = None,
+) -> str | None:
+    """Create a Preset under the selected Vendor, including inline credential setup."""
+    store, _, service = _registry_services(root, registry_root, credential_store_path)
+    reader = InteractiveReader()
+    document = _preset_wizard(
+        reader,
+        _configuration_registry(store),
+        vendor_id=vendor_id,
+        store=store,
+        service=service,
+    )
+    if not reader.confirm("确认保存 Preset？", default=True, allow_back=True):
+        return None
+    store.create("presets", document)
+    print(f"已保存 Preset：{document['name']}（{document['id']}）")
+    return str(document["id"])
 
 
 def _vendor_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -707,23 +756,43 @@ def _canonical_relationship_fields(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-def _preset_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+def _preset_wizard(
+    reader: InteractiveReader,
+    registry: Any,
+    existing: dict[str, Any] | None = None,
+    *,
+    vendor_id: str | None = None,
+    store: RegistryStore | None = None,
+    service: CredentialService | None = None,
+) -> dict[str, Any]:
     draft = _canonical_relationship_fields(deepcopy(existing or {}))
     editing = existing is not None
+    if not editing and vendor_id is not None:
+        draft["vendor_id"] = vendor_id
     if editing: print(f"内部 Preset ID: {draft['id']}（不可修改）")
     def identifier(state: dict[str, Any]) -> None: state["id"] = _generated_identifier("preset", state["model_id"], registry.presets)
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
-    def vendor(state: dict[str, Any]) -> None: state["vendor_id"] = _choose_vendor(reader, registry)
+    def vendor(state: dict[str, Any]) -> None:
+        state["vendor_id"] = vendor_id or _choose_vendor(reader, registry)
     def family(state: dict[str, Any]) -> None: state["model_family_id"] = _choose_vendor_family(reader, registry, state["vendor_id"])
     def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择默认 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
     def credential(state: dict[str, Any]) -> None:
-        candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor_id"]]
-        if not candidates: raise ValueError("该 Vendor 尚无兼容的访问凭证；请先创建 Credential。")
-        state["credential_id"] = reader.choice("选择 Credential", [(item.name or item.id, item.id) for item in candidates])
+        nonlocal registry
+        if store is None or service is None:
+            candidates = _selectable_credentials(registry, state["vendor_id"])
+            if not candidates:
+                raise ValueError("该 Vendor 尚无可用的访问凭证；请先创建 Credential。")
+            state["credential_id"] = reader.choice("选择 Credential", [(item.name or item.id, item.id) for item in candidates])
+            return
+        state["credential_id"] = _choose_or_create_credential(
+            reader, store, service, registry, state["vendor_id"]
+        )
+        registry = _configuration_registry(store)
     def url(state: dict[str, Any]) -> None: state["base_url_id"] = _choose_vendor_base_url(reader, registry, state["vendor_id"], state["model_family_id"], state["credential_id"])
     def description(state: dict[str, Any]) -> None: _optional_field(reader, state, "description", "描述（可留空；clear 清除）")
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
-    draft = _run_wizard([vendor, family, model, credential, url, name] + ([] if editing else [identifier]) + [description, notes], draft)
+    steps = ([] if vendor_id is not None else [vendor]) + [family, model, credential, url, name]
+    draft = _run_wizard(steps + ([] if editing else [identifier]) + [description, notes], draft)
     runtime = registry.resolve(vendor_id=draft["vendor_id"], base_url_id=draft["base_url_id"], credential_id=draft["credential_id"], model_family_id=draft["model_family_id"], model_id=draft["model_id"])
     draft["parameters"] = _semantic_parameters(reader, runtime.resolved_capabilities)
     draft["default_model_id"] = draft.pop("model_id")
@@ -739,7 +808,7 @@ def _edit(reader: InteractiveReader, store: RegistryStore, service: CredentialSe
         return
     document = store.read_user_document(kind, identifier)
     registry = store.registry_for_preset(identifier) if kind == "presets" else _configuration_registry(store)
-    document = _vendor_wizard(reader, registry, document) if kind == "vendors" else _family_wizard(reader, registry, document) if kind == "model_families" else _preset_wizard(reader, registry, document)
+    document = _vendor_wizard(reader, registry, document) if kind == "vendors" else _family_wizard(reader, registry, document) if kind == "model_families" else _preset_wizard(reader, registry, document, store=store, service=service)
     if reader.confirm("确认保存修改？", default=True, allow_back=True): store.update(kind, identifier, document); print("已保存。")
 
 

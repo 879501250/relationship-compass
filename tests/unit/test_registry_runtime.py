@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -29,7 +31,7 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
             ModelRegistry(), LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "unused-registry-secret.json"),
             environ={"MOONSHOT_API_KEY": "token-for-test-only"},
         )
-        binding = resolver.resolve_preset("kimi-official")
+        binding = resolver.resolve_preset("kimi-official", context="judge")
         provider = RegistryProviderFactory.create(binding, role="judge")
         self.assertEqual(provider.protocol, "openai_compatible_chat")
         self.assertEqual(provider.model, "kimi-k2.6")
@@ -48,12 +50,38 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
         self.assertNotIn("structured_output", target.runtime.semantic_parameters)
         self.assertEqual(judge.runtime.semantic_parameters["structured_output"], "json_object")
 
-    def test_missing_env_credential_fails_before_provider_creation(self) -> None:
+    def test_runtime_context_is_required_and_missing_env_fails_before_provider_creation(self) -> None:
         resolver = RegistryRuntimeResolver(
             ModelRegistry(), LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "unused-registry-secret.json"), environ={}
         )
-        with self.assertRaisesRegex(RegistryRuntimeError, "MOONSHOT_API_KEY"):
+        with self.assertRaises(TypeError):
             resolver.resolve_preset("kimi-official")
+        with self.assertRaisesRegex(RegistryRuntimeError, "MOONSHOT_API_KEY"):
+            resolver.resolve_preset("kimi-official", context="target")
+
+    def test_judge_text_json_fallback_is_explicitly_warned(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "registry"
+            shutil.copytree(ROOT / "model_registry", root)
+            family_path = root / "model_families" / "kimi.yaml"
+            family = json.loads(family_path.read_text(encoding="utf-8"))
+            family["defaults"]["capabilities"]["structured_output"]["modes"] = ["text_json_fallback"]
+            family_path.write_text(json.dumps(family), encoding="utf-8")
+            for preset_path in (root / "presets").glob("*.yaml"):
+                preset = json.loads(preset_path.read_text(encoding="utf-8"))
+                preset.setdefault("parameters", {})["structured_output"] = "text_json_fallback"
+                preset_path.write_text(json.dumps(preset), encoding="utf-8")
+            resolver = RegistryRuntimeResolver(
+                ModelRegistry(root),
+                LocalFileCredentialSecretStore(Path(raw) / "credentials.json"),
+                environ={"MOONSHOT_API_KEY": "token-for-test-only"},
+            )
+            binding = resolver.resolve_preset("kimi-official", context="judge")
+            readiness = resolver.assess_preset_readiness("kimi-official", context="judge")
+        self.assertEqual(binding.runtime.semantic_parameters["structured_output"], "text_json_fallback")
+        self.assertTrue(binding.context_warnings)
+        self.assertTrue(readiness.runnable)
+        self.assertTrue(readiness.warnings)
 
     def test_local_credential_is_resolved_from_store(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

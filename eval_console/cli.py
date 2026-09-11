@@ -56,7 +56,12 @@ from .service import (
     validate_configuration,
 )
 from .test_runner import TerminalTestReporter, TestSuiteRequest, TestSuiteRunner
-from .registry_cli import manage_registry, offer_bootstrap_setup
+from .registry_cli import (
+    create_preset_for_runtime,
+    create_vendor_for_runtime,
+    manage_registry,
+    offer_bootstrap_setup,
+)
 from .registry_runtime import RegistryRuntimeResolver
 from .interactive import InteractiveCancel as RegistryInteractiveCancel, InteractiveEOF as RegistryInteractiveEOF
 
@@ -702,16 +707,108 @@ def _registry_interactive_loop(
         _registry_interactive_run(evals, resolver, results_root, debug, registry_root, credential_store_path)
 
 
-def _choose_registry_preset(resolver: RegistryRuntimeResolver, role: str) -> str:
-    choices: list[tuple[str, str]] = []
-    for preset_id, preset in sorted(resolver.registry.presets.items()):
-        readiness = resolver.assess_preset_readiness(preset_id, context=role.lower())
+def _choose_registry_preset(
+    resolver: RegistryRuntimeResolver,
+    role: str,
+    *,
+    project_root: Path = runner.ROOT,
+    registry_root: Path | None = None,
+    credential_store_path: Path | None = None,
+) -> str | None:
+    """Select Runtime configuration in Context → Vendor → Preset order."""
+    context = role.lower()
+    while True:
+        vendor_id = _choose_runtime_vendor(resolver, role, context)
+        if vendor_id is None:
+            return None
+        if vendor_id == "__create_vendor__":
+            created_vendor = create_vendor_for_runtime(
+                project_root, registry_root=registry_root, credential_store_path=credential_store_path
+            )
+            if created_vendor is None:
+                continue
+            resolver = RegistryRuntimeResolver.for_project(
+                project_root, registry_root=registry_root, credential_store_path=credential_store_path
+            )
+            vendor_id = created_vendor
+        while True:
+            selected = _choose_runtime_preset(resolver, role, context, vendor_id)
+            if selected not in {"__create_preset__", "__configure__", "__back__"}:
+                return selected
+            if selected == "__back__":
+                break
+            if selected == "__configure__":
+                manage_registry(project_root, registry_root=registry_root, credential_store_path=credential_store_path)
+            else:
+                created = create_preset_for_runtime(
+                    project_root, vendor_id,
+                    registry_root=registry_root, credential_store_path=credential_store_path,
+                )
+                if created is None:
+                    continue
+            resolver = RegistryRuntimeResolver.for_project(
+                project_root, registry_root=registry_root, credential_store_path=credential_store_path
+            )
+            if selected == "__create_preset__" and created is not None:
+                readiness = resolver.assess_preset_readiness(created, context=context)
+                if readiness.runnable:
+                    return created
+                print("新 Preset 尚不可运行：")
+                _print_preset_readiness(readiness)
+
+
+def _choose_runtime_vendor(resolver: RegistryRuntimeResolver, role: str, context: str) -> str | None:
+    choices: list[tuple[str, str | None]] = []
+    for vendor in sorted(resolver.registry.vendors.values(), key=lambda item: item.id):
+        supported = any(
+            (endpoint.protocol or vendor.protocol) in {"openai_responses", "openai_compatible_chat"}
+            for endpoint in vendor.base_urls
+        )
+        if not supported:
+            continue
+        runnable = sum(
+            resolver.assess_preset_readiness(preset.id, context=context).runnable
+            for preset in resolver.registry.presets.values()
+            if preset.vendor_id == vendor.id
+        )
+        choices.append((f"{vendor.name}（{runnable} 个可运行 Preset）", vendor.id))
+    choices.extend([("创建新 Vendor", "__create_vendor__"), ("返回", None)])
+    return _choose(f"选择 {role} Vendor", choices)
+
+
+def _choose_runtime_preset(
+    resolver: RegistryRuntimeResolver, role: str, context: str, vendor_id: str
+) -> str:
+    vendor = resolver.registry.vendors[vendor_id]
+    available: list[tuple[str, str]] = []
+    blocked = []
+    for preset in sorted(resolver.registry.presets.values(), key=lambda item: item.id):
+        if preset.vendor_id != vendor_id:
+            continue
+        readiness = resolver.assess_preset_readiness(preset.id, context=context)
         if readiness.runnable:
-            choices.append((f"{preset_id}（{preset.model_id}，可用）", preset_id))
-    if not choices:
-        label = "Judge" if role.lower() == "judge" else "Target"
-        raise EvalConsoleError(f"没有可用于 {label} Context 的 Preset；请检查 Credential、模型能力和 Registry 配置。")
+            available.append((f"{preset.name or preset.id}（{preset.model_id}）", preset.id))
+        else:
+            blocked.append(readiness)
+    if blocked:
+        print(f"{vendor.name} 当前不可用 Preset：")
+        for item in blocked:
+            _print_preset_readiness(item)
+    choices = available + [
+        ("创建新 Preset", "__create_preset__"),
+        ("配置模型与令牌", "__configure__"),
+        ("重新选择 Vendor", "__back__"),
+    ]
     return _choose(f"选择 {role} Preset", choices)
+
+
+def _print_preset_readiness(readiness: object) -> None:
+    errors = getattr(readiness, "blocking_errors", ())
+    if errors:
+        for error in errors:
+            print(f"  - {error}")
+    else:
+        print(f"  - Preset {getattr(readiness, 'preset_id', '未知')} 未满足运行条件。")
 
 
 def _registry_interactive_run(
@@ -741,8 +838,16 @@ def _registry_interactive_run(
     else:
         definition = _choose("选择 Eval", [(f"{item.eval_id}：{item.title}", item) for item in evals])
         case_ids = _interactive_case_selection(definition, results_root)
-    target = _choose_registry_preset(resolver, "Target") if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
-    judge = _choose_registry_preset(resolver, "Judge") if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None
+    target = _choose_registry_preset(
+        resolver, "Target", registry_root=registry_root, credential_store_path=credential_store_path
+    ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
+    judge = _choose_registry_preset(
+        resolver, "Judge", registry_root=registry_root, credential_store_path=credential_store_path
+    ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None
+    if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} and target is None:
+        return 0
+    if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} and judge is None:
+        return 0
     if selected is EvalExecutionMode.RESUME:
         metadata = runner.load_json_object(source_run / "run.json")
         console = metadata["console"]
@@ -1997,6 +2102,8 @@ def _print_stage_preflight(label: str, plan: dict[str, object]) -> None:
         print(f"  [跳过] {label}：本次模式无需执行")
         return
     print(f"  [通过] {label}：{plan['provider']} / {plan['requested_model']}")
+    for warning in plan.get("runtime_warnings", []):
+        print(f"  [警告] {label}：{warning}")
 
 
 def _result_label(phase: str, record: dict[str, object]) -> str:

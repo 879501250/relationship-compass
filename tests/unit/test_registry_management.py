@@ -15,6 +15,7 @@ from eval_console.interactive import InteractiveBack, InteractiveCancel, Interac
 from eval_console.registry_cli import (
     _create,
     _run_wizard,
+    _selectable_credentials,
     check_bootstrap_state,
     quick_setup_first_model,
 )
@@ -250,14 +251,13 @@ class RegistryBootstrapTests(unittest.TestCase):
             self.assertEqual(prompts[:4], ["选择 Vendor", "选择 Model Family", "选择 Model", "选择已有 Credential"])
             self.assertNotIn(secret, output.getvalue())
 
-    def test_preset_create_without_credential_shows_next_step_without_writing(self) -> None:
-        store = mock.Mock()
-        store.registry.return_value = SimpleNamespace(credentials={})
-        output = io.StringIO()
-        with mock.patch("sys.stdout", output):
-            _create(InteractiveReader(input_fn=lambda _prompt: ""), store, mock.Mock(), "presets")
-        self.assertIn("创建 Preset 前需要先创建 Credential", output.getvalue())
-        store.create.assert_not_called()
+    def test_new_preset_credential_choices_exclude_disabled_and_expired_items(self) -> None:
+        registry = SimpleNamespace(credentials={
+            "active": SimpleNamespace(id="active", vendor_id="vendor", status="active", expires_at=None),
+            "disabled": SimpleNamespace(id="disabled", vendor_id="vendor", status="disabled", expires_at=None),
+            "expired": SimpleNamespace(id="expired", vendor_id="vendor", status="active", expires_at="2000-01-01"),
+        })
+        self.assertEqual([item.id for item in _selectable_credentials(registry, "vendor")], ["active"])
 
     def test_canonical_relationship_fields_allow_many_and_protect_credential_references(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -326,7 +326,7 @@ class RegistryBootstrapTests(unittest.TestCase):
             document = store.read_user_document("credentials", "cred_ready")
             document["status"] = "expired"
             store.update("credentials", "cred_ready", document)
-            readiness = RegistryRuntimeResolver(store.registry_for_preset("kimi_ready"), secrets).assess_preset_readiness("kimi_ready")
+            readiness = RegistryRuntimeResolver(store.registry_for_preset("kimi_ready"), secrets).assess_preset_readiness("kimi_ready", context="target")
             self.assertFalse(readiness.runnable)
             self.assertTrue(readiness.credential_expired)
 

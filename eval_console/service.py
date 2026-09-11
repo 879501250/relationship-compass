@@ -78,7 +78,10 @@ def validate_configuration(
         resolver = RegistryRuntimeResolver.for_project(
             runner.ROOT, registry_root=registry_root, credential_store_path=credential_store_path
         )
-        readiness = [resolver.assess_preset_readiness(preset_id) for preset_id in resolver.registry.presets]
+        readiness = [
+            resolver.assess_preset_readiness(preset_id, context="target")
+            for preset_id in resolver.registry.presets
+        ]
         runnable = sum(item.runnable for item in readiness)
         blocked = len(readiness) - runnable
         checks.append(f"Model Registry：已校验 {len(readiness)} 个 Preset；可运行 {runnable}，阻塞 {blocked}")
@@ -188,6 +191,7 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
                 runtime_profile=runner.API_RUNTIME_PROFILE,
             )
             target_plan["enabled"] = True
+            target_plan["runtime_warnings"] = list(target._registry_runtime_record.get("context_warnings", ()))
         if needs_judge:
             try:
                 judge = _create_registry_provider(resolver, request.judge_preset_id, "judge", request.judge_model_override)
@@ -201,6 +205,7 @@ def preflight_request(request: EvalRunRequest) -> tuple[Any | None, Any | None, 
                 runtime_profile=runner.API_RUNTIME_PROFILE,
             )
             judge_plan["enabled"] = True
+            judge_plan["runtime_warnings"] = list(judge._registry_runtime_record.get("context_warnings", ()))
         if request.mode is EvalExecutionMode.RESUME and request.source_run_dir is not None:
             _validate_resume_provider_configuration(request, stage_plan, target, judge)
         return target, judge, target_plan, judge_plan
@@ -1067,6 +1072,7 @@ def _create_registry_provider(
         "identity_snapshot": dict(binding.identity_snapshot),
         "audit_snapshot": dict(binding.audit_snapshot),
         "runtime_hash": binding.runtime_hash,
+        "context_warnings": list(binding.context_warnings),
     }
     return provider
 

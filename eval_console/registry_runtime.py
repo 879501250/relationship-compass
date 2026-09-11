@@ -31,6 +31,7 @@ class ResolvedRegistryRuntime:
     identity_snapshot: Mapping[str, Any]
     audit_snapshot: Mapping[str, Any]
     runtime_hash: str
+    context_warnings: tuple[str, ...] = ()
 
     @property
     def snapshot(self) -> Mapping[str, Any]:
@@ -84,7 +85,7 @@ class RegistryRuntimeResolver:
         )
 
     def resolve_preset(
-        self, preset_id: str, *, model_id: str | None = None, context: str = "judge"
+        self, preset_id: str, *, model_id: str | None = None, context: str
     ) -> ResolvedRegistryRuntime:
         try:
             runtime = self.registry.resolve(
@@ -109,9 +110,10 @@ class RegistryRuntimeResolver:
             identity_snapshot=identity,
             audit_snapshot=audit,
             runtime_hash=_snapshot_hash(identity),
+            context_warnings=self._context_warnings(runtime, context),
         )
 
-    def assess_preset_readiness(self, preset_id: str, *, context: str = "target") -> "PresetReadiness":
+    def assess_preset_readiness(self, preset_id: str, *, context: str) -> "PresetReadiness":
         """Check Registry, credentials and provider construction without HTTP."""
         try:
             runtime = self.registry.resolve(
@@ -139,7 +141,10 @@ class RegistryRuntimeResolver:
             RegistryProviderFactory.create(binding, role=context)
         except (RegistryRuntimeError, runner.ModelEvalError) as error:
             return PresetReadiness(preset_id, True, True, False, True, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
-        return PresetReadiness(preset_id, True, True, False, True, True, True, (), ())
+        return PresetReadiness(
+            preset_id, True, True, False, True, True, True,
+            self._context_warnings(runtime, context), (),
+        )
 
     def _context_parameters(
         self, preset_id: str, model_id: str | None, context: str
@@ -156,10 +161,18 @@ class RegistryRuntimeResolver:
             return {"structured_output": "strict_json_schema"}
         if "json_object" in modes:
             return {"structured_output": "json_object"}
+        if "text_json_fallback" in modes:
+            return {"structured_output": "text_json_fallback"}
         supported = ", ".join(str(item) for item in modes) or "无"
         raise RegistryRuntimeError(
             f"无法执行 Judge Run：模型 {base.model_id} 不支持结构化输出；支持模式：{supported}。"
         )
+
+    @staticmethod
+    def _context_warnings(runtime: ResolvedModelRuntime, context: str) -> tuple[str, ...]:
+        if context == "judge" and runtime.semantic_parameters.get("structured_output") == "text_json_fallback":
+            return ("Judge 使用 text_json_fallback：模型不支持严格 JSON 输出，结果将经过文本 JSON 解析。",)
+        return ()
 
     def _resolve_token(self, credential: Credential) -> tuple[str, str]:
         if credential.status == "disabled":
@@ -344,7 +357,7 @@ def _provider_capabilities(runtime: ResolvedModelRuntime, wire: Mapping[str, Any
     return {
         "reasoning_effort_supported": bool(rule("reasoning_effort").get("supported")),
         "allowed_reasoning_efforts": allowed("reasoning_effort", "allowed_values"),
-        "structured_output_modes": allowed("structured_output", "modes") or ["strict_json_schema", "json_object", "text_json_fallback"],
+        "structured_output_modes": allowed("structured_output", "modes"),
         "temperature_supported": bool(rule("temperature").get("supported")),
         "top_p_supported": bool(rule("top_p").get("supported")),
         "seed_supported": bool(rule("seed").get("supported")),

@@ -9,26 +9,30 @@ from eval_console.registry_runtime import PresetReadiness
 
 
 class RegistryContextSelectionTests(unittest.TestCase):
-    def test_target_and_judge_only_offer_context_runnable_presets(self) -> None:
-        ready = SimpleNamespace(model_id="ready-model")
-        unavailable = SimpleNamespace(model_id="blocked-model")
+    def test_target_and_judge_select_vendor_before_context_runnable_preset(self) -> None:
+        vendor = SimpleNamespace(id="vendor", name="Vendor", protocol="openai_compatible_chat", base_urls=(SimpleNamespace(protocol=None),))
+        ready = SimpleNamespace(id="ready", name="Ready", model_id="ready-model", vendor_id="vendor")
+        unavailable = SimpleNamespace(id="blocked", name="Blocked", model_id="blocked-model", vendor_id="vendor")
         resolver = SimpleNamespace(
-            registry=SimpleNamespace(presets={"ready": ready, "blocked": unavailable}),
+            registry=SimpleNamespace(vendors={"vendor": vendor}, presets={"ready": ready, "blocked": unavailable}),
             assess_preset_readiness=lambda identifier, *, context: PresetReadiness(
                 identifier, identifier == "ready", identifier == "ready", False,
                 identifier == "ready", identifier == "ready", identifier == "ready", (), (),
             ),
         )
-        with mock.patch.object(cli, "_choose", return_value="ready") as choose:
+        with mock.patch.object(cli, "_choose", side_effect=["vendor", "ready"]) as choose:
             self.assertEqual(cli._choose_registry_preset(resolver, "Target"), "ready")
-        self.assertEqual(choose.call_args.args[1], [("ready（ready-model，可用）", "ready")])
+        self.assertEqual(choose.call_args_list[0].args[1][0], ("Vendor（1 个可运行 Preset）", "vendor"))
+        self.assertEqual(choose.call_args_list[1].args[1][0], ("Ready（ready-model）", "ready"))
 
-    def test_judge_context_reports_no_compatible_preset_without_exposing_traceback(self) -> None:
+    def test_vendor_with_no_runnable_preset_offers_configuration_instead_of_error(self) -> None:
+        vendor = SimpleNamespace(id="vendor", name="Vendor", protocol="openai_compatible_chat", base_urls=(SimpleNamespace(protocol=None),))
+        text_only = SimpleNamespace(id="text-only", name="Text", model_id="text-model", vendor_id="vendor")
         resolver = SimpleNamespace(
-            registry=SimpleNamespace(presets={"text-only": SimpleNamespace(model_id="text-model")}),
+            registry=SimpleNamespace(vendors={"vendor": vendor}, presets={"text-only": text_only}),
             assess_preset_readiness=lambda identifier, *, context: PresetReadiness(
                 identifier, True, True, False, True, False, False, (), ("capability mismatch",),
             ),
         )
-        with self.assertRaisesRegex(cli.EvalConsoleError, "Judge Context"):
-            cli._choose_registry_preset(resolver, "Judge")
+        with mock.patch.object(cli, "_choose", side_effect=["vendor", "__back__", None]):
+            self.assertIsNone(cli._choose_registry_preset(resolver, "Judge"))
