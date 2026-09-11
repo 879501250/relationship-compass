@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .credential_service import CredentialService, CredentialUpdateDraft
 from .credential_store import LocalFileCredentialSecretStore, mask_token
+from .formatting import format_datetime_for_display
 from .interactive import CLEAR_VALUE, InteractiveBack, InteractiveCancel, InteractiveEOF, InteractiveReader
 from .registry_runtime import PresetReadiness, RegistryProviderFactory, RegistryRuntimeResolver, format_preset_readiness_failure
 from .registry_store import RegistryStore
@@ -183,9 +184,9 @@ def quick_setup_first_model(
     model_id = reader.choice(
         "选择 Model", [(item, item) for item in sorted(registry.model_families[family_id].models)]
     )
-    base_url_id = _choose_vendor_base_url(reader, registry, vendor_id, family_id)
     credential_id = _choose_or_create_credential(reader, store, service, registry, vendor_id)
     registry = _configuration_registry(store)
+    base_url_id = _choose_vendor_base_url(reader, registry, vendor_id, family_id, credential_id)
     preset_name = reader.text("Preset 名称: ", default=f"{model_id} 默认配置", required=True)
     preset_id = _generated_identifier("preset", model_id, store.preset_ids())
     preset = _preset_document(
@@ -230,12 +231,17 @@ def _choose_vendor_family(reader: InteractiveReader, registry: Any, vendor_id: s
     return reader.choice("选择 Model Family", [(registry.model_families[item].name, item) for item in families])
 
 
-def _choose_vendor_base_url(reader: InteractiveReader, registry: Any, vendor_id: str, family_id: str) -> str:
+def _choose_vendor_base_url(
+    reader: InteractiveReader, registry: Any, vendor_id: str, family_id: str,
+    credential_id: str | None = None,
+) -> str:
     vendor = registry.vendors[vendor_id]
+    credential = registry.credentials.get(credential_id) if credential_id else None
     choices = [
         (endpoint.id, endpoint.id) for endpoint in vendor.base_urls
         if family_id in endpoint.model_families
         and (endpoint.protocol or vendor.protocol) in RegistryProviderFactory.SUPPORTED_PROTOCOLS
+        and (credential is None or not credential.base_url_ids or endpoint.id in credential.base_url_ids)
     ]
     if not choices:
         raise ValueError("所选 Vendor/Model Family 没有可用 Base URL。")
@@ -439,10 +445,10 @@ def _view(kind: str, items: Any, store: RegistryStore, secrets: LocalFileCredent
                 f"{item.name or item.id}\n"
                 f"  Vendor: {item.vendor_id}\n"
                 f"  Status: {item.status}\n"
-                f"  Created: {item.created_at or '未知'}\n"
-                f"  Updated: {item.updated_at or '未知'}\n"
-                f"  Last Used: {item.last_used_at or 'Never'}\n"
-                f"  Expires: {item.expires_at or 'Never'}\n"
+                f"  Created: {format_datetime_for_display(item.created_at)}\n"
+                f"  Updated: {format_datetime_for_display(item.updated_at)}\n"
+                f"  Last Used: {format_datetime_for_display(item.last_used_at)}\n"
+                f"  Expires: {format_datetime_for_display(item.expires_at)}\n"
                 f"  Scope: {scope}"
             )
         elif kind == "vendors":
@@ -710,14 +716,14 @@ def _preset_wizard(reader: InteractiveReader, registry: Any, existing: dict[str,
     def vendor(state: dict[str, Any]) -> None: state["vendor_id"] = _choose_vendor(reader, registry)
     def family(state: dict[str, Any]) -> None: state["model_family_id"] = _choose_vendor_family(reader, registry, state["vendor_id"])
     def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择默认 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
-    def url(state: dict[str, Any]) -> None: state["base_url_id"] = _choose_vendor_base_url(reader, registry, state["vendor_id"], state["model_family_id"])
     def credential(state: dict[str, Any]) -> None:
-        candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor_id"] and (not item.base_url_ids or state["base_url_id"] in item.base_url_ids)]
+        candidates = [item for item in registry.credentials.values() if item.vendor_id == state["vendor_id"]]
         if not candidates: raise ValueError("该 Vendor 尚无兼容的访问凭证；请先创建 Credential。")
         state["credential_id"] = reader.choice("选择 Credential", [(item.name or item.id, item.id) for item in candidates])
+    def url(state: dict[str, Any]) -> None: state["base_url_id"] = _choose_vendor_base_url(reader, registry, state["vendor_id"], state["model_family_id"], state["credential_id"])
     def description(state: dict[str, Any]) -> None: _optional_field(reader, state, "description", "描述（可留空；clear 清除）")
     def notes(state: dict[str, Any]) -> None: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）")
-    draft = _run_wizard([vendor, family, model, url, credential, name] + ([] if editing else [identifier]) + [description, notes], draft)
+    draft = _run_wizard([vendor, family, model, credential, url, name] + ([] if editing else [identifier]) + [description, notes], draft)
     runtime = registry.resolve(vendor_id=draft["vendor_id"], base_url_id=draft["base_url_id"], credential_id=draft["credential_id"], model_family_id=draft["model_family_id"], model_id=draft["model_id"])
     draft["parameters"] = _semantic_parameters(reader, runtime.resolved_capabilities)
     draft["default_model_id"] = draft.pop("model_id")
@@ -823,17 +829,6 @@ def _status(store: RegistryStore, service: CredentialService, secrets: LocalFile
 
 def _semantic_parameters(reader: InteractiveReader, capabilities: Any) -> dict[str, Any]:
     parameters: dict[str, Any] = {}
-    structured = capabilities.get("structured_output", {})
-    if structured.get("supported"):
-        modes = set(structured.get("modes", ()))
-        choices: list[tuple[str, str | None]] = [("普通文本", None)]
-        if "json_object" in modes:
-            choices.append(("JSON Object", "json_object"))
-        if "strict_json_schema" in modes:
-            choices.append(("Strict JSON Schema（高级）", "strict_json_schema"))
-        selected = reader.choice("输出模式", choices)
-        if selected is not None:
-            parameters["structured_output"] = selected
     thinking = capabilities.get("thinking", {})
     if thinking.get("supported"):
         values = set(thinking.get("allowed_values", ()))

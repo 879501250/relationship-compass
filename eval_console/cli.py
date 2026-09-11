@@ -25,6 +25,7 @@ from .discovery import (
     find_eval,
     run_case_outcomes,
 )
+from .formatting import format_datetime_for_display
 from .configuration import (
     create_local_profile_config,
     create_profile,
@@ -704,11 +705,12 @@ def _registry_interactive_loop(
 def _choose_registry_preset(resolver: RegistryRuntimeResolver, role: str) -> str:
     choices: list[tuple[str, str]] = []
     for preset_id, preset in sorted(resolver.registry.presets.items()):
-        readiness = resolver.assess_preset_readiness(preset_id)
-        availability = "可用" if readiness.runnable else f"不可运行：{readiness.blocking_errors[0]}"
-        choices.append((f"{preset_id}（{preset.model_id}，{availability}）", preset_id))
+        readiness = resolver.assess_preset_readiness(preset_id, context=role.lower())
+        if readiness.runnable:
+            choices.append((f"{preset_id}（{preset.model_id}，可用）", preset_id))
     if not choices:
-        raise EvalConsoleError("Registry 中尚无 Preset；请先在“配置模型与令牌”中创建。")
+        label = "Judge" if role.lower() == "judge" else "Target"
+        raise EvalConsoleError(f"没有可用于 {label} Context 的 Preset；请检查 Credential、模型能力和 Registry 配置。")
     return _choose(f"选择 {role} Preset", choices)
 
 
@@ -2180,7 +2182,7 @@ def _print_history(runs: list[HistoricalRun]) -> None:
                 f"API 调用 Target={run.target_api_calls} / Judge={run.judge_api_calls}"
             )
             _print_history_provider_telemetry(run)
-            print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
+            print(f"     {format_datetime_for_display(run.created_at)}  {run.run_dir}")
             continue
         passed = "?" if run.passed_cases is None else str(run.passed_cases)
         print(
@@ -2199,7 +2201,7 @@ def _print_history(runs: list[HistoricalRun]) -> None:
             f"Judge：{run.judge_completed} DONE / {run.judge_errors} ERROR / {run.judge_missing} MISSING"
         )
         _print_history_provider_telemetry(run)
-        print(f"     {run.created_at or '时间未知'}  {run.run_dir}")
+        print(f"     {format_datetime_for_display(run.created_at)}  {run.run_dir}")
 
 
 def _print_history_provider_telemetry(run: HistoricalRun) -> None:

@@ -37,6 +37,17 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
         self.assertNotIn("token-for-test-only", repr(binding))
         self.assertNotIn("token-for-test-only", str(binding.snapshot))
 
+    def test_runtime_context_keeps_preset_role_neutral_and_selects_output_mode(self) -> None:
+        resolver = RegistryRuntimeResolver(
+            ModelRegistry(), LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "unused-registry-secret.json"),
+            environ={"MOONSHOT_API_KEY": "token-for-test-only"},
+        )
+        target = resolver.resolve_preset("kimi-official", context="target")
+        judge = resolver.resolve_preset("kimi-official", context="judge")
+        self.assertNotIn("role", resolver.registry.presets["kimi-official"].__dict__)
+        self.assertNotIn("structured_output", target.runtime.semantic_parameters)
+        self.assertEqual(judge.runtime.semantic_parameters["structured_output"], "json_object")
+
     def test_missing_env_credential_fails_before_provider_creation(self) -> None:
         resolver = RegistryRuntimeResolver(
             ModelRegistry(), LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "unused-registry-secret.json"), environ={}

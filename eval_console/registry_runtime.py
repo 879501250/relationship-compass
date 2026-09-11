@@ -83,9 +83,15 @@ class RegistryRuntimeResolver:
             environ=environ,
         )
 
-    def resolve_preset(self, preset_id: str, *, model_id: str | None = None) -> ResolvedRegistryRuntime:
+    def resolve_preset(
+        self, preset_id: str, *, model_id: str | None = None, context: str = "judge"
+    ) -> ResolvedRegistryRuntime:
         try:
-            runtime = self.registry.resolve(preset_id=preset_id, model_id=model_id)
+            runtime = self.registry.resolve(
+                preset_id=preset_id,
+                model_id=model_id,
+                semantic_parameters=self._context_parameters(preset_id, model_id, context),
+            )
         except ModelRegistryError as error:
             raise RegistryRuntimeError(str(error)) from error
         credential = self.registry.credentials[runtime.credential_id]
@@ -105,11 +111,14 @@ class RegistryRuntimeResolver:
             runtime_hash=_snapshot_hash(identity),
         )
 
-    def assess_preset_readiness(self, preset_id: str) -> "PresetReadiness":
+    def assess_preset_readiness(self, preset_id: str, *, context: str = "target") -> "PresetReadiness":
         """Check Registry, credentials and provider construction without HTTP."""
         try:
-            runtime = self.registry.resolve(preset_id=preset_id)
-        except ModelRegistryError as error:
+            runtime = self.registry.resolve(
+                preset_id=preset_id,
+                semantic_parameters=self._context_parameters(preset_id, None, context),
+            )
+        except (ModelRegistryError, RegistryRuntimeError) as error:
             return PresetReadiness(preset_id, False, False, False, False, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         credential = self.registry.credentials[runtime.credential_id]
         if credential.status == "disabled":
@@ -121,16 +130,36 @@ class RegistryRuntimeResolver:
         if expired:
             return PresetReadiness(preset_id, True, False, True, protocol_supported, False, False, (), (format_preset_readiness_failure(preset_id, f"Credential '{credential.id}' 已过期。"),))
         try:
-            binding = self.resolve_preset(preset_id)
+            binding = self.resolve_preset(preset_id, context=context)
         except RegistryRuntimeError as error:
             return PresetReadiness(preset_id, True, False, False, protocol_supported, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         if not protocol_supported:
             return PresetReadiness(preset_id, True, True, False, False, False, False, (), (format_preset_readiness_failure(preset_id, f"当前 Eval Runner 不支持 {runtime.protocol}。"),))
         try:
-            RegistryProviderFactory.create(binding, role="judge")
+            RegistryProviderFactory.create(binding, role=context)
         except (RegistryRuntimeError, runner.ModelEvalError) as error:
             return PresetReadiness(preset_id, True, True, False, True, False, False, (), (format_preset_readiness_failure(preset_id, str(error)),))
         return PresetReadiness(preset_id, True, True, False, True, True, True, (), ())
+
+    def _context_parameters(
+        self, preset_id: str, model_id: str | None, context: str
+    ) -> Mapping[str, str | None]:
+        if context not in {"target", "judge"}:
+            raise RegistryRuntimeError(f"未知 Runtime Context：{context!r}")
+        base = self.registry.resolve(
+            preset_id=preset_id, model_id=model_id, semantic_parameters={"structured_output": None}
+        )
+        if context == "target":
+            return {"structured_output": None}
+        modes = base.resolved_capabilities.get("structured_output", {}).get("modes", ())
+        if "strict_json_schema" in modes:
+            return {"structured_output": "strict_json_schema"}
+        if "json_object" in modes:
+            return {"structured_output": "json_object"}
+        supported = ", ".join(str(item) for item in modes) or "无"
+        raise RegistryRuntimeError(
+            f"无法执行 Judge Run：模型 {base.model_id} 不支持结构化输出；支持模式：{supported}。"
+        )
 
     def _resolve_token(self, credential: Credential) -> tuple[str, str]:
         if credential.status == "disabled":
@@ -287,7 +316,7 @@ def _provider_arguments(runtime: ResolvedModelRuntime, token: str, role: str) ->
         "provenance_type": None,
         "reasoning_effort": reasoning,
         "thinking": thinking,
-        "structured_output_mode": structured or "strict_json_schema",
+        "structured_output_mode": structured,
         "structured_output_required": role == "judge",
         "capabilities": capabilities,
         "timeout_seconds": _positive_number(defaults.get("timeout_seconds"), 90.0),

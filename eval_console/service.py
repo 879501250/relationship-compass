@@ -1059,7 +1059,7 @@ def _create_registry_provider(
 ) -> Any:
     if resolver is None or not preset_id:
         raise EvalConsoleError(f"{role.title()} 运行缺少 Registry Preset。")
-    binding = resolver.resolve_preset(preset_id, model_id=model_override)
+    binding = resolver.resolve_preset(preset_id, model_id=model_override, context=role)
     provider = RegistryProviderFactory.create(binding, role=role)
     # Deliberately private and secret-free: persisted only through the helpers
     # below, never through the provider's HTTP configuration manifest.

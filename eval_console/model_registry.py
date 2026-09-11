@@ -290,6 +290,9 @@ class ModelRegistry:
         if credential.base_url_ids and endpoint.id not in credential.base_url_ids:
             raise RegistryResolutionError(f"credential '{credential.id}' is not scoped to base URL '{endpoint.id}'")
         parameters = _merge(preset.parameters if preset else {}, semantic_parameters or {})
+        for name, value in (semantic_parameters or {}).items():
+            if value is None:
+                parameters.pop(name, None)
         parts = self._resolve_parts(vendor, endpoint, family, model, parameters)
         return ResolvedModelRuntime(
             vendor_id=vendor.id, vendor_name=vendor.name, base_url_id=endpoint.id, base_url=endpoint.url,
