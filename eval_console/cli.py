@@ -62,7 +62,7 @@ from .registry_cli import (
     manage_registry,
     offer_bootstrap_setup,
 )
-from .registry_runtime import RegistryRuntimeResolver
+from .registry_runtime import RegistryProviderFactory, RegistryRuntimeResolver
 from .interactive import InteractiveCancel as RegistryInteractiveCancel, InteractiveEOF as RegistryInteractiveEOF
 
 
@@ -761,7 +761,7 @@ def _choose_runtime_vendor(resolver: RegistryRuntimeResolver, role: str, context
     choices: list[tuple[str, str | None]] = []
     for vendor in sorted(resolver.registry.vendors.values(), key=lambda item: item.id):
         supported = any(
-            (endpoint.protocol or vendor.protocol) in {"openai_responses", "openai_compatible_chat"}
+            (endpoint.protocol or vendor.protocol) in RegistryProviderFactory.SUPPORTED_PROTOCOLS
             for endpoint in vendor.base_urls
         )
         if not supported:
@@ -841,6 +841,12 @@ def _registry_interactive_run(
     target = _choose_registry_preset(
         resolver, "Target", registry_root=registry_root, credential_store_path=credential_store_path
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
+    if selected is EvalExecutionMode.FULL and target is not None:
+        resolver = RegistryRuntimeResolver.for_project(
+            runner.ROOT,
+            registry_root=registry_root,
+            credential_store_path=credential_store_path,
+        )
     judge = _choose_registry_preset(
         resolver, "Judge", registry_root=registry_root, credential_store_path=credential_store_path
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None

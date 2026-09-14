@@ -17,6 +17,8 @@ from eval_console.registry_cli import (
     _run_wizard,
     _selectable_credentials,
     check_bootstrap_state,
+    create_preset_for_runtime,
+    create_vendor_for_runtime,
     quick_setup_first_model,
 )
 from eval_console.registry_runtime import RegistryRuntimeResolver
@@ -170,6 +172,35 @@ class InteractiveReaderTests(unittest.TestCase):
         def one(draft: dict[str, str]) -> None: draft["one"] = reader.text("one: ", required=True)
         def two(draft: dict[str, str]) -> None: draft["two"] = reader.text("two: ", required=True)
         self.assertEqual(_run_wizard([one, two]), {"one": "correct", "two": "second"})
+
+    def test_runtime_create_helpers_treat_back_as_local_navigation(self) -> None:
+        vendor_store = mock.Mock()
+        vendor_reader = mock.Mock()
+        vendor_reader.confirm.side_effect = InteractiveBack()
+        with (
+            mock.patch("eval_console.registry_cli._registry_services", return_value=(vendor_store, mock.Mock(), mock.Mock())),
+            mock.patch("eval_console.registry_cli._vendor_wizard", return_value={"id": "vendor", "name": "Vendor"}),
+            mock.patch("eval_console.registry_cli.InteractiveReader", return_value=vendor_reader),
+        ):
+            self.assertIsNone(create_vendor_for_runtime(Path(".")))
+        vendor_store.create.assert_not_called()
+
+        preset_store = mock.Mock()
+        preset_reader = mock.Mock()
+        preset_reader.confirm.side_effect = InteractiveBack()
+        with (
+            mock.patch("eval_console.registry_cli._registry_services", return_value=(preset_store, mock.Mock(), mock.Mock())),
+            mock.patch("eval_console.registry_cli._preset_wizard", return_value={"id": "preset", "name": "Preset"}),
+            mock.patch("eval_console.registry_cli.InteractiveReader", return_value=preset_reader),
+        ):
+            self.assertIsNone(create_preset_for_runtime(Path("."), "vendor"))
+        preset_store.create.assert_not_called()
+
+        with (
+            mock.patch("eval_console.registry_cli._registry_services", return_value=(mock.Mock(), mock.Mock(), mock.Mock())),
+            mock.patch("eval_console.registry_cli._preset_wizard", side_effect=InteractiveBack),
+        ):
+            self.assertIsNone(create_preset_for_runtime(Path("."), "vendor"))
 
 
 class RegistryBootstrapTests(unittest.TestCase):

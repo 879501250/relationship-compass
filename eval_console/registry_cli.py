@@ -499,14 +499,17 @@ def create_vendor_for_runtime(
     root: Path, *, registry_root: Path | None = None, credential_store_path: Path | None = None
 ) -> str | None:
     """Create a Vendor from Runtime Selection without duplicating its wizard."""
-    store, _, _ = _registry_services(root, registry_root, credential_store_path)
-    reader = InteractiveReader()
-    document = _vendor_wizard(reader, _configuration_registry(store))
-    if not reader.confirm("确认保存 Vendor？", default=True, allow_back=True):
+    try:
+        store, _, _ = _registry_services(root, registry_root, credential_store_path)
+        reader = InteractiveReader()
+        document = _vendor_wizard(reader, _configuration_registry(store))
+        if not reader.confirm("确认保存 Vendor？", default=True, allow_back=True):
+            return None
+        store.create("vendors", document)
+        print(f"已保存 Vendor：{document['name']}")
+        return str(document["id"])
+    except InteractiveBack:
         return None
-    store.create("vendors", document)
-    print(f"已保存 Vendor：{document['name']}")
-    return str(document["id"])
 
 
 def create_preset_for_runtime(
@@ -517,20 +520,23 @@ def create_preset_for_runtime(
     credential_store_path: Path | None = None,
 ) -> str | None:
     """Create a Preset under the selected Vendor, including inline credential setup."""
-    store, _, service = _registry_services(root, registry_root, credential_store_path)
-    reader = InteractiveReader()
-    document = _preset_wizard(
-        reader,
-        _configuration_registry(store),
-        vendor_id=vendor_id,
-        store=store,
-        service=service,
-    )
-    if not reader.confirm("确认保存 Preset？", default=True, allow_back=True):
+    try:
+        store, _, service = _registry_services(root, registry_root, credential_store_path)
+        reader = InteractiveReader()
+        document = _preset_wizard(
+            reader,
+            _configuration_registry(store),
+            vendor_id=vendor_id,
+            store=store,
+            service=service,
+        )
+        if not reader.confirm("确认保存 Preset？", default=True, allow_back=True):
+            return None
+        store.create("presets", document)
+        print(f"已保存 Preset：{document['name']}（{document['id']}）")
+        return str(document["id"])
+    except InteractiveBack:
         return None
-    store.create("presets", document)
-    print(f"已保存 Preset：{document['name']}（{document['id']}）")
-    return str(document["id"])
 
 
 def _vendor_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
