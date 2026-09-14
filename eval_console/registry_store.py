@@ -128,11 +128,48 @@ class RegistryStore:
         self.update("credentials", identifier, document)
 
     def restore_builtin_model_definitions(self) -> None:
-        """Discard only user Vendor/Model definitions; Credentials and Presets remain."""
+        """Restore model definitions only when remaining objects stay resolvable."""
+        dependencies = self._restore_dependencies()
+        if dependencies:
+            raise ValueError(
+                "无法恢复默认 Registry：以下对象仍引用用户模型定义：\n"
+                + "\n".join(f"- {item}" for item in dependencies)
+            )
+        self._validate_restore_candidate()
         for kind in ("vendors", "model_families"):
             target = self.user_root / kind
             if target.is_dir():
                 shutil.rmtree(target)
+
+    def _restore_dependencies(self) -> list[str]:
+        """Return references that would become dangling after a model restore."""
+        dependencies: list[str] = []
+        for kind, label in (("vendors", "Vendor"), ("model_families", "Model Family")):
+            for identifier in self._user_definition_ids(kind):
+                for reference in self.references(kind, identifier):
+                    dependencies.append(f"{label}: {identifier} <- {reference}")
+        return dependencies
+
+    def _user_definition_ids(self, kind: RegistryKind) -> tuple[str, ...]:
+        directory = self.user_root / kind
+        if not directory.is_dir():
+            return ()
+        return tuple(sorted(path.stem for path in directory.glob("*.yaml")))
+
+    def _validate_restore_candidate(self) -> None:
+        """Validate a deletion candidate before mutating the user overlay."""
+        with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-restore-") as raw:
+            candidate = Path(raw) / "registry"
+            if self.user_root.exists():
+                shutil.copytree(self.user_root, candidate)
+            for kind in ("vendors", "model_families"):
+                target = candidate / kind
+                if target.is_dir():
+                    shutil.rmtree(target)
+            try:
+                ModelRegistry(self.builtin_root, user_root=candidate)
+            except (OSError, RegistryValidationError) as error:
+                raise ValueError(f"无法恢复默认 Registry：候选配置校验失败：{error}") from error
 
     def clear_user_configuration(self) -> None:
         """Remove the explicitly configured overlay after caller confirmation."""

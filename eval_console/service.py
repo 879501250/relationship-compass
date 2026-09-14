@@ -346,7 +346,7 @@ def execute_request(
             _mark_interrupted(run_dir)
         api_calls = _api_call_delta(before_calls, _api_call_counts(run_dir))
         if not request.dry_run:
-            _mark_used_credentials(request, target_provider, judge_provider, api_calls)
+            _mark_used_credentials(run_dir, request, target_provider, judge_provider)
         _record_execution_metadata(
             run_dir, request, stage_plan, api_calls, interrupted, execution_started_at
         )
@@ -364,6 +364,13 @@ def execute_request(
     except KeyboardInterrupt as exc:
         if "run_dir" in locals() and run_dir.exists():
             _mark_interrupted(run_dir)
+            if not request.dry_run:
+                _mark_used_credentials(
+                    run_dir,
+                    request,
+                    locals().get("target_provider"),
+                    locals().get("judge_provider"),
+                )
             api_calls = _api_call_delta(
                 locals().get("before_calls", {"target": 0, "judge": 0}),
                 _api_call_counts(run_dir),
@@ -1087,12 +1094,13 @@ def _registry_runtime_record(provider: Any | None) -> dict[str, Any] | None:
 
 
 def _mark_used_credentials(
-    request: EvalRunRequest, target: Any | None, judge: Any | None, api_calls: dict[str, int]
+    run_dir: Path, request: EvalRunRequest, target: Any | None, judge: Any | None
 ) -> None:
-    """Best-effort user metadata update after a real provider call; dry-runs skip it."""
+    """Mark Credentials only after an artifact proves a successful provider outcome."""
+    successful_roles = _successful_credential_roles(run_dir)
     store = RegistryStore(request.registry_root or runner.ROOT / ".eval_console" / "model_registry")
     for role, provider in (("target", target), ("judge", judge)):
-        if api_calls.get(role, 0) <= 0:
+        if role not in successful_roles:
             continue
         record = _registry_runtime_record(provider)
         identity = record.get("identity_snapshot") if isinstance(record, dict) else None
@@ -1105,6 +1113,30 @@ def _mark_used_credentials(
             # Built-in Credentials are read-only examples; usage metadata is
             # deliberately local to a user-owned Credential document.
             continue
+
+
+def _successful_credential_roles(run_dir: Path) -> frozenset[str]:
+    """Read durable stage outcomes without treating failed HTTP attempts as use."""
+    roles: set[str] = set()
+    responses_path = run_dir / "responses.jsonl"
+    if responses_path.is_file() and any(
+        record.get("status") == "MODEL_RESPONSE"
+        for record in runner.load_jsonl(responses_path)
+        if isinstance(record, dict)
+    ):
+        roles.add("target")
+    judgments_path = run_dir / "judgments.jsonl"
+    if judgments_path.is_file() and any(
+        record.get("status") == "JUDGMENT"
+        or (
+            record.get("status") == "JUDGE_ERROR"
+            and record.get("error_code") == "INVALID_STRUCTURED_OUTPUT"
+        )
+        for record in runner.load_jsonl(judgments_path)
+        if isinstance(record, dict)
+    ):
+        roles.add("judge")
+    return frozenset(roles)
 
 
 def _append_log(

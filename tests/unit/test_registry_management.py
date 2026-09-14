@@ -322,13 +322,55 @@ class RegistryBootstrapTests(unittest.TestCase):
             credential = store.registry().credentials["cred_lifecycle"]
             self.assertEqual(credential.status, "active")
             self.assertEqual(credential.last_used_at, "2026-09-11T00:00:00+00:00")
+            self.assertEqual(credential.updated_at, "2026-09-10T00:00:00+00:00")
+            self.assertTrue(secrets.exists("cred_lifecycle"))
+            store.create("presets", {
+                "id": "lifecycle_preset", "vendor_id": "moonshot", "base_url_id": "official-cn",
+                "credential_id": "cred_lifecycle", "model_family_id": "kimi",
+                "model_id": "kimi-k2.6", "parameters": {},
+            })
             store.create("vendors", {"id": "temporary", "name": "Temporary", "protocol": "openai_compatible_chat", "base_urls": [{"id": "primary", "url": "https://temporary.example/v1", "model_families": ["kimi"], "default_for": ["kimi"]}]})
             store.restore_builtin_model_definitions()
             self.assertIn("cred_lifecycle", store.registry().credentials)
+            self.assertIn("lifecycle_preset", store.registry().presets)
+            self.assertTrue(secrets.exists("cred_lifecycle"))
             self.assertNotIn("temporary", store.registry().vendors)
             store.clear_user_configuration()
             self.assertFalse(store.user_root.exists())
             self.assertIn("moonshot", store.registry().vendors)
+
+    def test_restore_rejects_referenced_user_model_definitions_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            store = RegistryStore(Path(raw) / "user", builtin_root=ROOT / "model_registry")
+            store.create("model_families", {
+                "id": "private", "name": "Private", "defaults": {"capabilities": {}},
+                "models": {"private-1": {}},
+            })
+            store.create("vendors", {
+                "id": "private_vendor", "name": "Private Vendor", "protocol": "openai_compatible_chat",
+                "base_urls": [{"id": "private_url", "url": "https://private.example/v1", "model_families": ["private"], "default_for": ["private"]}],
+            })
+            store.create("credentials", {
+                "id": "private_credential", "vendor_id": "private_vendor", "secret_ref": "local:private_credential",
+            })
+            store.create("presets", {
+                "id": "private_preset", "vendor_id": "private_vendor", "base_url_id": "private_url",
+                "credential_id": "private_credential", "model_family_id": "private", "model_id": "private-1", "parameters": {},
+            })
+            vendor_path = store.user_root / "vendors" / "private_vendor.yaml"
+            family_path = store.user_root / "model_families" / "private.yaml"
+            before_vendor, before_family = vendor_path.read_bytes(), family_path.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "private_credential") as error:
+                store.restore_builtin_model_definitions()
+
+            self.assertIn("private_preset", str(error.exception))
+            self.assertIn("Base URL", str(error.exception))
+            self.assertEqual(vendor_path.read_bytes(), before_vendor)
+            self.assertEqual(family_path.read_bytes(), before_family)
+            registry = store.registry()
+            self.assertIn("private_preset", registry.presets)
+            self.assertIn("private_credential", registry.credentials)
 
     def test_bad_preset_isolated_from_new_preset_and_expired_credential_is_not_runnable(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

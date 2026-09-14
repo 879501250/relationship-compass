@@ -139,8 +139,12 @@ def _system_management(reader: InteractiveReader, store: RegistryStore, secrets:
         elif choice == "restore":
             print("将恢复系统默认模型定义。不会删除 Credential 或 Preset。")
             if reader.confirm("继续？", default=False):
-                store.restore_builtin_model_definitions()
-                print("已恢复内建 Vendor、Model Family 与 Model 定义。")
+                try:
+                    store.restore_builtin_model_definitions()
+                except ValueError as error:
+                    print(str(error))
+                else:
+                    print("已恢复内建 Vendor、Model Family 与 Model 定义。")
         else:
             print("这将清理用户 Credential、Preset 与本地 Secret Store。")
             if not reader.confirm("我已理解此操作不可撤销，继续？", default=False, allow_back=True):
