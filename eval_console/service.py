@@ -6,6 +6,7 @@ import json
 import os
 from copy import deepcopy
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,14 @@ ProgressCallback = Callable[[str, dict[str, Any], int, int], None]
 ActivityCallback = Callable[[str, dict[str, Any], int, int], None]
 RateLimitCallback = Callable[[str, float, bool], None]
 StopRequested = Callable[[], bool]
+
+
+@dataclass(frozen=True)
+class _CredentialUsageScope:
+    """Append-only artifact boundaries captured when an execution begins."""
+
+    response_records: int = 0
+    judgment_records: int = 0
 
 
 class EvalConsoleError(RuntimeError):
@@ -244,6 +253,7 @@ def execute_request(
         validate_request(request, allow_test_providers=True)
         target_plan = _provider_plan(target_provider, "target", request) if needs_target else {"enabled": False, "api_calls": 0}
         judge_plan = _provider_plan(judge_provider, "judge", request) if needs_judge else {"enabled": False, "api_calls": 0}
+    credential_usage_scope = _CredentialUsageScope()
     try:
         execution_started_at = runner.utc_now()
         if request.mode is EvalExecutionMode.JUDGE_ONLY:
@@ -259,6 +269,7 @@ def execute_request(
                 run_dir = _judge_only_dry_run_dir(request, request.source_run_dir)
                 return RunOutcome(run_dir, True, None, None, target_plan, judge_plan, {"target": 0, "judge": len(stage_plan.judge_cases)})
             run_dir, prepared = _create_judge_only_run(request, definition, stage_plan)
+            credential_usage_scope = _credential_usage_scope(run_dir)
             _persist_console_provider_models(run_dir, None, judge_provider)
             before_calls = _api_call_counts(run_dir)
             current_stage = "JUDGE"
@@ -272,6 +283,7 @@ def execute_request(
             if request.source_run_dir is None:
                 raise EvalConsoleError("继续运行缺少历史 Run。")
             run_dir = request.source_run_dir.expanduser().resolve()
+            credential_usage_scope = _credential_usage_scope(run_dir)
             stage_plan = resume_stage_plan or plan_stage_execution(run_dir, request.case_ids, EvalExecutionMode.RESUME)
             prepared = _prepared_records(run_dir, request.case_ids)
             if request.dry_run:
@@ -346,7 +358,13 @@ def execute_request(
             _mark_interrupted(run_dir)
         api_calls = _api_call_delta(before_calls, _api_call_counts(run_dir))
         if not request.dry_run:
-            _mark_used_credentials(run_dir, request, target_provider, judge_provider)
+            _mark_used_credentials(
+                run_dir,
+                credential_usage_scope,
+                request,
+                target_provider,
+                judge_provider,
+            )
         _record_execution_metadata(
             run_dir, request, stage_plan, api_calls, interrupted, execution_started_at
         )
@@ -367,6 +385,7 @@ def execute_request(
             if not request.dry_run:
                 _mark_used_credentials(
                     run_dir,
+                    credential_usage_scope,
                     request,
                     locals().get("target_provider"),
                     locals().get("judge_provider"),
@@ -1093,11 +1112,25 @@ def _registry_runtime_record(provider: Any | None) -> dict[str, Any] | None:
     return deepcopy(value) if isinstance(value, dict) else None
 
 
+def _credential_usage_scope(run_dir: Path) -> _CredentialUsageScope:
+    """Capture append-only record counts before this execution makes any calls."""
+    responses_path = run_dir / "responses.jsonl"
+    judgments_path = run_dir / "judgments.jsonl"
+    return _CredentialUsageScope(
+        response_records=len(runner.load_jsonl(responses_path)) if responses_path.is_file() else 0,
+        judgment_records=len(runner.load_jsonl(judgments_path)) if judgments_path.is_file() else 0,
+    )
+
+
 def _mark_used_credentials(
-    run_dir: Path, request: EvalRunRequest, target: Any | None, judge: Any | None
+    run_dir: Path,
+    scope: _CredentialUsageScope,
+    request: EvalRunRequest,
+    target: Any | None,
+    judge: Any | None,
 ) -> None:
     """Mark Credentials only after an artifact proves a successful provider outcome."""
-    successful_roles = _successful_credential_roles(run_dir)
+    successful_roles = _successful_credential_roles(run_dir, scope)
     store = RegistryStore(request.registry_root or runner.ROOT / ".eval_console" / "model_registry")
     for role, provider in (("target", target), ("judge", judge)):
         if role not in successful_roles:
@@ -1115,13 +1148,15 @@ def _mark_used_credentials(
             continue
 
 
-def _successful_credential_roles(run_dir: Path) -> frozenset[str]:
-    """Read durable stage outcomes without treating failed HTTP attempts as use."""
+def _successful_credential_roles(
+    run_dir: Path, scope: _CredentialUsageScope
+) -> frozenset[str]:
+    """Read only this execution's durable outcomes without counting failed HTTP calls."""
     roles: set[str] = set()
     responses_path = run_dir / "responses.jsonl"
     if responses_path.is_file() and any(
         record.get("status") == "MODEL_RESPONSE"
-        for record in runner.load_jsonl(responses_path)
+        for record in runner.load_jsonl(responses_path)[scope.response_records:]
         if isinstance(record, dict)
     ):
         roles.add("target")
@@ -1132,7 +1167,7 @@ def _successful_credential_roles(run_dir: Path) -> frozenset[str]:
             record.get("status") == "JUDGE_ERROR"
             and record.get("error_code") == "INVALID_STRUCTURED_OUTPUT"
         )
-        for record in runner.load_jsonl(judgments_path)
+        for record in runner.load_jsonl(judgments_path)[scope.judgment_records:]
         if isinstance(record, dict)
     ):
         roles.add("judge")
