@@ -396,13 +396,23 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
     def test_rate_limit_exhaustion_persists_safe_attempt_diagnostics(self) -> None:
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases([cases[0]], criteria)
-        sleeps: list[float] = []
+        clock = {"now": 100.0}
+        waits: list[float] = []
+
+        def wait(delay: float) -> None:
+            waits.append(delay)
+            clock["now"] += delay
+
+        coordinator = runner.ProviderRateLimitCoordinator(
+            monotonic=lambda: clock["now"],
+            wait=wait,
+        )
         judge = self.kimi_provider(
             {},
             urlopen=self.opener_from_events(
                 [self.rate_limit_error("5") for _ in range(3)]
             ),
-            sleep=sleeps.append,
+            sleep=lambda _delay: self.fail("429 retry must use the shared coordinator"),
             max_retries=2,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -416,7 +426,10 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             )
             self.assertEqual(
                 runner.execute_judge(
-                    run_dir, judge, case_ids=runner.planned_judge_case_ids(run_dir)
+                    run_dir,
+                    judge,
+                    case_ids=runner.planned_judge_case_ids(run_dir),
+                    rate_limit_coordinator=coordinator,
                 )["judge_error"],
                 1,
             )
@@ -444,8 +457,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                     "retry_delay_sources": ["retry_after", "retry_after"],
                 },
             )
-            self.assertEqual(len(sleeps), 2)
-            self.assertTrue(all(0.0 < delay <= 5.0 for delay in sleeps))
+            self.assertEqual(waits, [5.0, 5.0])
             metadata = runner.load_json_object(run_dir / "run.json")
             self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
             runner.validate_result_artifacts(run_dir)
@@ -454,8 +466,14 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases([cases[0]], criteria)
         judgment = json.dumps(self.judgment_payload(prepared[0]), ensure_ascii=False)
-        sleeps: list[float] = []
+        clock = {"now": 100.0}
+        waits: list[float] = []
         cooldown_events: list[tuple[float, bool]] = []
+
+        def wait(delay: float) -> None:
+            waits.append(delay)
+            clock["now"] += delay
+
         judge = self.kimi_provider(
             {},
             urlopen=self.opener_from_events(
@@ -464,10 +482,13 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                     HTTPResponse(self.chat_payload(f"```json\n{judgment}\n```")),
                 ]
             ),
-            sleep=sleeps.append,
+            sleep=lambda _delay: self.fail("429 retry must use the shared coordinator"),
             max_retries=2,
         )
-        coordinator = runner.ProviderRateLimitCoordinator(wait=sleeps.append)
+        coordinator = runner.ProviderRateLimitCoordinator(
+            monotonic=lambda: clock["now"],
+            wait=wait,
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "retry-success"
             runner.execute_run(
@@ -509,8 +530,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                     "retry_delay_sources": ["retry_after"],
                 },
             )
-            self.assertEqual(len(sleeps), 1)
-            self.assertTrue(0.0 < sleeps[0] <= 5.0)
+            self.assertEqual(waits, [5.0])
             self.assertEqual(cooldown_events, [(5.0, False)])
             metadata = runner.load_json_object(run_dir / "run.json")
             self.assertEqual(metadata["api_calls"], {"target": 1, "judge": 1})
