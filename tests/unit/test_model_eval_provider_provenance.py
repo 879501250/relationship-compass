@@ -82,8 +82,56 @@ class ProviderProvenanceTests(unittest.TestCase):
                     "https://generativelanguage.googleapis.com"
                 },
                 ("openai_compatible_chat", "DeepSeek"): {"https://api.deepseek.com"},
+                ("anthropic_messages", "Anthropic"): {"https://api.anthropic.com"},
+                ("gemini_generate", "Google"): {
+                    "https://generativelanguage.googleapis.com"
+                },
             },
         )
+
+    def test_native_protocol_official_origins_are_exact_and_relay_safe(self) -> None:
+        cases = (
+            (
+                runner.AnthropicMessagesProvider,
+                "Anthropic",
+                "claude-test",
+                "https://api.anthropic.com/v1",
+                "https://api.anthropic.com.fake-domain.com/v1",
+            ),
+            (
+                runner.GeminiGenerateProvider,
+                "Google",
+                "gemini-test",
+                "https://generativelanguage.googleapis.com/v1beta",
+                "https://generativelanguage.googleapis.com.fake-domain.com/v1",
+            ),
+        )
+        for provider_class, vendor, model, official_url, fake_url in cases:
+            with self.subTest(protocol=provider_class.protocol, origin="official"):
+                self.assert_provenance(
+                    provider_class(
+                        api_key="test-only-key", model=model, base_url=official_url,
+                        declared_upstream_vendor=vendor, structured_output_required=False,
+                    ),
+                    "verified_direct",
+                )
+            for url in ("https://relay.example/v1", fake_url, official_url.replace("https://", "http://")):
+                with self.subTest(protocol=provider_class.protocol, origin=url):
+                    config = {
+                        "api_key": "test-only-key", "model": model, "base_url": url,
+                        "declared_upstream_vendor": vendor, "structured_output_required": False,
+                    }
+                    self.assert_provenance(provider_class(**config), "declared_relay")
+                    with self.assertRaisesRegex(runner.ModelEvalError, "official provider"):
+                        provider_class(**config, provenance_type="verified_direct")
+            with self.subTest(protocol=provider_class.protocol, origin="wrong-vendor"):
+                config = {
+                    "api_key": "test-only-key", "model": model, "base_url": official_url,
+                    "declared_upstream_vendor": "Wrong Vendor", "structured_output_required": False,
+                }
+                self.assert_provenance(provider_class(**config), "declared_relay")
+                with self.assertRaisesRegex(runner.ModelEvalError, "official provider"):
+                    provider_class(**config, provenance_type="verified_direct")
 
     def test_google_official_origin_is_normalized_independently_of_path(self) -> None:
         for url in (
