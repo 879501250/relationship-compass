@@ -358,6 +358,11 @@ def build_parser() -> argparse.ArgumentParser:
     interactive.add_argument("--results-root", type=Path, default=runner.RESULTS_BASE)
     interactive.add_argument("--registry-root", type=Path)
     interactive.add_argument("--credential-store", type=Path)
+    interactive.add_argument(
+        "--allow-dirty-debug",
+        action="store_true",
+        help="允许 dirty worktree 的调试运行；结果不能作为正式 Reference",
+    )
     interactive.add_argument("--debug", action="store_true")
     interactive.set_defaults(func=_command_interactive)
     return parser
@@ -632,7 +637,9 @@ def _command_history(args: argparse.Namespace) -> int:
 
 def _command_interactive(args: argparse.Namespace) -> int:
     return registry_interactive_console(
-        args.results_root.expanduser().resolve(), debug=args.debug,
+        args.results_root.expanduser().resolve(),
+        debug=args.debug,
+        allow_dirty_debug=args.allow_dirty_debug,
         registry_root=args.registry_root.expanduser().resolve() if args.registry_root else None,
         credential_store_path=args.credential_store.expanduser().resolve() if args.credential_store else None,
     )
@@ -642,14 +649,18 @@ def registry_interactive_console(
     results_root: Path,
     *,
     debug: bool,
+    allow_dirty_debug: bool = False,
     registry_root: Path | None,
     credential_store_path: Path | None,
 ) -> int:
     """Outer interactive boundary: cancellation is a normal console exit."""
     try:
+        if allow_dirty_debug:
+            _print_dirty_debug_warning()
         return _registry_interactive_loop(
             results_root,
             debug=debug,
+            allow_dirty_debug=allow_dirty_debug,
             registry_root=registry_root,
             credential_store_path=credential_store_path,
         )
@@ -665,6 +676,7 @@ def _registry_interactive_loop(
     results_root: Path,
     *,
     debug: bool,
+    allow_dirty_debug: bool = False,
     registry_root: Path | None,
     credential_store_path: Path | None,
 ) -> int:
@@ -682,7 +694,7 @@ def _registry_interactive_loop(
             credential_store_path=credential_store_path,
         )
         print("\nEval Console V1.3C（Registry Preset 运行身份）")
-        print(f"  已发现 {len(evals)} 个 Eval；可用 Preset：{', '.join(sorted(resolver.registry.presets)) or '无'}")
+        print(f"  已发现 {len(evals)} 个 Eval；可用 Preset：{len(resolver.registry.presets)} 个")
         choice = _choose("请选择操作", [
             ("运行行为评测", "run"),
             ("运行自动化测试", "tests"),
@@ -704,7 +716,15 @@ def _registry_interactive_loop(
             for item in (*report.checks, *report.warnings, *report.errors):
                 print(f"  {item}")
             continue
-        _registry_interactive_run(evals, resolver, results_root, debug, registry_root, credential_store_path)
+        _registry_interactive_run(
+            evals,
+            resolver,
+            results_root,
+            debug,
+            registry_root,
+            credential_store_path,
+            allow_dirty_debug,
+        )
 
 
 def _choose_registry_preset(
@@ -814,6 +834,7 @@ def _print_preset_readiness(readiness: object) -> None:
 def _registry_interactive_run(
     evals: list[EvalDefinition], resolver: RegistryRuntimeResolver, results_root: Path,
     debug: bool, registry_root: Path | None, credential_store_path: Path | None,
+    allow_dirty_debug: bool = False,
 ) -> int:
     selected = _choose("选择运行方式", [
         ("Full Run", EvalExecutionMode.FULL), ("Target Only", EvalExecutionMode.TARGET_ONLY),
@@ -867,6 +888,7 @@ def _registry_interactive_run(
     request = EvalRunRequest(
         eval_id=definition.eval_id, case_ids=tuple(case_ids), target_profile=None, judge_profile=None,
         profiles_file=runner.DEFAULT_PROVIDER_PROFILES, results_root=results_root, dry_run=dry_run, debug=debug,
+        allow_dirty_debug=allow_dirty_debug,
         target_concurrency=target_concurrency, judge_concurrency=judge_concurrency, continue_on_error=continue_on_error,
         mode=selected, source_run_dir=source_run, target_preset_id=target, judge_preset_id=judge,
         registry_root=registry_root, credential_store_path=credential_store_path,
@@ -882,9 +904,15 @@ def _registry_interactive_run(
 def _print_registry_preflight_summary(request: EvalRunRequest, target: dict[str, object], judge: dict[str, object]) -> None:
     print("\n运行前摘要")
     print(f"  Mode：{request.mode.value}；Eval：{request.eval_id}；Cases：{len(request.case_ids)}；continue-on-error：{request.continue_on_error}")
+    print(f"  Reference Mode：{'DIRTY_DEBUG' if request.allow_dirty_debug else 'CLEAN_REFERENCE'}")
     _print_stage_preflight("Target", target)
     _print_stage_preflight("Judge", judge)
     print(f"  预计请求：Target {target.get('api_calls', 0)}，Judge {judge.get('api_calls', 0)}，总计 {int(target.get('api_calls', 0)) + int(judge.get('api_calls', 0))}")
+
+
+def _print_dirty_debug_warning() -> None:
+    print("\n[警告] Dirty Debug 模式已启用。")
+    print("本次 dirty worktree 运行仅用于调试，结果不能作为正式 Reference。")
 
 
 def interactive_console(profiles_file: Path, results_root: Path, *, debug: bool = False) -> int:

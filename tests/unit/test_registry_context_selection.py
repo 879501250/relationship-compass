@@ -66,6 +66,36 @@ class RegistryContextSelectionTests(unittest.TestCase):
         self.assertIn("new", selected[1][1].registry.presets)
         reload_resolver.assert_called_once()
 
+    def test_interactive_run_carries_dirty_debug_into_request(self) -> None:
+        resolver = SimpleNamespace(registry=SimpleNamespace(presets={}))
+        definition = SimpleNamespace(eval_id="sample", title="Sample")
+        captured = []
+
+        def preflight(request: object) -> tuple[None, None, dict[str, object], dict[str, object]]:
+            captured.append(request)
+            return None, None, {}, {}
+
+        with (
+            mock.patch.object(cli, "_choose", side_effect=[EvalExecutionMode.FULL, definition, True]),
+            mock.patch.object(cli, "_interactive_case_selection", return_value=["case-1"]),
+            mock.patch.object(cli, "_choose_registry_preset", side_effect=["target", "judge"]),
+            mock.patch.object(cli.RegistryRuntimeResolver, "for_project", return_value=resolver),
+            mock.patch.object(cli, "_interactive_concurrency", return_value=1),
+            mock.patch.object(cli, "_yes_no", return_value=True),
+            mock.patch.object(cli, "preflight_request", side_effect=preflight),
+            mock.patch.object(cli, "_print_registry_preflight_summary"),
+            mock.patch.object(cli, "_execute_and_print", return_value=0),
+        ):
+            self.assertEqual(
+                cli._registry_interactive_run(
+                    [definition], resolver, mock.Mock(), False, None, None, True
+                ),
+                0,
+            )
+
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0].allow_dirty_debug)
+
     def test_runtime_back_from_vendor_or_preset_creation_stays_in_selection(self) -> None:
         vendor = SimpleNamespace(id="vendor", name="Vendor", protocol="openai_compatible_chat", base_urls=(SimpleNamespace(protocol=None),))
         resolver = SimpleNamespace(
