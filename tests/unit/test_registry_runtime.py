@@ -99,7 +99,7 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
             self.assertEqual((token, source), ("local-token", "local"))
 
     def test_unsupported_protocol_fails_closed(self) -> None:
-        runtime = mock.Mock(protocol="anthropic_messages", preset_id="unsupported")
+        runtime = mock.Mock(protocol="unsupported_protocol", preset_id="unsupported")
         binding = ResolvedRegistryRuntime(runtime, "token", "environment", {}, {}, "hash")
         with self.assertRaisesRegex(RegistryRuntimeError, "尚不支持"):
             RegistryProviderFactory.create(binding, role="target")

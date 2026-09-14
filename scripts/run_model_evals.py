@@ -62,6 +62,8 @@ STRESS_CLASSIFICATIONS = {"implicit", "adversarial"}
 PROVIDER_TYPES = {
     "openai_responses",
     "openai_compatible_chat",
+    "anthropic_messages",
+    "gemini_generate",
     "chatgpt_web_manual",
 }
 VERIFIED_PROVIDER_ORIGINS = {
@@ -72,6 +74,8 @@ VERIFIED_PROVIDER_ORIGINS = {
     },
     ("openai_compatible_chat", "Google"): {"https://generativelanguage.googleapis.com"},
     ("openai_compatible_chat", "DeepSeek"): {"https://api.deepseek.com"},
+    ("anthropic_messages", "Anthropic"): {"https://api.anthropic.com"},
+    ("gemini_generate", "Google"): {"https://generativelanguage.googleapis.com"},
 }
 PROVENANCE_TYPES = {"verified_direct", "declared_relay", "unverified_relay", "user_reported"}
 STRUCTURED_OUTPUT_MODES = {"strict_json_schema", "json_object", "text_json_fallback"}
@@ -106,6 +110,16 @@ PROVIDER_BUILTIN_DEFAULTS = {
         "api_key_env": "OPENAI_API_KEY",
         "base_url_env": "OPENAI_BASE_URL",
         "base_url": None,
+    },
+    "anthropic_messages": {
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "base_url_env": "ANTHROPIC_BASE_URL",
+        "base_url": "https://api.anthropic.com/v1",
+    },
+    "gemini_generate": {
+        "api_key_env": "GEMINI_API_KEY",
+        "base_url_env": "GEMINI_BASE_URL",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
     },
 }
 JUDGE_PROMPT_VERSION = "relationship-compass-judge-v3"
@@ -344,6 +358,13 @@ class ProviderError(RuntimeError):
             "max_retries",
             "provider_http_attempts",
             "http_telemetry",
+            "candidate_count",
+            "content_block_count",
+            "text_block_count",
+            "parts_count",
+            "stop_reason",
+            "safety_blocked",
+            "cached_tokens",
         }
         self.safe_diagnostics = {
             key: value
@@ -1078,7 +1099,13 @@ def endpoint_identity(url: str) -> dict[str, str]:
 
 def endpoint_with_path(base_url: str, suffix: str) -> str:
     parsed = urllib.parse.urlsplit(base_url)
-    path = parsed.path.rstrip("/") + "/" + suffix.lstrip("/")
+    existing = parsed.path.rstrip("/")
+    normalized_suffix = suffix.lstrip("/")
+    path = (
+        existing
+        if existing == "/" + normalized_suffix or existing.endswith("/" + normalized_suffix)
+        else existing + "/" + normalized_suffix
+    )
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, path, parsed.query, "")
     )
@@ -1404,6 +1431,7 @@ class HTTPJSONProvider:
     transport = "https_json"
     allowed_max_output_tokens_parameters: frozenset[str] = frozenset()
     allowed_thinking_parameters: frozenset[str] = frozenset()
+    allowed_auth_styles = frozenset({"bearer", "anthropic_api_key", "google_api_key"})
 
     def __init__(
         self,
@@ -1429,6 +1457,8 @@ class HTTPJSONProvider:
         strict_model_identity: bool,
         input_cost_per_million: float | None,
         output_cost_per_million: float | None,
+        auth_style: str,
+        anthropic_version: str | None,
         urlopen: Callable[..., Any] | None,
         sleep: Callable[[float], None] | None,
     ) -> None:
@@ -1456,6 +1486,14 @@ class HTTPJSONProvider:
             raise ModelEvalError("max_output_tokens must be a positive integer")
         if provenance_type not in PROVENANCE_TYPES - {"user_reported"}:
             raise ModelEvalError("invalid API provider provenance_type")
+        if auth_style not in self.allowed_auth_styles:
+            raise ModelEvalError("invalid auth_style")
+        if anthropic_version is not None and (
+            not isinstance(anthropic_version, str)
+            or not anthropic_version.strip()
+            or len(anthropic_version) > 64
+        ):
+            raise ModelEvalError("anthropic_version must be a short non-empty string")
         if structured_output_required and structured_output_mode not in STRUCTURED_OUTPUT_MODES:
             raise ModelEvalError("invalid structured_output_mode")
         allowed_modes = capabilities.get("structured_output_modes")
@@ -1517,6 +1555,8 @@ class HTTPJSONProvider:
                 f"expected one of: {allowed}"
             )
         self._api_key = api_key
+        self._auth_style = auth_style
+        self._anthropic_version = anthropic_version
         self._url = endpoint_with_path(base_url, endpoint_suffix)
         endpoint = endpoint_identity(self._url)
         self.model = model
@@ -1568,6 +1608,7 @@ class HTTPJSONProvider:
             "store": False,
             "single_sample": True,
             "strict_model_identity": strict_model_identity,
+            "auth_style": auth_style,
             "sampling_policy": dict(self.sampling_policy),
         }
 
@@ -1629,14 +1670,25 @@ class HTTPJSONProvider:
         # The shared coordinator is the sole wait authority for HTTP 429s.
         coordinator.wait_until_allowed()
 
+    def _request_headers(self) -> dict[str, str]:
+        """Construct the only secret-bearing object at HTTP dispatch time."""
+        header_name = {
+            "bearer": "Authorization",
+            "anthropic_api_key": "x-api-key",
+            "google_api_key": "x-goog-api-key",
+        }[self._auth_style]
+        header_value = (
+            f"Bearer {self._api_key}"
+            if self._auth_style == "bearer"
+            else self._api_key
+        )
+        return {"Content-Type": "application/json", header_name: header_value}
+
     def _request_json(self, payload: dict[str, Any]) -> HTTPJSONResponse:
         request = urllib.request.Request(
             self._url,
             data=canonical_json_bytes(payload),
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._request_headers(),
             method="POST",
         )
         retry_delays_seconds: list[float] = []
@@ -1877,6 +1929,8 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
         strict_model_identity: bool = True,
         input_cost_per_million: float | None = None,
         output_cost_per_million: float | None = None,
+        auth_style: str = "bearer",
+        anthropic_version: str | None = None,
         urlopen: Callable[..., Any] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
@@ -1931,6 +1985,8 @@ class OpenAIResponsesProvider(HTTPJSONProvider):
             strict_model_identity=strict_model_identity,
             input_cost_per_million=input_cost_per_million,
             output_cost_per_million=output_cost_per_million,
+            auth_style=auth_style,
+            anthropic_version=anthropic_version,
             urlopen=urlopen,
             sleep=sleep,
         )
@@ -2099,6 +2155,8 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
         strict_model_identity: bool = True,
         input_cost_per_million: float | None = None,
         output_cost_per_million: float | None = None,
+        auth_style: str = "bearer",
+        anthropic_version: str | None = None,
         urlopen: Callable[..., Any] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
@@ -2143,6 +2201,8 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
             strict_model_identity=strict_model_identity,
             input_cost_per_million=input_cost_per_million,
             output_cost_per_million=output_cost_per_million,
+            auth_style=auth_style,
+            anthropic_version=anthropic_version,
             urlopen=urlopen,
             sleep=sleep,
         )
@@ -2318,6 +2378,301 @@ class OpenAICompatibleChatProvider(HTTPJSONProvider):
                 else None
             },
         )
+
+
+class NativeJSONProvider(HTTPJSONProvider):
+    """Shared request lifecycle for native protocol adapters."""
+
+    def _generate_native(
+        self,
+        *,
+        instructions: str,
+        input_text: str,
+        response_schema: dict[str, Any] | None,
+    ) -> ProviderResult:
+        payload = self.build_request_payload(
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+        )
+        response = self._request_json(payload)
+        result = self._parse_response(response.payload, http_status=response.http_status)
+        return ProviderResult(
+            **{
+                field: getattr(result, field)
+                for field in ProviderResult.__dataclass_fields__
+                if field not in {"request_envelope_hash", "http_telemetry"}
+            },
+            request_envelope_hash=self.request_envelope_hash(payload),
+            http_telemetry=response.http_telemetry,
+        )
+
+
+class AnthropicMessagesProvider(NativeJSONProvider):
+    """Standard-library adapter for the Anthropic Messages REST protocol."""
+
+    provider_name = "anthropic_messages"
+    protocol = "anthropic_messages"
+    allowed_max_output_tokens_parameters = frozenset({"max_tokens"})
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str = "https://api.anthropic.com/v1",
+        endpoint_source: str = "argument_or_default",
+        declared_upstream_vendor: str | None = None,
+        provenance_type: str | None = None,
+        reasoning_effort: str | None = None,
+        thinking: str | None = None,
+        structured_output_mode: str | None = "strict_json_schema",
+        structured_output_required: bool = True,
+        capabilities: dict[str, Any] | None = None,
+        timeout_seconds: float = 90.0,
+        max_retries: int = 1,
+        max_output_tokens: int = 1200,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        seed: int | None = None,
+        strict_model_identity: bool = True,
+        input_cost_per_million: float | None = None,
+        output_cost_per_million: float | None = None,
+        auth_style: str = "anthropic_api_key",
+        anthropic_version: str | None = None,
+        urlopen: Callable[..., Any] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        if reasoning_effort is not None or seed is not None:
+            raise ModelEvalError("Anthropic adapter does not implement reasoning_effort or seed")
+        origin = endpoint_identity(base_url)["endpoint_origin"]
+        official = is_official_provider_origin(self.protocol, "Anthropic", origin)
+        vendor = declared_upstream_vendor or ("Anthropic" if official else None)
+        selected_provenance = resolve_provider_provenance(
+            self.protocol, vendor, origin, provenance_type
+        )
+        super().__init__(
+            api_key=api_key, model=model, base_url=base_url, endpoint_suffix="messages",
+            endpoint_source=endpoint_source, declared_upstream_vendor=vendor,
+            provenance_type=selected_provenance, reasoning_effort=reasoning_effort,
+            thinking=thinking, structured_output_mode=structured_output_mode,
+            structured_output_required=structured_output_required,
+            capabilities=capabilities if capabilities is not None else _native_capabilities("max_tokens"),
+            timeout_seconds=timeout_seconds, max_retries=max_retries,
+            max_output_tokens=max_output_tokens, temperature=temperature, top_p=top_p,
+            seed=seed, strict_model_identity=strict_model_identity,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million, auth_style=auth_style,
+            anthropic_version=anthropic_version or "2023-06-01", urlopen=urlopen,
+            sleep=sleep,
+        )
+
+    def _request_headers(self) -> dict[str, str]:
+        headers = super()._request_headers()
+        headers["anthropic-version"] = self._anthropic_version
+        return headers
+
+    def generate(self, *, instructions: str, input_text: str, response_schema: dict[str, Any] | None = None) -> ProviderResult:
+        return self._generate_native(instructions=instructions, input_text=input_text, response_schema=response_schema)
+
+    def build_request_payload(self, *, instructions: str, input_text: str, response_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "system": instructions,
+            "messages": [{"role": "user", "content": input_text}],
+            self.max_output_tokens_parameter: self.max_output_tokens,
+        }
+        if response_schema is not None:
+            _require_native_structured_mode(self, response_schema)
+            if self.structured_output_mode == "strict_json_schema":
+                payload["output_config"] = {"format": {"type": "json_schema", "schema": response_schema}}
+            elif self.structured_output_mode == "json_object":
+                payload["output_config"] = {"format": {"type": "json_object"}}
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
+        return payload
+
+    def _parse_response(self, response: dict[str, Any], *, http_status: int | None = None) -> ProviderResult:
+        content = response.get("content")
+        usage = response.get("usage")
+        diagnostics = {
+            "http_status": http_status,
+            "response_id": response.get("id") if isinstance(response.get("id"), str) else None,
+            "reported_model": response.get("model") if isinstance(response.get("model"), str) else None,
+            "stop_reason": response.get("stop_reason") if isinstance(response.get("stop_reason"), str) else None,
+            "content_block_count": len(content) if isinstance(content, list) else None,
+            "usage_present": isinstance(usage, dict),
+            "input_tokens": usage.get("input_tokens") if isinstance(usage, dict) and isinstance(usage.get("input_tokens"), int) else None,
+            "output_tokens": usage.get("output_tokens") if isinstance(usage, dict) and isinstance(usage.get("output_tokens"), int) else None,
+            "cached_tokens": usage.get("cache_read_input_tokens") if isinstance(usage, dict) and isinstance(usage.get("cache_read_input_tokens"), int) else None,
+        }
+        stop_reason = diagnostics["stop_reason"]
+        if stop_reason in {"content_filter", "safety", "refusal"}:
+            diagnostics["safety_blocked"] = True
+            raise ProviderInvalidResponse("Anthropic response was blocked", code="CONTENT_FILTER", reported_model=diagnostics["reported_model"], safe_diagnostics=diagnostics)
+        if not isinstance(content, list):
+            raise ProviderInvalidResponse("Anthropic content must be an array", code="INVALID_RESPONSE", reported_model=diagnostics["reported_model"], safe_diagnostics=diagnostics)
+        chunks = [block["text"] for block in content if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)]
+        diagnostics["text_block_count"] = len(chunks)
+        text = "".join(chunks)
+        if not text.strip():
+            diagnostics["empty_response_reason"] = "NO_TEXT_BLOCKS"
+            raise ProviderInvalidResponse("Anthropic response has no text content", code="EMPTY_RESPONSE", reported_model=diagnostics["reported_model"], safe_diagnostics=diagnostics)
+        reported_model = diagnostics["reported_model"]
+        self._check_reported_model(reported_model)
+        return ProviderResult(
+            text=text, response_id=diagnostics["response_id"],
+            usage={"input_tokens": diagnostics["input_tokens"], "output_tokens": diagnostics["output_tokens"], "reasoning_tokens": None, "cached_tokens": diagnostics["cached_tokens"]},
+            reported_model=reported_model, finish_reason=stop_reason,
+            provider_metadata={"stop_reason": stop_reason},
+        )
+
+
+class GeminiGenerateProvider(NativeJSONProvider):
+    """Standard-library adapter for Gemini GenerateContent REST requests."""
+
+    provider_name = "gemini_generate"
+    protocol = "gemini_generate"
+    allowed_max_output_tokens_parameters = frozenset({"max_output_tokens"})
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str = "https://generativelanguage.googleapis.com/v1beta",
+        endpoint_source: str = "argument_or_default",
+        declared_upstream_vendor: str | None = None,
+        provenance_type: str | None = None,
+        reasoning_effort: str | None = None,
+        thinking: str | None = None,
+        structured_output_mode: str | None = "strict_json_schema",
+        structured_output_required: bool = True,
+        capabilities: dict[str, Any] | None = None,
+        timeout_seconds: float = 90.0,
+        max_retries: int = 1,
+        max_output_tokens: int = 1200,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        seed: int | None = None,
+        strict_model_identity: bool = True,
+        input_cost_per_million: float | None = None,
+        output_cost_per_million: float | None = None,
+        auth_style: str = "google_api_key",
+        anthropic_version: str | None = None,
+        urlopen: Callable[..., Any] | None = None,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        if reasoning_effort is not None or seed is not None:
+            raise ModelEvalError("Gemini adapter does not implement reasoning_effort or seed")
+        origin = endpoint_identity(base_url)["endpoint_origin"]
+        official = is_official_provider_origin(self.protocol, "Google", origin)
+        vendor = declared_upstream_vendor or ("Google" if official else None)
+        selected_provenance = resolve_provider_provenance(self.protocol, vendor, origin, provenance_type)
+        encoded_model = urllib.parse.quote(model, safe="")
+        super().__init__(
+            api_key=api_key, model=model, base_url=base_url,
+            endpoint_suffix=f"models/{encoded_model}:generateContent",
+            endpoint_source=endpoint_source, declared_upstream_vendor=vendor,
+            provenance_type=selected_provenance, reasoning_effort=reasoning_effort,
+            thinking=thinking, structured_output_mode=structured_output_mode,
+            structured_output_required=structured_output_required,
+            capabilities=capabilities if capabilities is not None else _native_capabilities("max_output_tokens"),
+            timeout_seconds=timeout_seconds, max_retries=max_retries,
+            max_output_tokens=max_output_tokens, temperature=temperature, top_p=top_p,
+            seed=seed, strict_model_identity=strict_model_identity,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million, auth_style=auth_style,
+            anthropic_version=anthropic_version, urlopen=urlopen, sleep=sleep,
+        )
+
+    def generate(self, *, instructions: str, input_text: str, response_schema: dict[str, Any] | None = None) -> ProviderResult:
+        return self._generate_native(instructions=instructions, input_text=input_text, response_schema=response_schema)
+
+    def build_request_payload(self, *, instructions: str, input_text: str, response_schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        generation: dict[str, Any] = {"maxOutputTokens": self.max_output_tokens}
+        if self.temperature is not None:
+            generation["temperature"] = self.temperature
+        if self.top_p is not None:
+            generation["topP"] = self.top_p
+        if response_schema is not None:
+            _require_native_structured_mode(self, response_schema)
+            if self.structured_output_mode == "strict_json_schema":
+                generation.update({"responseMimeType": "application/json", "responseJsonSchema": response_schema})
+            elif self.structured_output_mode == "json_object":
+                generation["responseMimeType"] = "application/json"
+        return {
+            "systemInstruction": {"parts": [{"text": instructions}]},
+            "contents": [{"role": "user", "parts": [{"text": input_text}]}],
+            "generationConfig": generation,
+        }
+
+    def _parse_response(self, response: dict[str, Any], *, http_status: int | None = None) -> ProviderResult:
+        candidates = response.get("candidates")
+        usage = response.get("usageMetadata")
+        diagnostics = {
+            "http_status": http_status,
+            "candidate_count": len(candidates) if isinstance(candidates, list) else None,
+            "usage_present": isinstance(usage, dict),
+            "input_tokens": usage.get("promptTokenCount") if isinstance(usage, dict) and isinstance(usage.get("promptTokenCount"), int) else None,
+            "output_tokens": usage.get("candidatesTokenCount") if isinstance(usage, dict) and isinstance(usage.get("candidatesTokenCount"), int) else None,
+            "reasoning_tokens": usage.get("thoughtsTokenCount") if isinstance(usage, dict) and isinstance(usage.get("thoughtsTokenCount"), int) else None,
+            "cached_tokens": usage.get("cachedContentTokenCount") if isinstance(usage, dict) and isinstance(usage.get("cachedContentTokenCount"), int) else None,
+        }
+        prompt_feedback = response.get("promptFeedback")
+        if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
+            diagnostics["safety_blocked"] = True
+            raise ProviderInvalidResponse("Gemini prompt was blocked", code="CONTENT_FILTER", safe_diagnostics=diagnostics)
+        if not isinstance(candidates, list) or not candidates:
+            diagnostics["empty_response_reason"] = "NO_CANDIDATES"
+            raise ProviderInvalidResponse("Gemini response has no candidates", code="EMPTY_RESPONSE", safe_diagnostics=diagnostics)
+        candidate = candidates[0] if isinstance(candidates[0], dict) else None
+        finish_reason = candidate.get("finishReason") if isinstance(candidate, dict) and isinstance(candidate.get("finishReason"), str) else None
+        diagnostics["finish_reason"] = finish_reason
+        if finish_reason in {"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "RECITATION"}:
+            diagnostics["safety_blocked"] = True
+            raise ProviderInvalidResponse("Gemini response was blocked", code="CONTENT_FILTER", safe_diagnostics=diagnostics)
+        content = candidate.get("content") if isinstance(candidate, dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        diagnostics["parts_count"] = len(parts) if isinstance(parts, list) else None
+        if not isinstance(parts, list):
+            diagnostics["empty_response_reason"] = "CONTENT_MISSING"
+            raise ProviderInvalidResponse("Gemini candidate has no content parts", code="EMPTY_RESPONSE", safe_diagnostics=diagnostics)
+        text = "".join(part["text"] for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str))
+        if not text.strip():
+            diagnostics["empty_response_reason"] = "NO_TEXT_PARTS"
+            raise ProviderInvalidResponse("Gemini response has no text content", code="EMPTY_RESPONSE", safe_diagnostics=diagnostics)
+        reported_model = response.get("modelVersion") if isinstance(response.get("modelVersion"), str) else None
+        self._check_reported_model(reported_model)
+        return ProviderResult(
+            text=text,
+            usage={"input_tokens": diagnostics["input_tokens"], "output_tokens": diagnostics["output_tokens"], "reasoning_tokens": diagnostics["reasoning_tokens"], "cached_tokens": diagnostics["cached_tokens"]},
+            reported_model=reported_model, finish_reason=finish_reason,
+            provider_metadata={"total_tokens": usage.get("totalTokenCount") if isinstance(usage, dict) and isinstance(usage.get("totalTokenCount"), int) else None},
+        )
+
+
+def _native_capabilities(max_parameter: str) -> dict[str, Any]:
+    return {
+        "reasoning_effort_supported": False,
+        "allowed_reasoning_efforts": [],
+        "structured_output_modes": ["strict_json_schema", "json_object", "text_json_fallback"],
+        "temperature_supported": True,
+        "top_p_supported": True,
+        "seed_supported": False,
+        "max_output_tokens_parameter": max_parameter,
+        "thinking_supported": False,
+        "allowed_thinking_types": [],
+    }
+
+
+def _require_native_structured_mode(provider: HTTPJSONProvider, response_schema: dict[str, Any]) -> None:
+    if provider.structured_output_mode not in provider.capabilities.get("structured_output_modes", []):
+        raise ModelEvalError(f"structured output mode {provider.structured_output_mode!r} is not declared supported")
+    if provider.structured_output_mode not in STRUCTURED_OUTPUT_MODES:
+        raise ModelEvalError("native structured output mode is not implemented")
 
 
 def target_input(record: dict[str, Any]) -> str:
@@ -6298,10 +6653,25 @@ def create_provider(args: argparse.Namespace, *, role: str) -> ModelProvider:
         ),
         "input_cost_per_million": pricing.get("input_per_million_tokens"),
         "output_cost_per_million": pricing.get("output_per_million_tokens"),
+        "auth_style": config.get("auth_style") or _default_auth_style(provider_type),
+        "anthropic_version": config.get("anthropic_version"),
     }
     if provider_type == "openai_responses":
         return OpenAIResponsesProvider(**common)
-    return OpenAICompatibleChatProvider(**common)
+    if provider_type == "openai_compatible_chat":
+        return OpenAICompatibleChatProvider(**common)
+    if provider_type == "anthropic_messages":
+        return AnthropicMessagesProvider(**common)
+    return GeminiGenerateProvider(**common)
+
+
+def _default_auth_style(protocol: str) -> str:
+    return {
+        "openai_responses": "bearer",
+        "openai_compatible_chat": "bearer",
+        "anthropic_messages": "anthropic_api_key",
+        "gemini_generate": "google_api_key",
+    }[protocol]
 
 
 def assess_comparability(

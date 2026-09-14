@@ -13,7 +13,13 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from .credential_store import CredentialSecretStore, LocalFileCredentialSecretStore
-from .model_registry import Credential, ModelRegistry, ModelRegistryError, ResolvedModelRuntime
+from .model_registry import (
+    SUPPORTED_PROTOCOLS as REGISTRY_SUPPORTED_PROTOCOLS,
+    Credential,
+    ModelRegistry,
+    ModelRegistryError,
+    ResolvedModelRuntime,
+)
 from .runner_adapter import runner
 
 
@@ -199,7 +205,7 @@ class RegistryRuntimeResolver:
 class RegistryProviderFactory:
     """Build existing HTTP providers from an already-resolved Registry runtime."""
 
-    SUPPORTED_PROTOCOLS = frozenset({"openai_responses", "openai_compatible_chat"})
+    SUPPORTED_PROTOCOLS = REGISTRY_SUPPORTED_PROTOCOLS
 
     @classmethod
     def create(cls, binding: ResolvedRegistryRuntime, *, role: str) -> Any:
@@ -213,7 +219,15 @@ class RegistryProviderFactory:
         common = _provider_arguments(runtime, binding.token, role)
         if runtime.protocol == "openai_responses":
             return runner.OpenAIResponsesProvider(**common)
-        return runner.OpenAICompatibleChatProvider(**common)
+        if runtime.protocol == "openai_compatible_chat":
+            return runner.OpenAICompatibleChatProvider(**common)
+        if runtime.protocol == "anthropic_messages":
+            return runner.AnthropicMessagesProvider(**common)
+        if runtime.protocol == "gemini_generate":
+            return runner.GeminiGenerateProvider(**common)
+        raise RegistryRuntimeError(
+            f"Protocol {runtime.protocol!r} 尚未绑定 Provider adapter。"
+        )
 
 
 @dataclass(frozen=True)
@@ -341,6 +355,8 @@ def _provider_arguments(runtime: ResolvedModelRuntime, token: str, role: str) ->
         "strict_model_identity": bool(defaults.get("strict_model_identity", True)),
         "input_cost_per_million": defaults.get("input_cost_per_million"),
         "output_cost_per_million": defaults.get("output_cost_per_million"),
+        "auth_style": _auth_style(runtime.protocol, defaults.get("auth_style")),
+        "anthropic_version": defaults.get("anthropic_version"),
     }
 
 
@@ -352,7 +368,12 @@ def _provider_capabilities(runtime: ResolvedModelRuntime, wire: Mapping[str, Any
     def allowed(name: str, field: str) -> list[Any]:
         value = rule(name).get(field, ())
         return list(value) if isinstance(value, (tuple, list)) else []
-    protocol_default = "max_output_tokens" if runtime.protocol == "openai_responses" else "max_tokens"
+    protocol_default = {
+        "openai_responses": "max_output_tokens",
+        "openai_compatible_chat": "max_tokens",
+        "anthropic_messages": "max_tokens",
+        "gemini_generate": "max_output_tokens",
+    }.get(runtime.protocol, "max_tokens")
     wire_max = next((key for key in ("max_output_tokens", "max_completion_tokens", "max_tokens") if key in wire), protocol_default)
     return {
         "reasoning_effort_supported": bool(rule("reasoning_effort").get("supported")),
@@ -366,6 +387,19 @@ def _provider_capabilities(runtime: ResolvedModelRuntime, wire: Mapping[str, Any
         "allowed_thinking_types": allowed("thinking", "allowed_values"),
         "thinking_parameter": "thinking",
     }
+
+
+def _auth_style(protocol: str, value: Any) -> str:
+    defaults = {
+        "openai_responses": "bearer",
+        "openai_compatible_chat": "bearer",
+        "anthropic_messages": "anthropic_api_key",
+        "gemini_generate": "google_api_key",
+    }
+    selected = value if value is not None else defaults.get(protocol)
+    if selected not in {"bearer", "anthropic_api_key", "google_api_key"}:
+        raise RegistryRuntimeError("transport_defaults.auth_style 无效。")
+    return selected
 
 
 def _wire_value(values: Mapping[str, Any], *keys: str) -> Any:

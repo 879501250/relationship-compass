@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from .credential_service import CredentialService, CredentialUpdateDraft
@@ -843,7 +843,7 @@ def _base_url_manager(
                 if len(endpoints) == 1: raise ValueError("Vendor 至少需要一个 Base URL。")
                 endpoints.remove(selected)
             elif action == "edit": selected.update(_base_url_wizard(reader, registry, endpoints, selected, vendor_protocol=vendor_protocol))
-            else: _advanced_base_url(reader, registry, selected)
+            else: _advanced_base_url(reader, registry, selected, vendor_protocol=vendor_protocol)
 
 
 def _base_url_wizard(
@@ -889,7 +889,13 @@ def _move_default_conflicts(reader: InteractiveReader, endpoints: list[dict[str,
             else: candidate["default_for"].remove(family)
 
 
-def _advanced_base_url(reader: InteractiveReader, registry: Any, endpoint: dict[str, Any]) -> None:
+def _advanced_base_url(
+    reader: InteractiveReader,
+    registry: Any,
+    endpoint: dict[str, Any],
+    *,
+    vendor_protocol: str | None = None,
+) -> None:
     while True:
         try:
             action = reader.choice("Base URL 高级设置", [("模型 API 名称覆盖", "model"), ("语义参数映射", "mapping"), ("Transport defaults", "transport"), ("返回", "back")])
@@ -908,10 +914,58 @@ def _advanced_base_url(reader: InteractiveReader, registry: Any, endpoint: dict[
             semantic = reader.choice("语义参数", [(key, key) for key in registry.model_families[family].capabilities])
             endpoint.setdefault("parameter_mapping", {})[semantic] = reader.text("Wire parameter 名称: ", required=True)
         else:
-            key = reader.choice("Transport 设置", [("timeout_seconds", "timeout_seconds"), ("max_retries", "max_retries")])
+            protocol = endpoint.get("protocol") or vendor_protocol
+            choices = [
+                ("timeout_seconds", "timeout_seconds"),
+                ("max_retries", "max_retries"),
+                (f"认证方式（当前：{_effective_auth_style(protocol, endpoint)}）", "auth_style"),
+            ]
+            if protocol == "anthropic_messages":
+                choices.append(("Anthropic API Version", "anthropic_version"))
+            key = reader.choice("Transport 设置", choices)
+            if key == "auth_style":
+                selected = reader.choice(
+                    "选择认证方式",
+                    [
+                        (f"使用协议默认认证（推荐：{_default_auth_style(protocol)}）", "default"),
+                        ("Bearer Token", "bearer"),
+                        ("Anthropic API Key Header", "anthropic_api_key"),
+                        ("Google API Key Header", "google_api_key"),
+                    ],
+                    default=endpoint.get("transport_defaults", {}).get("auth_style", "default"),
+                )
+                transport = endpoint.setdefault("transport_defaults", {})
+                if selected == "default":
+                    transport.pop("auth_style", None)
+                else:
+                    transport["auth_style"] = selected
+                continue
+            if key == "anthropic_version":
+                value = reader.text(
+                    "Anthropic API Version（留空使用默认值）: ",
+                    default=endpoint.get("transport_defaults", {}).get("anthropic_version"),
+                )
+                transport = endpoint.setdefault("transport_defaults", {})
+                if value:
+                    transport["anthropic_version"] = value
+                else:
+                    transport.pop("anthropic_version", None)
+                continue
             value = reader.text(f"{key}: ", required=True)
             if not value.isdigit() or int(value) < 0: raise ValueError("Transport 值必须是非负整数。")
             endpoint.setdefault("transport_defaults", {})[key] = int(value)
+
+
+def _default_auth_style(protocol: str | None) -> str:
+    return {
+        "anthropic_messages": "anthropic_api_key",
+        "gemini_generate": "google_api_key",
+    }.get(protocol, "bearer")
+
+
+def _effective_auth_style(protocol: str | None, endpoint: Mapping[str, Any]) -> str:
+    transport = endpoint.get("transport_defaults", {})
+    return transport.get("auth_style", _default_auth_style(protocol)) if isinstance(transport, Mapping) else _default_auth_style(protocol)
 
 
 def _family_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
