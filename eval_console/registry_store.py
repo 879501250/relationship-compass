@@ -127,6 +127,76 @@ class RegistryStore:
         document["last_used_at"] = timestamp
         self.update("credentials", identifier, document)
 
+    def extension_models(self, family_id: str) -> dict[str, dict[str, Any]]:
+        """Return user-owned Models added to a Family, never built-in Models."""
+        self.registry()
+        document = self._read_extension_document(family_id)
+        models = document.get("models", {}) if document is not None else {}
+        if not isinstance(models, dict):
+            raise ValueError("用户 Model 扩展文档格式无效。")
+        return deepcopy(models)
+
+    def is_builtin_model_family(self, family_id: str) -> bool:
+        """Expose Family ownership without weakening built-in mutation guards."""
+        return self._builtin_has("model_families", family_id)
+
+    def create_extension_model(
+        self, family_id: str, model_id: str, definition: Mapping[str, Any]
+    ) -> None:
+        """Add one user-owned Model to an existing effective Model Family."""
+        registry = self.registry()
+        family = registry.model_families.get(family_id)
+        if family is None:
+            raise ValueError(f"未找到 Model Family：{family_id}")
+        if model_id in family.models:
+            raise ValueError(
+                f"Model '{model_id}' 已由 Model Family '{family_id}' 定义，用户扩展不能覆盖。"
+            )
+        for existing_family in registry.model_families.values():
+            if model_id in existing_family.models:
+                raise ValueError(
+                    f"Model '{model_id}' 已由 Model Family '{existing_family.id}' 定义，"
+                    "用户扩展不能覆盖。"
+                )
+        document = self._read_extension_document(family_id) or {
+            "model_family_id": family_id,
+            "models": {},
+        }
+        models = document.setdefault("models", {})
+        if not isinstance(models, dict):
+            raise ValueError("用户 Model 扩展文档格式无效。")
+        if model_id in models:
+            raise ValueError(f"用户扩展 Model 已存在：{model_id}")
+        models[model_id] = deepcopy(dict(definition))
+        self._commit_extension_candidate(family_id, document)
+
+    def update_extension_model(
+        self, family_id: str, model_id: str, definition: Mapping[str, Any]
+    ) -> None:
+        """Update only a Model that is stored in the user extension document."""
+        document = self._read_extension_document(family_id)
+        if document is None:
+            raise ValueError(f"未找到用户扩展 Model：{model_id}")
+        models = document.get("models")
+        if not isinstance(models, dict) or model_id not in models:
+            raise ValueError(f"未找到用户扩展 Model：{model_id}")
+        models[model_id] = deepcopy(dict(definition))
+        self._commit_extension_candidate(family_id, document)
+
+    def delete_extension_model(self, family_id: str, model_id: str) -> None:
+        """Delete a user extension Model only when no Preset still uses it."""
+        document = self._read_extension_document(family_id)
+        if document is None:
+            raise ValueError(f"未找到用户扩展 Model：{model_id}")
+        models = document.get("models")
+        if not isinstance(models, dict) or model_id not in models:
+            raise ValueError(f"未找到用户扩展 Model：{model_id}")
+        references = self._extension_model_references(family_id, model_id)
+        if references:
+            raise ValueError("该用户扩展 Model 仍被引用：\n" + "\n".join(f"- {item}" for item in references))
+        del models[model_id]
+        self._commit_extension_candidate(family_id, document if models else None)
+
     def restore_builtin_model_definitions(self) -> None:
         """Restore model definitions only when remaining objects stay resolvable."""
         dependencies = self._restore_dependencies()
@@ -136,7 +206,7 @@ class RegistryStore:
                 + "\n".join(f"- {item}" for item in dependencies)
             )
         self._validate_restore_candidate()
-        for kind in ("vendors", "model_families"):
+        for kind in ("vendors", "model_families", "model_family_extensions"):
             target = self.user_root / kind
             if target.is_dir():
                 shutil.rmtree(target)
@@ -148,6 +218,11 @@ class RegistryStore:
             for identifier in self._user_definition_ids(kind):
                 for reference in self.references(kind, identifier):
                     dependencies.append(f"{label}: {identifier} <- {reference}")
+        for family_id, model_id in self._extension_model_ids():
+            for reference in self._extension_model_references(family_id, model_id):
+                dependencies.append(
+                    f"Model Family Extension: {family_id}/{model_id} <- {reference}"
+                )
         return dependencies
 
     def _user_definition_ids(self, kind: RegistryKind) -> tuple[str, ...]:
@@ -162,7 +237,7 @@ class RegistryStore:
             candidate = Path(raw) / "registry"
             if self.user_root.exists():
                 shutil.copytree(self.user_root, candidate)
-            for kind in ("vendors", "model_families"):
+            for kind in ("vendors", "model_families", "model_family_extensions"):
                 target = candidate / kind
                 if target.is_dir():
                     shutil.rmtree(target)
@@ -210,6 +285,35 @@ class RegistryStore:
                 self._remove_other_presets(candidate)
             ModelRegistry(self.builtin_root, user_root=candidate)
 
+    def _commit_extension_candidate(
+        self, family_id: str, document: dict[str, Any] | None
+    ) -> None:
+        self._validate_extension_candidate(family_id, document)
+        target = self._extension_path(family_id)
+        if document is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_json_atomically(target, document)
+
+    def _validate_extension_candidate(
+        self, family_id: str, document: dict[str, Any] | None
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-extension-") as raw:
+            candidate = Path(raw) / "registry"
+            if self.user_root.exists():
+                shutil.copytree(self.user_root, candidate)
+            target = candidate / "model_family_extensions" / f"{family_id}.yaml"
+            if document is None:
+                target.unlink(missing_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                _write_json_atomically(target, document)
+            try:
+                ModelRegistry(self.builtin_root, user_root=candidate)
+            except (OSError, RegistryValidationError) as error:
+                raise ValueError(f"用户 Model 扩展校验失败：{error}") from error
+
     def _isolated_registry(self, preset_id: str | None = None) -> ModelRegistry:
         with tempfile.TemporaryDirectory(prefix="relationship-compass-registry-") as raw:
             candidate = Path(raw) / "registry"
@@ -233,6 +337,44 @@ class RegistryStore:
 
     def _path(self, kind: RegistryKind, identifier: str) -> Path:
         return self.user_root / kind / f"{identifier}.yaml"
+
+    def _extension_path(self, family_id: str) -> Path:
+        return self.user_root / "model_family_extensions" / f"{family_id}.yaml"
+
+    def _read_extension_document(self, family_id: str) -> dict[str, Any] | None:
+        path = self._extension_path(family_id)
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("用户 Model 扩展文档无法读取。") from error
+        if not isinstance(value, dict) or value.get("model_family_id") != family_id:
+            raise ValueError("用户 Model 扩展文档格式无效。")
+        return deepcopy(value)
+
+    def _extension_model_ids(self) -> tuple[tuple[str, str], ...]:
+        result: list[tuple[str, str]] = []
+        directory = self.user_root / "model_family_extensions"
+        for path in directory.glob("*.y*ml") if directory.is_dir() else ():
+            try:
+                document = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError("用户 Model 扩展文档无法读取。") from error
+            family_id = document.get("model_family_id") if isinstance(document, dict) else None
+            models = document.get("models") if isinstance(document, dict) else None
+            if not isinstance(family_id, str) or not isinstance(models, dict):
+                raise ValueError("用户 Model 扩展文档格式无效。")
+            result.extend((family_id, model_id) for model_id in models if isinstance(model_id, str))
+        return tuple(sorted(result))
+
+    def _extension_model_references(self, family_id: str, model_id: str) -> list[str]:
+        registry = self.registry()
+        return [
+            f"Preset: {preset.id}"
+            for preset in registry.presets.values()
+            if preset.model_family_id == family_id and preset.model_id == model_id
+        ]
 
     @staticmethod
     def _identifier(document: Mapping[str, Any]) -> str:

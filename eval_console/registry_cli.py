@@ -13,6 +13,14 @@ from .credential_service import CredentialService, CredentialUpdateDraft
 from .credential_store import LocalFileCredentialSecretStore, mask_token
 from .formatting import format_date_for_display, format_datetime_for_display
 from .interactive import CLEAR_VALUE, InteractiveBack, InteractiveCancel, InteractiveEOF, InteractiveReader
+from .model_registry import (
+    RegistryValidationError,
+    validate_base_url,
+    validate_base_url_configuration,
+    validate_model_identifier,
+    validate_protocol,
+    validate_registry_identifier,
+)
 from .registry_runtime import PresetReadiness, RegistryProviderFactory, RegistryRuntimeResolver, format_preset_readiness_failure
 from .registry_store import RegistryStore
 
@@ -370,6 +378,9 @@ def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: Crede
     if kind == "credentials":
         _manage_credentials(reader, store, service, secrets)
         return
+    if kind == "model_families":
+        _manage_model_families(reader, store, service, secrets)
+        return
     labels = {"vendors": "Vendor", "model_families": "Model Family", "presets": "Preset"}
     while True:
         try:
@@ -390,6 +401,123 @@ def _manage_kind(reader: InteractiveReader, store: RegistryStore, service: Crede
             print("已返回上级菜单，草稿未保存。")
         except (ValueError, KeyError) as error:
             print(f"无法保存：{error}")
+
+
+def _manage_model_families(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    service: CredentialService,
+    secrets: LocalFileCredentialSecretStore,
+) -> None:
+    """Keep built-in Families read-only while exposing their user Model additions."""
+    while True:
+        action = reader.choice(
+            "Model Family 管理",
+            [("查看", "view"), ("新增用户 Model Family", "create"), ("管理已有 Family", "manage"), ("返回", "back")],
+        )
+        if action == "back":
+            return
+        registry = _configuration_registry(store)
+        if action == "view":
+            _view("model_families", registry.model_families, store, secrets)
+            continue
+        try:
+            if action == "create":
+                document = _family_wizard(reader, registry)
+                if reader.confirm("确认保存 Model Family？", default=True, allow_back=True):
+                    store.create("model_families", document)
+                    print("已保存。")
+                continue
+            family_id = reader.choice(
+                "选择 Model Family",
+                [(item.name, item.id) for item in registry.model_families.values()],
+            )
+            if store.is_builtin_model_family(family_id):
+                _manage_builtin_family_extensions(reader, store, registry, family_id, secrets)
+            else:
+                _manage_user_model_family(reader, store, service, secrets, family_id)
+        except InteractiveCancel:
+            print("已取消，草稿未保存。")
+        except InteractiveBack:
+            print("已返回上级菜单，草稿未保存。")
+        except (ValueError, KeyError) as error:
+            print(f"无法保存：{error}")
+
+
+def _manage_builtin_family_extensions(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    registry: Any,
+    family_id: str,
+    secrets: LocalFileCredentialSecretStore,
+) -> None:
+    family = registry.model_families[family_id]
+    while True:
+        action = reader.choice(
+            f"{family.name}（内建定义）",
+            [("查看", "view"), ("添加 Model", "add"), ("管理用户扩展模型", "manage"), ("返回", "back")],
+        )
+        if action == "back":
+            return
+        if action == "view":
+            _view("model_families", {family_id: family}, store, secrets)
+            continue
+        if action == "add":
+            model_id = _validated_model_id(reader.text("Model ID: ", required=True))
+            definition = _model_fields(reader, {}, family.capabilities)
+            if reader.confirm("确认添加用户 Model？", default=True, allow_back=True):
+                store.create_extension_model(family_id, model_id, definition)
+                print("已保存用户扩展 Model。")
+            continue
+        _manage_extension_models(reader, store, family)
+
+
+def _manage_extension_models(reader: InteractiveReader, store: RegistryStore, family: Any) -> None:
+    while True:
+        models = store.extension_models(family.id)
+        if not models:
+            print("暂无用户扩展 Model；内建 Model 仅可查看。")
+            return
+        model_id = reader.choice("选择用户扩展 Model", [(item, item) for item in sorted(models)])
+        action = reader.choice("用户扩展 Model 操作", [("修改", "edit"), ("删除", "delete"), ("返回", "back")])
+        if action == "back":
+            return
+        if action == "delete":
+            if reader.confirm(f"确认删除 {model_id}？", default=False):
+                store.delete_extension_model(family.id, model_id)
+                print("已删除。")
+            continue
+        definition = _model_fields(reader, models[model_id], family.capabilities)
+        if reader.confirm("确认保存用户 Model 修改？", default=True, allow_back=True):
+            store.update_extension_model(family.id, model_id, definition)
+            print("已保存。")
+
+
+def _manage_user_model_family(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    service: CredentialService,
+    secrets: LocalFileCredentialSecretStore,
+    family_id: str,
+) -> None:
+    action = reader.choice("用户 Model Family 操作", [("查看", "view"), ("修改", "edit"), ("删除", "delete"), ("返回", "back")])
+    if action == "back":
+        return
+    registry = _configuration_registry(store)
+    if action == "view":
+        _view("model_families", {family_id: registry.model_families[family_id]}, store, secrets)
+    elif action == "edit":
+        document = _family_wizard(reader, registry, store.read_user_document("model_families", family_id))
+        if reader.confirm("确认保存修改？", default=True, allow_back=True):
+            store.update("model_families", family_id, document)
+            print("已保存。")
+    else:
+        references = store.references("model_families", family_id)
+        if references:
+            raise ValueError("该对象仍被引用：\n" + "\n".join(f"- {item}" for item in references))
+        if reader.confirm(f"确认删除 {family_id}？", default=False):
+            store.delete("model_families", family_id)
+            print("已删除。")
 
 
 def _manage_credentials(
@@ -543,54 +671,144 @@ def create_preset_for_runtime(
         return None
 
 
+def _validated_entity_id(value: object, label: str) -> str:
+    try:
+        return validate_registry_identifier(value, field="id")
+    except RegistryValidationError as error:
+        raise ValueError(
+            f"{label} {value!r} 格式无效。\n"
+            "必须以小写字母开头，只允许小写字母、数字、-、_。"
+        ) from error
+
+
+def _validated_model_id(value: object) -> str:
+    try:
+        return validate_model_identifier(value, field="model id")
+    except RegistryValidationError as error:
+        raise ValueError(
+            f"Model ID {value!r} 格式无效。\n"
+            "必须以小写字母开头，只允许小写字母、数字、.、-、_。"
+        ) from error
+
+
+def _validated_url(value: object) -> str:
+    try:
+        return validate_base_url(value)
+    except RegistryValidationError as error:
+        raise ValueError(f"Base URL {value!r} 格式无效。必须是完整 HTTP(S) URL。") from error
+
+
+def _validated_protocol(value: object, label: str) -> str:
+    try:
+        return validate_protocol(value)
+    except RegistryValidationError as error:
+        raise ValueError(f"{label} {value!r} 不受支持。") from error
+
+
+def _validate_base_url_draft(
+    draft: dict[str, Any],
+    registry: Any,
+    sibling_ids: tuple[str, ...],
+    vendor_protocol: str | None,
+) -> None:
+    try:
+        validate_base_url_configuration(
+            draft,
+            known_model_families=registry.model_families,
+            sibling_ids=sibling_ids,
+            vendor_protocol=vendor_protocol,
+        )
+    except RegistryValidationError as error:
+        raise ValueError(f"Base URL ID {draft.get('id')!r} 配置无效：{error}") from error
+
+
 def _vendor_wizard(reader: InteractiveReader, registry: Any, existing: dict[str, Any] | None = None) -> dict[str, Any]:
     draft = deepcopy(existing or {})
     editing = existing is not None
     if editing: print(f"Vendor ID: {draft['id']}（不可修改）")
+    def identifier(state: dict[str, Any]) -> None:
+        value = reader.text("Vendor ID: ", required=True)
+        state["id"] = _validated_entity_id(value, "Vendor ID")
     def field(key: str, prompt: str, required: bool = False) -> DraftStep:
         return lambda state: state.__setitem__(key, reader.text(prompt, default=state.get(key), required=required))
+    def protocol(state: dict[str, Any]) -> None:
+        _optional_field(reader, state, "protocol", "默认 Protocol（可留空；clear 清除）")
+        if state.get("protocol") is not None:
+            _validated_protocol(state["protocol"], "Vendor Protocol")
     steps: list[DraftStep] = ([] if editing else [field("id", "Vendor ID: ", True)]) + [
         field("name", "名称: ", True),
         lambda state: _optional_field(reader, state, "website", "Website（可留空；clear 清除）"),
         lambda state: _optional_field(reader, state, "description", "描述（可留空；clear 清除）"),
         lambda state: _optional_field(reader, state, "notes", "备注（可留空；clear 清除）"),
         lambda state: _optional_field(reader, state, "category", "分类 official/relay/enterprise/local（可留空；clear 清除）"),
-        lambda state: _optional_field(reader, state, "protocol", "默认 Protocol（可留空；clear 清除）"),
-        lambda state: _base_url_manager(reader, registry, state.setdefault("base_urls", [])),
+        protocol,
+        lambda state: _base_url_manager(
+            reader,
+            registry,
+            state.setdefault("base_urls", []),
+            vendor_protocol=state.get("protocol"),
+        ),
     ]
+    if not editing:
+        steps[0] = identifier
     draft = _run_wizard(steps, draft)
     return draft
 
 
-def _base_url_manager(reader: InteractiveReader, registry: Any, endpoints: list[dict[str, Any]]) -> None:
+def _base_url_manager(
+    reader: InteractiveReader,
+    registry: Any,
+    endpoints: list[dict[str, Any]],
+    *,
+    vendor_protocol: str | None = None,
+) -> None:
     while True:
         action = reader.choice("Base URL 管理", [("添加", "add"), ("修改", "edit"), ("删除", "delete"), ("高级设置", "advanced"), ("完成", "done")])
         if action == "done":
             if not endpoints: raise ValueError("至少需要一个 Base URL。")
             return
-        if action == "add": endpoints.append(_base_url_wizard(reader, registry, endpoints))
+        if action == "add": endpoints.append(_base_url_wizard(reader, registry, endpoints, vendor_protocol=vendor_protocol))
         else:
             if not endpoints: raise ValueError("暂无 Base URL。")
             selected = reader.choice("选择 Base URL", [(item["id"], item) for item in endpoints])
             if action == "delete":
                 if len(endpoints) == 1: raise ValueError("Vendor 至少需要一个 Base URL。")
                 endpoints.remove(selected)
-            elif action == "edit": selected.update(_base_url_wizard(reader, registry, endpoints, selected))
+            elif action == "edit": selected.update(_base_url_wizard(reader, registry, endpoints, selected, vendor_protocol=vendor_protocol))
             else: _advanced_base_url(reader, registry, selected)
 
 
-def _base_url_wizard(reader: InteractiveReader, registry: Any, endpoints: list[dict[str, Any]], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+def _base_url_wizard(
+    reader: InteractiveReader,
+    registry: Any,
+    endpoints: list[dict[str, Any]],
+    existing: dict[str, Any] | None = None,
+    *,
+    vendor_protocol: str | None = None,
+) -> dict[str, Any]:
     draft = deepcopy(existing or {})
     editing = existing is not None
     if editing: print(f"Base URL ID: {draft['id']}（不可修改）")
-    def identifier(state: dict[str, Any]) -> None: state["id"] = reader.text("Base URL ID: ", required=True)
-    def url(state: dict[str, Any]) -> None: state["url"] = reader.text("Base URL（HTTPS）: ", default=state.get("url"), required=True)
-    def protocol(state: dict[str, Any]) -> None: _optional_field(reader, state, "protocol", "Protocol（留空继承 Vendor；clear 清除）")
+    def identifier(state: dict[str, Any]) -> None:
+        state["id"] = _validated_entity_id(reader.text("Base URL ID: ", required=True), "Base URL ID")
+    def url(state: dict[str, Any]) -> None:
+        value = reader.text("Base URL（HTTP(S)）: ", default=state.get("url"), required=True)
+        state["url"] = _validated_url(value)
+    def protocol(state: dict[str, Any]) -> None:
+        _optional_field(reader, state, "protocol", "Protocol（留空继承 Vendor；clear 清除）")
+        if state.get("protocol") is not None:
+            _validated_protocol(state["protocol"], "Base URL Protocol")
     def families(state: dict[str, Any]) -> None: state["model_families"] = reader.multi_choice("选择支持的 Model Family", [(key, key) for key in registry.model_families])
     def defaults(state: dict[str, Any]) -> None: state["default_for"] = reader.multi_choice("选择 default_for（仅限已选 Family）", [(key, key) for key in state["model_families"]])
     draft = _run_wizard(([] if editing else [identifier]) + [url, protocol, families, defaults], draft)
     if not draft.get("protocol"): draft.pop("protocol", None)
     _move_default_conflicts(reader, endpoints, draft)
+    _validate_base_url_draft(
+        draft,
+        registry,
+        tuple(item["id"] for item in endpoints if item is not existing),
+        vendor_protocol,
+    )
     return draft
 
 
@@ -630,7 +848,8 @@ def _family_wizard(reader: InteractiveReader, registry: Any, existing: dict[str,
     draft = deepcopy(existing or {})
     editing = existing is not None
     if editing: print(f"Model Family ID: {draft['id']}（不可修改）")
-    def identifier(state: dict[str, Any]) -> None: state["id"] = reader.text("Family ID: ", required=True)
+    def identifier(state: dict[str, Any]) -> None:
+        state["id"] = _validated_entity_id(reader.text("Family ID: ", required=True), "Model Family ID")
     def name(state: dict[str, Any]) -> None: state["name"] = reader.text("名称: ", default=state.get("name"), required=True)
     def description(state: dict[str, Any]) -> None: _optional_field(reader, state, "description", "描述（可留空；clear 清除）")
     def context(state: dict[str, Any]) -> None: _optional_positive(reader, state.setdefault("defaults", {"capabilities": {}}), "context_window", "默认 Context Window（可留空；clear 清除）")
@@ -649,7 +868,7 @@ def _models_manager(reader: InteractiveReader, models: dict[str, Any], known_cap
             if not models: raise ValueError("Model Family 至少需要一个 Model。")
             return
         if action == "add":
-            model_id = reader.text("Model ID: ", required=True)
+            model_id = _validated_model_id(reader.text("Model ID: ", required=True))
             if model_id in models: raise ValueError("Model ID 已存在。")
             models[model_id] = _model_fields(reader, {}, known_capabilities)
         else:

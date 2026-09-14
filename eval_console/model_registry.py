@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 
 DEFAULT_MODEL_REGISTRY_ROOT = Path(__file__).resolve().parents[1] / "model_registry"
@@ -34,6 +35,65 @@ class RegistryValidationError(ModelRegistryError):
 
 class RegistryResolutionError(ModelRegistryError):
     """A valid registry cannot resolve a requested runtime."""
+
+
+def validate_registry_identifier(value: object, *, field: str = "id") -> str:
+    """Validate an entity identifier using the Registry's canonical rule."""
+    if not isinstance(value, str) or not _ENTITY_ID.fullmatch(value):
+        raise RegistryValidationError(f"'{field}' must be a lowercase identifier")
+    return value
+
+
+def validate_model_identifier(value: object, *, field: str = "model id") -> str:
+    """Validate a model identifier using the Registry's canonical rule."""
+    if not isinstance(value, str) or not _MODEL_ID.fullmatch(value):
+        raise RegistryValidationError(f"'{field}' must be a lowercase model identifier")
+    return value
+
+
+def validate_protocol(value: object, *, field: str = "protocol") -> str:
+    """Validate a provider protocol using the Registry's supported set."""
+    if not isinstance(value, str) or value not in SUPPORTED_PROTOCOLS:
+        raise RegistryValidationError(f"unsupported {field} '{value}'")
+    return value
+
+
+def validate_base_url(value: object, *, field: str = "url") -> str:
+    """Validate an absolute HTTP(S) endpoint URL using the Registry contract."""
+    if not isinstance(value, str) or not value:
+        raise RegistryValidationError(f"'{field}' must be a non-empty string")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RegistryValidationError(f"'{field}' must be an absolute HTTP(S) URL")
+    return value
+
+
+def validate_base_url_configuration(
+    data: Mapping[str, Any],
+    *,
+    known_model_families: Mapping[str, Any],
+    sibling_ids: tuple[str, ...] = (),
+    vendor_protocol: str | None = None,
+) -> None:
+    """Validate one endpoint before its enclosing Vendor is committed."""
+    path = Path("<Base URL>")
+    endpoint = ModelRegistry._base_url(data, path)
+    errors: list[str] = []
+    protocol = endpoint.protocol or vendor_protocol
+    if protocol is None:
+        errors.append("protocol is required")
+    elif protocol not in SUPPORTED_PROTOCOLS:
+        errors.append(f"unsupported protocol '{protocol}'")
+    if endpoint.id in sibling_ids:
+        errors.append(f"duplicate base URL id '{endpoint.id}'")
+    for family_id in endpoint.model_families:
+        if family_id not in known_model_families:
+            errors.append(f"unknown model family '{family_id}'")
+    for family_id in endpoint.default_for:
+        if family_id not in endpoint.model_families:
+            errors.append(f"default_for '{family_id}' is unsupported")
+    if errors:
+        raise RegistryValidationError("Base URL validation failed:\n- " + "\n- ".join(errors))
 
 
 @dataclass(frozen=True)
@@ -354,13 +414,65 @@ class ModelRegistry:
             defaults = _object(data, "defaults", path); _fields(defaults, {"context_window", "capabilities"}, path, "defaults")
             models: dict[str, ModelDefinition] = {}
             for model_id, config in _object_required(data, "models", path).items():
-                if not isinstance(model_id, str) or not _MODEL_ID.fullmatch(model_id): raise RegistryValidationError(f"{path}: invalid model id '{model_id}'")
-                if not isinstance(config, Mapping): raise RegistryValidationError(f"{path}: model '{model_id}' must be an object")
-                _fields(config, {"api_name", "context_window", "capabilities"}, path, f"model '{model_id}'")
-                models[model_id] = ModelDefinition(model_id, _optional(config, "api_name", path), _positive(config, "context_window", path), _capabilities(config.get("capabilities", {}), f"{path}: model '{model_id}'"))
+                models[model_id] = _model_definition(model_id, config, path)
             if not models: raise RegistryValidationError(f"{path}: models must not be empty")
             identifier = _id(data, "id", path)
             result[identifier] = ModelFamily(identifier, _string(data, "name", path), _positive(defaults, "context_window", path), _capabilities(defaults.get("capabilities", {}), f"{path}: defaults"), _freeze(models), _optional(data, "description", path))
+        return self._load_family_extensions(result)
+
+    def _load_family_extensions(
+        self, families: dict[str, ModelFamily]
+    ) -> dict[str, ModelFamily]:
+        """Merge user-owned Model additions without allowing Family overrides."""
+        if self.user_root is None:
+            return families
+        directory = self.user_root / "model_family_extensions"
+        if not directory.is_dir():
+            return families
+        result = dict(families)
+        declared_models = {
+            model_id: family.id
+            for family in result.values()
+            for model_id in family.models
+        }
+        extended_families: set[str] = set()
+        for path in sorted((*directory.glob("*.yaml"), *directory.glob("*.yml"))):
+            data = _json(path)
+            _secret_guard(data, path)
+            _fields(data, {"model_family_id", "models"}, path, "model family extension")
+            family_id = _id(data, "model_family_id", path)
+            if family_id in extended_families:
+                raise RegistryValidationError(
+                    f"{path}: duplicate model family extension '{family_id}'"
+                )
+            extended_families.add(family_id)
+            family = result.get(family_id)
+            if family is None:
+                raise RegistryValidationError(
+                    f"{path}: unknown model family '{family_id}' for user extension"
+                )
+            extension_models = _object_required(data, "models", path)
+            if not extension_models:
+                raise RegistryValidationError(f"{path}: extension models must not be empty")
+            merged_models = dict(family.models)
+            for model_id, config in extension_models.items():
+                model_id = validate_model_identifier(model_id, field="model id")
+                former = declared_models.get(model_id)
+                if former is not None:
+                    raise RegistryValidationError(
+                        f"{path}: Model '{model_id}' already defined by model family "
+                        f"'{former}'; user extension cannot override."
+                    )
+                merged_models[model_id] = _model_definition(model_id, config, path)
+                declared_models[model_id] = family_id
+            result[family_id] = ModelFamily(
+                family.id,
+                family.name,
+                family.context_window,
+                family.capabilities,
+                _freeze(merged_models),
+                family.description,
+            )
         return result
 
     def _load_credentials(self) -> dict[str, Credential]:
@@ -400,7 +512,7 @@ class ModelRegistry:
         overrides = _object(data, "model_overrides", path)
         for model_id, config in overrides.items():
             if not isinstance(model_id, str) or not isinstance(config, Mapping): raise RegistryValidationError(f"{path}: model_overrides must map model ids to objects")
-        return VendorBaseURL(_id(data, "id", path), _string(data, "url", path), families, defaults, _optional_protocol(data, "protocol", path), _optional(data, "type", path), _optional(data, "notes", path), _capabilities(data.get("capabilities", {}), f"{path}: base URL"), _mapping(data.get("parameter_mapping", {}), f"{path}: base URL"), _object(data, "transport_defaults", path), _freeze(overrides))
+        return VendorBaseURL(_id(data, "id", path), _base_url_value(data, path), families, defaults, _optional_protocol(data, "protocol", path), _optional(data, "type", path), _optional(data, "notes", path), _capabilities(data.get("capabilities", {}), f"{path}: base URL"), _mapping(data.get("parameter_mapping", {}), f"{path}: base URL"), _object(data, "transport_defaults", path), _freeze(overrides))
 
     def _documents(self, directory: str):
         folders = [self.root / directory]
@@ -498,10 +610,33 @@ def _endpoint(vendor: Vendor, identifier: str) -> VendorBaseURL | None:
     return next((item for item in vendor.base_urls if item.id == identifier), None)
 
 
+def _model_definition(model_id: object, config: Any, path: Path) -> ModelDefinition:
+    identifier = validate_model_identifier(model_id, field="model id")
+    if not isinstance(config, Mapping):
+        raise RegistryValidationError(f"{path}: model '{identifier}' must be an object")
+    _fields(config, {"api_name", "context_window", "capabilities"}, path, f"model '{identifier}'")
+    return ModelDefinition(
+        identifier,
+        _optional(config, "api_name", path),
+        _positive(config, "context_window", path),
+        _capabilities(config.get("capabilities", {}), f"{path}: model '{identifier}'"),
+    )
+
+
+def _base_url_value(data: Mapping[str, Any], path: Path) -> str:
+    value = _string(data, "url", path)
+    try:
+        return validate_base_url(value)
+    except RegistryValidationError as error:
+        raise RegistryValidationError(f"{path}: {error}") from error
+
+
 def _id(data: Mapping[str, Any], field: str, path: Path) -> str:
     value = _string(data, field, path)
-    if not _ENTITY_ID.fullmatch(value): raise RegistryValidationError(f"{path}: '{field}' must be a lowercase identifier")
-    return value
+    try:
+        return validate_registry_identifier(value, field=field)
+    except RegistryValidationError as error:
+        raise RegistryValidationError(f"{path}: {error}") from error
 def _id_alias(data: Mapping[str, Any], canonical: str, legacy: str, path: Path) -> str:
     """Accept legacy Registry documents while making new relationship names explicit."""
     has_canonical, has_legacy = canonical in data, legacy in data
@@ -579,7 +714,11 @@ def _positive(data: Mapping[str, Any], field: str, path: Path) -> int | None:
 
 def _optional_protocol(data: Mapping[str, Any], field: str, path: Path) -> str | None:
     value = _optional(data, field, path)
-    if value is not None and value not in SUPPORTED_PROTOCOLS: raise RegistryValidationError(f"{path}: unsupported protocol '{value}'")
+    if value is not None:
+        try:
+            validate_protocol(value, field=field)
+        except RegistryValidationError as error:
+            raise RegistryValidationError(f"{path}: {error}") from error
     return value
 
 
