@@ -705,6 +705,64 @@ def _validated_protocol(value: object, label: str) -> str:
         raise ValueError(f"{label} {value!r} 不受支持。") from error
 
 
+_PROTOCOL_UNSET = object()
+_PROTOCOL_INHERIT = object()
+_PROTOCOL_LABELS = {
+    "openai_compatible_chat": "OpenAI Compatible Chat",
+    "openai_responses": "OpenAI Responses",
+    "anthropic_messages": "Anthropic Messages",
+    "gemini_generate": "Gemini Generate",
+}
+
+
+def _protocol_label(protocol: str) -> str:
+    """Return a friendly label without becoming another protocol source of truth."""
+    return _PROTOCOL_LABELS.get(protocol, protocol)
+
+
+def _runtime_protocol_choices() -> list[tuple[str, str]]:
+    """Build choices from the protocols the active Eval Runtime can execute."""
+    return [
+        (_protocol_label(protocol), protocol)
+        for protocol in sorted(RegistryProviderFactory.SUPPORTED_PROTOCOLS, key=_protocol_label)
+    ]
+
+
+def _choose_vendor_protocol(reader: InteractiveReader, current: str | None) -> str | None:
+    choices: list[tuple[str, object]] = [*_runtime_protocol_choices(), ("不设置，由各 Base URL 单独指定", _PROTOCOL_UNSET)]
+    default: object = current if current in RegistryProviderFactory.SUPPORTED_PROTOCOLS else _PROTOCOL_UNSET
+    selected = reader.choice("请选择 Vendor 默认 Protocol", choices, default=default)
+    if selected is _PROTOCOL_UNSET:
+        return None
+    return _validated_protocol(selected, "Vendor Protocol")
+
+
+def _choose_base_url_protocol(
+    reader: InteractiveReader,
+    current: str | None,
+    vendor_protocol: str | None,
+) -> str | None:
+    choices: list[tuple[str, object]] = []
+    if vendor_protocol is not None:
+        choices.append((f"继承 Vendor：{_protocol_label(vendor_protocol)}", _PROTOCOL_INHERIT))
+    choices.extend(_runtime_protocol_choices())
+    default: object
+    if current in RegistryProviderFactory.SUPPORTED_PROTOCOLS:
+        default = current
+    elif vendor_protocol is not None:
+        default = _PROTOCOL_INHERIT
+    else:
+        default = None
+    selected = reader.choice("请选择 Base URL Protocol", choices, default=default)
+    if selected is _PROTOCOL_INHERIT:
+        return None
+    return _validated_protocol(selected, "Base URL Protocol")
+
+
+def _dependent_base_url_ids(endpoints: list[dict[str, Any]]) -> list[str]:
+    return [str(endpoint.get("id", "<未命名>")) for endpoint in endpoints if not endpoint.get("protocol")]
+
+
 def _validate_base_url_draft(
     draft: dict[str, Any],
     registry: Any,
@@ -732,9 +790,19 @@ def _vendor_wizard(reader: InteractiveReader, registry: Any, existing: dict[str,
     def field(key: str, prompt: str, required: bool = False) -> DraftStep:
         return lambda state: state.__setitem__(key, reader.text(prompt, default=state.get(key), required=required))
     def protocol(state: dict[str, Any]) -> None:
-        _optional_field(reader, state, "protocol", "默认 Protocol（可留空；clear 清除）")
-        if state.get("protocol") is not None:
-            _validated_protocol(state["protocol"], "Vendor Protocol")
+        selected = _choose_vendor_protocol(reader, state.get("protocol"))
+        if selected is None:
+            dependent = _dependent_base_url_ids(state.get("base_urls", []))
+            if dependent:
+                raise ValueError(
+                    "无法清除 Vendor 默认 Protocol。\n"
+                    "以下 Base URL 当前依赖 Vendor Protocol：\n"
+                    + "\n".join(f"- {identifier}" for identifier in dependent)
+                    + "\n请先为这些 Base URL 单独设置 Protocol。"
+                )
+            state.pop("protocol", None)
+        else:
+            state["protocol"] = selected
     steps: list[DraftStep] = ([] if editing else [field("id", "Vendor ID: ", True)]) + [
         field("name", "名称: ", True),
         lambda state: _optional_field(reader, state, "website", "Website（可留空；clear 清除）"),
@@ -795,9 +863,11 @@ def _base_url_wizard(
         value = reader.text("Base URL（HTTP(S)）: ", default=state.get("url"), required=True)
         state["url"] = _validated_url(value)
     def protocol(state: dict[str, Any]) -> None:
-        _optional_field(reader, state, "protocol", "Protocol（留空继承 Vendor；clear 清除）")
-        if state.get("protocol") is not None:
-            _validated_protocol(state["protocol"], "Base URL Protocol")
+        selected = _choose_base_url_protocol(reader, state.get("protocol"), vendor_protocol)
+        if selected is None:
+            state.pop("protocol", None)
+        else:
+            state["protocol"] = selected
     def families(state: dict[str, Any]) -> None: state["model_families"] = reader.multi_choice("选择支持的 Model Family", [(key, key) for key in registry.model_families])
     def defaults(state: dict[str, Any]) -> None: state["default_for"] = reader.multi_choice("选择 default_for（仅限已选 Family）", [(key, key) for key in state["model_families"]])
     draft = _run_wizard(([] if editing else [identifier]) + [url, protocol, families, defaults], draft)

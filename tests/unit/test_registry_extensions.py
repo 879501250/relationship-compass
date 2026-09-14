@@ -2,23 +2,33 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from types import SimpleNamespace
 
 from eval_console.model_registry import (
     ModelRegistry,
     RegistryValidationError,
     validate_base_url_configuration,
 )
+from eval_console.interactive import InteractiveReader
 from eval_console.registry_cli import (
+    _base_url_wizard,
+    _choose_base_url_protocol,
+    _choose_vendor_protocol,
+    _protocol_label,
     _validated_entity_id,
     _validated_model_id,
     _validated_protocol,
     _validated_url,
+    _vendor_wizard,
 )
 from eval_console.registry_store import RegistryStore
+from eval_console.registry_runtime import RegistryProviderFactory
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,6 +82,140 @@ class ImmediateRegistryValidationTests(unittest.TestCase):
         self.assertEqual(_validated_url("https://api.example.com/v1"), "https://api.example.com/v1")
         with self.assertRaisesRegex(ValueError, "不受支持"):
             _validated_protocol("unsupported", "Base URL Protocol")
+
+
+class ProtocolChoiceInteractionTests(unittest.TestCase):
+    def test_vendor_choice_saves_canonical_protocol_and_can_be_unset(self) -> None:
+        registry = SimpleNamespace(model_families={"kimi": object()})
+        existing = {
+            "id": "relay", "name": "Relay", "protocol": "openai_responses",
+            "base_urls": [{"id": "primary", "url": "https://api.example/v1", "protocol": "openai_responses", "model_families": ["kimi"], "default_for": ["kimi"]}],
+        }
+        reader = _ChoiceReader(["openai_compatible_chat", "done"])
+
+        updated = _vendor_wizard(reader, registry, existing)
+
+        self.assertEqual(updated["protocol"], "openai_compatible_chat")
+        prompt, choices, default = reader.choice_calls[0]
+        self.assertEqual(prompt, "请选择 Vendor 默认 Protocol")
+        self.assertEqual(default, "openai_responses")
+        self.assertIn(("OpenAI Compatible Chat", "openai_compatible_chat"), choices)
+        self.assertEqual(
+            {value for _label, value in choices if isinstance(value, str)},
+            RegistryProviderFactory.SUPPORTED_PROTOCOLS,
+        )
+
+        unset_reader = _ChoiceReader(["__unset__"])
+        self.assertIsNone(_choose_vendor_protocol(unset_reader, None))
+        self.assertIn("不设置，由各 Base URL 单独指定", [label for label, _ in unset_reader.choice_calls[0][1]])
+
+    def test_base_url_inheritance_is_not_persisted_and_override_wins(self) -> None:
+        registry = SimpleNamespace(model_families={"kimi": object()})
+        existing = {
+            "id": "primary", "url": "https://api.example/v1", "model_families": ["kimi"], "default_for": ["kimi"],
+        }
+        inherited_reader = _ChoiceReader(["__inherit__"])
+        inherited = _base_url_wizard(
+            inherited_reader, registry, [existing], existing,
+            vendor_protocol="openai_compatible_chat",
+        )
+        self.assertNotIn("protocol", inherited)
+        self.assertIsNotNone(inherited_reader.choice_calls[0][2])
+
+        override_reader = _ChoiceReader(["openai_responses"])
+        overridden = _base_url_wizard(
+            override_reader, registry, [existing], existing,
+            vendor_protocol="openai_compatible_chat",
+        )
+        self.assertEqual(overridden["protocol"], "openai_responses")
+        own_default_reader = _ChoiceReader(["openai_responses"])
+        self.assertEqual(
+            _choose_base_url_protocol(own_default_reader, "openai_responses", "openai_compatible_chat"),
+            "openai_responses",
+        )
+        self.assertEqual(own_default_reader.choice_calls[0][2], "openai_responses")
+
+    def test_base_url_without_vendor_protocol_requires_explicit_runtime_protocol(self) -> None:
+        reader = _ChoiceReader(["openai_compatible_chat"])
+
+        selected = _choose_base_url_protocol(reader, None, None)
+
+        self.assertEqual(selected, "openai_compatible_chat")
+        _prompt, choices, default = reader.choice_calls[0]
+        self.assertNotIn("继承 Vendor", " ".join(label for label, _ in choices))
+        self.assertIsNone(default)
+
+    def test_clearing_vendor_protocol_rejects_base_urls_that_depend_on_it(self) -> None:
+        registry = SimpleNamespace(model_families={"kimi": object()})
+        existing = {
+            "id": "relay", "name": "Relay", "protocol": "openai_compatible_chat",
+            "base_urls": [{"id": "official", "url": "https://api.example/v1", "model_families": ["kimi"], "default_for": ["kimi"]}],
+        }
+        reader = _ChoiceReader(["__unset__", "openai_compatible_chat", "done"])
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            updated = _vendor_wizard(reader, registry, existing)
+
+        self.assertEqual(updated["protocol"], "openai_compatible_chat")
+        self.assertIn("official", output.getvalue())
+        self.assertIn("无法清除 Vendor 默认 Protocol", output.getvalue())
+
+    def test_friendly_protocol_label_falls_back_to_the_canonical_value(self) -> None:
+        self.assertEqual(_protocol_label("future_protocol"), "future_protocol")
+
+    def test_choice_reader_shows_friendly_labels_and_accepts_the_default(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            selected = InteractiveReader(input_fn=lambda _prompt: "").choice(
+                "请选择 Vendor 默认 Protocol",
+                [("OpenAI Compatible Chat", "openai_compatible_chat")],
+                default="openai_compatible_chat",
+            )
+
+        self.assertEqual(selected, "openai_compatible_chat")
+        self.assertIn("OpenAI Compatible Chat（默认）", output.getvalue())
+        self.assertNotIn("openai_compatible_chat", output.getvalue())
+
+    def test_choice_reader_does_not_treat_a_none_choice_as_an_implicit_default(self) -> None:
+        answers = iter(["", "2"])
+        selected = InteractiveReader(input_fn=lambda _prompt: next(answers)).choice(
+            "状态", [("保持当前", None), ("Active", "active")],
+        )
+
+        self.assertEqual(selected, "active")
+
+
+class _ChoiceReader:
+    def __init__(self, selections: list[str]) -> None:
+        self._selections = iter(selections)
+        self.choice_calls: list[tuple[str, list[tuple[str, object]], object]] = []
+
+    def text(self, _prompt: str, *, default: str | None = None, required: bool = False) -> str:
+        if default is not None:
+            return default
+        if required:
+            return "value"
+        return ""
+
+    def optional_value(self, _prompt: str, *, default: str | None = None) -> str | None:
+        return default
+
+    def choice(self, prompt: str, choices: list[tuple[str, object]], *, default: object = None) -> object:
+        copied = list(choices)
+        self.choice_calls.append((prompt, copied, default))
+        selected = next(self._selections)
+        if selected == "__inherit__":
+            return next(value for label, value in copied if label.startswith("继承 Vendor："))
+        if selected == "__unset__":
+            return next(value for label, value in copied if label.startswith("不设置，"))
+        for _label, value in copied:
+            if value == selected:
+                return value
+        raise AssertionError(f"choice {selected!r} was not available for {prompt!r}")
+
+    def multi_choice(self, _prompt: str, choices: list[tuple[str, str]]) -> list[str]:
+        return [choices[0][1]]
 
 
 class ModelFamilyExtensionTests(unittest.TestCase):

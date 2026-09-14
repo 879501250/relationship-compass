@@ -17,6 +17,7 @@ BACK = {"b", "back", "返回", "上一步"}
 CANCEL = {"c", "cancel", "取消"}
 CLEAR = {"clear", "none", "清除"}
 CLEAR_VALUE = object()
+CHOICE_DEFAULT = object()
 T = TypeVar("T")
 
 
@@ -63,11 +64,16 @@ class InteractiveReader:
             if value in NO: return False
             print("请输入 y/yes/是 或 n/no/否。")
 
-    def choice(self, prompt: str, choices: Sequence[tuple[str, T]]) -> T:
+    def choice(self, prompt: str, choices: Sequence[tuple[str, T]], *, default: T | object = CHOICE_DEFAULT) -> T:
         print(f"\n{prompt}")
-        for index, (label, _) in enumerate(choices, start=1): print(f"  {index}. {label}")
+        has_default = default is not CHOICE_DEFAULT and any(value == default for _, value in choices)
+        for index, (label, value) in enumerate(choices, start=1):
+            suffix = "（默认）" if has_default and value == default else ""
+            print(f"  {index}. {label}{suffix}")
         while True:
-            value = self.text("请选择：")
+            value = self.text("请选择（直接回车使用默认项）：" if has_default else "请选择：")
+            if not value and has_default:
+                return default
             if value.isdigit() and 1 <= int(value) <= len(choices): return choices[int(value) - 1][1]
             print(f"请输入 1 到 {len(choices)} 的编号。")
 
