@@ -11,7 +11,12 @@ import shutil
 import tempfile
 from typing import Any, Literal, Mapping
 
-from .model_registry import DEFAULT_MODEL_REGISTRY_ROOT, ModelRegistry, RegistryValidationError
+from .model_registry import (
+    DEFAULT_MODEL_REGISTRY_ROOT,
+    ModelRegistry,
+    RegistryValidationError,
+    validate_model_identifier,
+)
 
 
 RegistryKind = Literal["vendors", "model_families", "credentials", "presets"]
@@ -169,6 +174,26 @@ class RegistryStore:
             raise ValueError(f"用户扩展 Model 已存在：{model_id}")
         models[model_id] = deepcopy(dict(definition))
         self._commit_extension_candidate(family_id, document)
+
+    def create_user_family_model(
+        self, family_id: str, model_id: str, definition: Mapping[str, Any]
+    ) -> None:
+        """Add a Model to a user-owned Family through its normal transaction."""
+        if self.is_builtin_model_family(family_id):
+            raise ValueError("内建 Model Family 的 Model 必须作为用户扩展添加。")
+        model_id = validate_model_identifier(model_id)
+        registry = self.registry()
+        family = registry.model_families.get(family_id)
+        if family is None:
+            raise ValueError(f"未找到 Model Family：{family_id}")
+        if any(model_id in item.models for item in registry.model_families.values()):
+            raise ValueError(f"Model '{model_id}' 已由其他 Model Family 定义，不能重复添加。")
+        document = self.read_user_document("model_families", family_id)
+        models = document.get("models")
+        if not isinstance(models, dict):
+            raise ValueError("用户 Model Family 文档格式无效。")
+        models[model_id] = deepcopy(dict(definition))
+        self.update("model_families", family_id, document)
 
     def update_extension_model(
         self, family_id: str, model_id: str, definition: Mapping[str, Any]

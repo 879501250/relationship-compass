@@ -193,9 +193,10 @@ def quick_setup_first_model(
     registry = _configuration_registry(store)
     vendor_id = _choose_vendor(reader, registry)
     family_id = _choose_vendor_family(reader, registry, vendor_id)
-    model_id = reader.choice(
-        "选择 Model", [(item, item) for item in sorted(registry.model_families[family_id].models)]
+    model_id, registry = _choose_or_create_model(
+        reader, store, registry, family_id, prompt="选择 Model"
     )
+    assert model_id is not None
     credential_id = _choose_or_create_credential(reader, store, service, registry, vendor_id)
     registry = _configuration_registry(store)
     base_url_id = _choose_vendor_base_url(reader, registry, vendor_id, family_id, credential_id)
@@ -691,6 +692,71 @@ def _validated_model_id(value: object) -> str:
         ) from error
 
 
+def _model_choice_label(model: Any) -> str:
+    api_name = getattr(model, "api_name", None)
+    return f"{model.id}（API: {api_name}）" if api_name and api_name != model.id else model.id
+
+
+def _inline_model_wizard(reader: InteractiveReader, registry: Any, family: Any) -> tuple[str, dict[str, Any]]:
+    """Collect the small, Family-aware definition needed for an inline Model."""
+    model_id = _validated_model_id(reader.text("Model ID: ", required=True))
+    api_name = reader.text("API Model Name（直接回车使用 Model ID）: ", default=model_id, required=True)
+    definition: dict[str, Any] = {}
+    if api_name != model_id:
+        definition["api_name"] = api_name
+    _optional_positive(reader, definition, "context_window", "Context Window（可留空，继承 Family）")
+    override = reader.choice(
+        "Capability Override",
+        [("不设置，继承 Family", "inherit"), ("配置 Capability Override", "override")],
+        default="inherit",
+    )
+    if override == "override":
+        capabilities: dict[str, Any] = {}
+        _capabilities_manager(reader, family.capabilities, capabilities)
+        if capabilities:
+            definition["capabilities"] = capabilities
+    return model_id, definition
+
+
+def _choose_or_create_model(
+    reader: InteractiveReader,
+    store: RegistryStore,
+    registry: Any,
+    family_id: str,
+    *,
+    prompt: str,
+    default_model_id: str | None = None,
+) -> tuple[str | None, Any]:
+    """Select a persisted Model or add one without leaving the active workflow."""
+    while True:
+        family = registry.model_families[family_id]
+        choices: list[tuple[str, str | None]] = []
+        if default_model_id is not None:
+            choices.append((f"使用 Preset 默认：{_model_choice_label(family.models[default_model_id])}", None))
+        choices.extend((_model_choice_label(model), model.id) for model in sorted(family.models.values(), key=lambda item: item.id))
+        choices.extend([("+ 添加新的 Model", "__create_model__"), ("返回", "__back__")])
+        selected = reader.choice(prompt, choices, **({"default": None} if default_model_id is not None else {}))
+        if selected == "__back__":
+            raise InteractiveBack()
+        if selected != "__create_model__":
+            return selected, registry
+        try:
+            model_id, definition = _inline_model_wizard(reader, registry, family)
+            if store.is_builtin_model_family(family_id):
+                store.create_extension_model(family_id, model_id, definition)
+            else:
+                store.create_user_family_model(family_id, model_id, definition)
+        except (InteractiveBack, InteractiveCancel):
+            print("已取消添加 Model，当前选择保持不变。")
+            continue
+        except (ValueError, RegistryValidationError) as error:
+            print(f"无法添加 Model：{error}")
+            continue
+        registry = _configuration_registry(store)
+        print(f"已添加 Model：{model_id}")
+        return model_id, registry
+
+
 def _validated_url(value: object) -> str:
     try:
         return validate_base_url(value)
@@ -1128,7 +1194,22 @@ def _preset_wizard(
     def vendor(state: dict[str, Any]) -> None:
         state["vendor_id"] = vendor_id or _choose_vendor(reader, registry)
     def family(state: dict[str, Any]) -> None: state["model_family_id"] = _choose_vendor_family(reader, registry, state["vendor_id"])
-    def model(state: dict[str, Any]) -> None: state["model_id"] = reader.choice("选择默认 Model", [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)])
+    def model(state: dict[str, Any]) -> None:
+        nonlocal registry
+        if store is None:
+            state["model_id"] = reader.choice(
+                "选择默认 Model",
+                [(key, key) for key in sorted(registry.model_families[state["model_family_id"]].models)],
+            )
+            return
+        state["model_id"], registry = _choose_or_create_model(
+            reader,
+            store,
+            registry,
+            state["model_family_id"],
+            prompt="选择默认 Model",
+        )
+        assert state["model_id"] is not None
     def credential(state: dict[str, Any]) -> None:
         nonlocal registry
         if store is None or service is None:

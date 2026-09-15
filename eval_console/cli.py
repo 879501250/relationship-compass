@@ -57,13 +57,19 @@ from .service import (
 )
 from .test_runner import TerminalTestReporter, TestSuiteRequest, TestSuiteRunner
 from .registry_cli import (
+    _choose_or_create_model,
     create_preset_for_runtime,
     create_vendor_for_runtime,
     manage_registry,
     offer_bootstrap_setup,
 )
 from .registry_runtime import RegistryProviderFactory, RegistryRuntimeResolver
-from .interactive import InteractiveCancel as RegistryInteractiveCancel, InteractiveEOF as RegistryInteractiveEOF
+from .registry_store import RegistryStore
+from .interactive import (
+    InteractiveCancel as RegistryInteractiveCancel,
+    InteractiveEOF as RegistryInteractiveEOF,
+    InteractiveReader,
+)
 
 
 T = TypeVar("T")
@@ -831,6 +837,27 @@ def _print_preset_readiness(readiness: object) -> None:
         print(f"  - Preset {getattr(readiness, 'preset_id', '未知')} 未满足运行条件。")
 
 
+def _choose_registry_model_override(
+    resolver: RegistryRuntimeResolver,
+    preset_id: str,
+    role: str,
+    *,
+    registry_root: Path | None,
+) -> tuple[str | None, bool]:
+    """Choose a persisted same-Family override for one active Registry Preset."""
+    preset = resolver.registry.presets[preset_id]
+    store = RegistryStore(registry_root or runner.ROOT / ".eval_console" / "model_registry")
+    selected, refreshed_registry = _choose_or_create_model(
+        InteractiveReader(),
+        store,
+        resolver.registry,
+        preset.model_family_id,
+        prompt=f"{role} Model",
+        default_model_id=preset.model_id,
+    )
+    return selected, refreshed_registry is not resolver.registry
+
+
 def _registry_interactive_run(
     evals: list[EvalDefinition], resolver: RegistryRuntimeResolver, results_root: Path,
     debug: bool, registry_root: Path | None, credential_store_path: Path | None,
@@ -862,15 +889,37 @@ def _registry_interactive_run(
     target = _choose_registry_preset(
         resolver, "Target", registry_root=registry_root, credential_store_path=credential_store_path
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
+    target_model = None
     if selected is EvalExecutionMode.FULL and target is not None:
         resolver = RegistryRuntimeResolver.for_project(
             runner.ROOT,
             registry_root=registry_root,
             credential_store_path=credential_store_path,
         )
+    if target is not None:
+        target_model, target_models_changed = _choose_registry_model_override(
+            resolver, target, "Target", registry_root=registry_root
+        )
+        if target_models_changed:
+            resolver = RegistryRuntimeResolver.for_project(
+                runner.ROOT,
+                registry_root=registry_root,
+                credential_store_path=credential_store_path,
+            )
     judge = _choose_registry_preset(
         resolver, "Judge", registry_root=registry_root, credential_store_path=credential_store_path
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None
+    judge_model = None
+    if judge is not None:
+        judge_model, judge_models_changed = _choose_registry_model_override(
+            resolver, judge, "Judge", registry_root=registry_root
+        )
+        if judge_models_changed:
+            resolver = RegistryRuntimeResolver.for_project(
+                runner.ROOT,
+                registry_root=registry_root,
+                credential_store_path=credential_store_path,
+            )
     if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} and target is None:
         return 0
     if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} and judge is None:
@@ -881,6 +930,8 @@ def _registry_interactive_run(
         assert isinstance(console, dict)
         target = console.get("target_preset_id") if isinstance(console.get("target_preset_id"), str) else None
         judge = console.get("judge_preset_id") if isinstance(console.get("judge_preset_id"), str) else None
+        target_model = None
+        judge_model = None
     target_concurrency = _interactive_concurrency("Target") if target else 1
     judge_concurrency = _interactive_concurrency("Judge") if judge else 1
     continue_on_error = _yes_no("遇到错误后继续其他 Case？", default=True)
@@ -891,6 +942,7 @@ def _registry_interactive_run(
         allow_dirty_debug=allow_dirty_debug,
         target_concurrency=target_concurrency, judge_concurrency=judge_concurrency, continue_on_error=continue_on_error,
         mode=selected, source_run_dir=source_run, target_preset_id=target, judge_preset_id=judge,
+        target_model_override=target_model, judge_model_override=judge_model,
         registry_root=registry_root, credential_store_path=credential_store_path,
     )
     target_provider, judge_provider, target_plan, judge_plan = preflight_request(request)

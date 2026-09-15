@@ -19,6 +19,7 @@ from eval_console.interactive import InteractiveReader
 from eval_console.registry_cli import (
     _base_url_wizard,
     _choose_base_url_protocol,
+    _choose_or_create_model,
     _choose_vendor_protocol,
     _protocol_label,
     _validated_entity_id,
@@ -218,6 +219,30 @@ class _ChoiceReader:
         return [choices[0][1]]
 
 
+class _InlineModelReader(_ChoiceReader):
+    def __init__(self, model_id: str, api_name: str) -> None:
+        super().__init__(["__create_model__", "inherit"])
+        self._values = iter([model_id, api_name])
+
+    def text(self, _prompt: str, *, default: str | None = None, required: bool = False) -> str:
+        return next(self._values)
+
+    def optional_value(self, _prompt: str, *, default: str | None = None) -> str | None:
+        return None
+
+
+class _RetryInlineModelReader(_ChoiceReader):
+    def __init__(self, model_ids: list[str]) -> None:
+        super().__init__(["__create_model__", "__create_model__", "inherit"])
+        self._model_ids = iter(model_ids)
+
+    def text(self, prompt: str, *, default: str | None = None, required: bool = False) -> str:
+        return next(self._model_ids) if prompt == "Model ID: " else default or ""
+
+    def optional_value(self, _prompt: str, *, default: str | None = None) -> str | None:
+        return None
+
+
 class ModelFamilyExtensionTests(unittest.TestCase):
     def test_builtin_family_protection_and_effective_extension_merge(self) -> None:
         with self._store() as store:
@@ -269,6 +294,66 @@ class ModelFamilyExtensionTests(unittest.TestCase):
             )
             store.delete_extension_model("kimi", "kimi-k2.7")
             self.assertNotIn("kimi-k2.7", store.registry().model_families["kimi"].models)
+
+    def test_inline_model_creation_persists_builtin_family_as_an_extension_and_reloads(self) -> None:
+        with self._store() as store:
+            original = store.registry()
+            reader = _InlineModelReader("kimi-k2.7", "kimi-k2.7-preview")
+
+            selected, refreshed = _choose_or_create_model(
+                reader, store, original, "kimi", prompt="选择默认 Model"
+            )
+
+            self.assertEqual(selected, "kimi-k2.7")
+            self.assertIsNot(refreshed, original)
+            self.assertEqual(refreshed.model_families["kimi"].models["kimi-k2.7"].api_name, "kimi-k2.7-preview")
+            self.assertTrue((store.user_root / "model_family_extensions" / "kimi.yaml").is_file())
+
+    def test_inline_model_creation_adds_to_a_user_family_without_an_extension(self) -> None:
+        with self._store() as store:
+            store.create("model_families", {
+                "id": "local", "name": "Local", "defaults": {"capabilities": {}},
+                "models": {"local-v1": {}},
+            })
+            original = store.registry()
+
+            selected, refreshed = _choose_or_create_model(
+                _InlineModelReader("local-v2", "local-v2"), store, original, "local", prompt="选择 Model"
+            )
+
+            self.assertEqual(selected, "local-v2")
+            self.assertIn("local-v2", refreshed.model_families["local"].models)
+            document = store.read_user_document("model_families", "local")
+            self.assertIn("local-v2", document["models"])
+            self.assertFalse((store.user_root / "model_family_extensions" / "local.yaml").exists())
+
+    def test_inline_model_creation_retries_invalid_id_and_cancel_does_not_write(self) -> None:
+        with self._store() as store:
+            registry = store.registry()
+            reader = _RetryInlineModelReader(["Kimi-K2.7", "kimi-k2.7"])
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                selected, refreshed = _choose_or_create_model(
+                    reader, store, registry, "kimi", prompt="选择 Model"
+                )
+
+            self.assertEqual(selected, "kimi-k2.7")
+            self.assertIn("Model ID 'Kimi-K2.7' 格式无效", output.getvalue())
+            self.assertIn("kimi-k2.7", refreshed.model_families["kimi"].models)
+
+        with self._store() as store:
+            registry = store.registry()
+            answers = iter([str(len(registry.model_families["kimi"].models) + 1), "cancel", "1"])
+            reader = InteractiveReader(input_fn=lambda _prompt: next(answers))
+
+            selected, refreshed = _choose_or_create_model(
+                reader, store, registry, "kimi", prompt="选择 Model"
+            )
+
+            self.assertEqual(selected, "kimi-k2.6")
+            self.assertIs(refreshed, registry)
+            self.assertFalse((store.user_root / "model_family_extensions" / "kimi.yaml").exists())
 
     def test_restore_rejects_referenced_extension_and_preserves_registry(self) -> None:
         with self._store() as store:
