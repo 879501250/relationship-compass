@@ -51,11 +51,11 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 ## 内部回复主路径
 
-回复请求内部完成：识别深度 → 读取硬约束与关系策略 → 通过 Decision Sufficiency gate（不足才 Guided Interview）→ 组装 Conversation State 并选择一个 Primary Action → 在风格边界内实现并输出首选。动作选择考虑 serious／repair、Current Action、ownership 与即时目标；hook、幽默和暧昧只参与实现。普通输出隐藏内部标签。
+回复请求内部完成：识别深度 → 硬约束与关系策略 → Decision Sufficiency gate（不足才 Guided Interview）→ Conversation State → 只由 `回复决策与对话流.md` 选择 Primary Action → 下游实现首选。serious／repair、Current Action、ownership 与即时目标只在该层参与选择；hook、幽默、practical 与成长目标不能授权或替换动作。
 
 用户先分析、随后问“现在怎么回”时，把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 作为关系级约束送入 Decision Layer，再由自然回复生成器实现；不得建立第二套 selector。单纯回复请求仍按 reply-first，只在内部使用必要状态。
 
-Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家庭或工作重压、疾病、冲突、拒绝、边界、道歉、关系确认、价值冲突、失落、误解和重要决定时，降低幽默、调侃、暧昧、反问、技巧感和强行积极，提高准确承接、直接回应、边界、清晰与真实；serious 不等于长篇安慰。
+Serious Mode 分两层：在 Decision Layer 可抑制 `PLAY`、无必要 `ASK`、`TOPIC_SHIFT`；在下游只降低幽默、暧昧、反问、技巧感和强行积极，提高准确、直接与清晰。Natural Reply 不得据此换动作；serious 不等于长篇安慰。
 
 - E1–E5 只表示当前消息的表达强度，不是 Stage、Trend、反馈、成长等级或好坏排名，也不从它们机械映射；普通即时模式隐藏。
 - 先像用户本人，再沿其明确 target style 只做一个能发出的 small stretch；边界、serious、continuation ownership 或“不像我”反馈可以取消跨度。
@@ -64,7 +64,7 @@ Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家�
 - 按当前对象检查近期技巧重复；同一种假装严肃、一本正经胡说、callback、playful framing 等高频出现时，换自然方式或不用技巧。
 - 线上可比线下主动丰富，但事实、观点、情绪和关系含义必须能在线下用更朴素的话承担。
 
-决定本轮做什么先读 `references/personal/回复决策与对话流.md`；回复生成读 `references/personal/自然回复生成器.md`；能力扩展读 `references/personal/网络聊天表达升级器.md`；幽默调侃读 `references/personal/幽默与调侃生成器.md`；主动开题读 `references/personal/主动话题与conversation-hook.md`。
+回复类先读 `references/personal/回复决策与对话流.md`，动作确定后读 `references/personal/自然回复生成器.md`。按需追加：`PLAY` 读 `references/personal/幽默与调侃生成器.md`；获准 `SHARE / TOPIC_SHIFT` 且缺素材才读 `references/personal/主动话题与conversation-hook.md`；`INVITE` 需结构才读 practical。
 
 ## Continuation ownership
 
@@ -92,7 +92,7 @@ Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家�
 
 ## 按需加载
 
-默认只读当前问题直接需要的 1–3 份参考，不批量加载全库。高风险或证据争议时再读原版知识：PUA/操控读 `references/knowledge/05-PUA操控与伦理替代.md`；同意边界读 `references/knowledge/08-同意边界性与亲密.md`；危机读 `references/knowledge/17-中国法律安全与危机转介.md`；一句话与反馈分支可补 `references/practical/实战话术编排器：从一句回复到后续分支.md`。
+默认只读当前问题直接需要的 1–3 份参考。回复类先选动作，再按 need 加载 realization；高风险时补对应 knowledge。优先级为 `CORE_POLICY → canonical personal → Decision Layer → practical realization`；practical 不得绕过边界、ownership、Current Action、stop condition 或 Decision Sufficiency。
 
 需要 curated knowledge 时先读 `references/curated/INDEX.md`，再只加载命中 topic 文件；未审核 source card、proposal、review decision 和 rejected 内容都不是 runtime 知识。
 

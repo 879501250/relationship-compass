@@ -15,5 +15,6 @@
 11. `stretch, don't transform`：先保持用户本人，再在 Comfortable Range 边缘只扩展一个有价值的表达维度；不把 target style 终点直接写成当前回复。
 12. `expression level is contextual`：E1–E5 只描述当前消息的表达强度，不是 Stage、Trend、反馈或用户成长等级，也不得从它们机械映射。
 13. `decision before realization`：先应用安全／边界等硬约束，再用 decision sufficiency gate 判断是否需要补证据；信息足够后，才依据 serious／repair、Current Action 和 continuation ownership 选择一个主动作，最后决定措辞、气泡、幽默、暧昧或 hook。知识、素材与技巧不能反向授权行动。
+14. `single action selector`：只有 `references/personal/回复决策与对话流.md` 可选择 turn-level Primary Action。关系状态与投入模块只提供 Current Action／约束；Natural Reply、Humor、Hook、Expression Upgrader 与 practical references 只实现、校验或训练。下游冲突时拒绝候选并返回 Decision Layer，不得静默换动作。
 
 具体分类见 `FACT_HYPOTHESIS_POLICY.md`。跨系统 checkpoint 必须由用户审核，并且一份 checkpoint 只对应一个对象。

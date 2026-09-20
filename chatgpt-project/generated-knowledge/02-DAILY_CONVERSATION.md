@@ -122,15 +122,21 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 
 三者都禁止追加新 hook。区别只在于“是否发送”和“是否明确完成当前线程”，不按冷淡程度排序。
 
-## 模块接口
+## Module Ownership Matrix
 
-- **关系状态模块**：提供 Evidence、Stage、Recent Trend、Evidence Strength／Conflict、Current Action、边界、安全和 ownership 证据；不替决策层选具体话术。
-- **Decision Layer**：只决定 `primary_action`，并可附 `supporting_function`、硬约束、停止条件和 realization permissions；不写成品。
-- **自然回复生成器**：消费已选动作，决定怎样说、一个还是两个气泡，并输出一个首选；不得为更好听而换掉主动作。
-- **Conversation Hook 模块**：只有 `SHARE`、`ASK`、`TOPIC_SHIFT` 或 `INVITE` 已获许可且确实需要素材时才提供 hook；素材存在不代表动作获准。
-- **Serious Mode**：作为语气和风险约束，压低 `PLAY`、无必要 `ASK` 与 `TOPIC_SHIFT`，通常让 `ACKNOWLEDGE`、`EMPATHIZE`、`REPAIR`、`BOUNDARY` 或 `DEESCALATE` 优先。
-- **表达升级器**：动作确定后，按 Current Style、Comfortable Range、one small stretch 和用户自主度实现；不以成长目标改写安全或 ownership 决定。
-- **Guided Interview**：仅在 Decision Sufficiency 不足时向用户补一个会改变动作的事实；不承担日常聊天续航。
+| Module | May decide / provide | Must not decide |
+| --- | --- | --- |
+| Relationship State | Evidence、Stage、Trend、Current Action 与关系约束 | turn Primary Action |
+| Investment | relationship strategy、投入约束、停止条件与观察窗口 | turn Primary Action |
+| Decision Layer | 唯一 `primary_action`、supporting function 与 realization permissions | 成品措辞 |
+| Natural Reply | 已选动作的措辞、气泡与候选校验 | 替换 Primary Action |
+| Humor | 已授权 `PLAY` 的实现机制 | 是否 `PLAY` 或改成其他动作 |
+| Hook | 已授权动作所需的话题素材 | 是否主动开题 |
+| Expression Upgrader | style、stretch 与成长校准 | 因训练目标升级动作 |
+| Guided Interview | Decision Sufficiency 不足时向用户补证据 | 发给对象的 `ASK` |
+| Practical references | composition patterns 与训练骨架 | 新主策略或第二套 taxonomy |
+
+Serious Mode 在本层作为 action selection constraint，可抑制 `PLAY`、无必要 `ASK` 与 `TOPIC_SHIFT`，并提高 `ACKNOWLEDGE`、`EMPATHIZE`、`REPAIR`、`BOUNDARY` 或 `DEESCALATE` 的适用性；进入 realization 后只约束语气与技巧密度。任何下游模块发现动作与 serious、boundary、ownership 或 fact safety 冲突时，都只能拒绝候选并返回本层重决策。
 
 ## 决策检查
 
@@ -297,9 +303,11 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 
 # 幽默与调侃生成器
 
-## 目标
+## 定位：PLAY realization provider
 
-不讲预制段子，而是在真实聊天内容上增加画面、反差、共同感和轻度张力。幽默不是每句必需；普通表达已经最好时直接不用技巧。
+本文件只在 Decision Layer 已选择 `Primary Action = PLAY` 后使用，负责把已授权动作实现为真实、自然、可接续、不过界的表达。它可以读取 realization permissions、Current Style、Comfortable Range、E constraint、已确认的共同语境与当前对象的 technique history；不得重新判断这一轮该不该 `PLAY`，也不得改选 `SHARE`、`ASK`、`INVITE`、`LEAVE_SPACE` 或 `CLOSE`。
+
+幽默不是每个 `PLAY` 都必需。无技巧的轻松互动已经最好时可直接采用，不为展示技巧强塞段子。
 
 ## 技巧库
 
@@ -319,13 +327,12 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 
 ## 生成步骤
 
-1. 确认真实素材和本轮主目标。
-2. 判断关系阶段、green/gray/yellow/red 反馈、当前情绪和当前表达强度边界；证据不足不伪装成 yellow。
-3. 检查当前对象近期主技巧；高频重复时先考虑不用技巧。
-4. 一条消息默认只选一种主技巧。
-5. 检查“一起笑，不是笑对方”：去掉表情后仍不应像羞辱。
-6. 保留出口：对方能接梗，也能回普通话题。
-7. 做 continuation ownership test。
+1. 验证输入明确包含已授权的 `Primary Action = PLAY` 与 realization permissions；缺失时返回 Decision Layer，不自行补动作。
+2. 在上游给定的 serious、boundary、ownership、fact safety 与 E 约束内确认真实素材；本文件不重算关系阶段、Feedback Color 或 Current Action。
+3. 从观察式幽默、callback、轻度调侃、playful framing、其他技巧或无技巧 `PLAY` 中选择一种实现；先检查当前对象近期重复。
+4. 检查“一起笑，不是笑对方”：去掉表情后仍不应像羞辱。
+5. 保留出口，并验证用户能承担积极接梗、反调侃、普通回应或不接梗。
+6. 候选若与 serious、boundary、ownership 或 fact safety 冲突，拒绝 realization 并返回 Decision Layer；不得在本文件内选择替代 Primary Action。
 
 ## 轻度调侃四问
 
@@ -334,7 +341,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 - 对方不接时，这句话能自然当成普通评论过去吗？
 - 用户被反调侃时能轻松承认、回到内容，而不是争输赢吗？
 
-任一答案不理想就降低强度或换观察式分享。
+任一答案不理想，就在同一 `PLAY` 内降低强度、换无技巧实现；无法合规实现时返回 Decision Layer，不改选其他动作。
 
 ## 重复检测
 
@@ -352,7 +359,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 - **积极接梗**：能否顺着共同内容继续，而不是继续加码技巧？
 - **反调侃**：能否接受被玩回来，用普通语言回应？
 - **普通回应**：能否自然回到事实、分享或话题？
-- **不接梗**：能否不解释笑点、不再换梗追击，直接降级或收线？
+- **不接梗**：能否不解释笑点、不再换梗追击，并让本条自然停住？后续动作由 Decision Layer 另行决定。
 
 首句在任一路径都会迫使用户维持陌生人设时，放弃该候选。
 

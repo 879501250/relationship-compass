@@ -15,6 +15,7 @@
 
 ### Changed
 
+- v1.7-B1 Selector Consolidation 确立 `回复决策与对话流.md` 为唯一 turn-level Primary Action selector；Humor、Hook、Natural Reply、Expression Upgrader、Investment 与 practical references 分别收敛为 realization、style/growth 或 relationship constraint provider，未进入 v1.7-B2。
 - v1.7-A.1 Decision Layer Stabilization 将 Decision Sufficiency 从动作优先级分离为 gate，明确 relationship-level Current Action 只约束 turn-level Primary Action，并清理 Skill、Natural Reply Core 与 hook 中的重复 selector。
 - Contract Eval 用抑制项、必需行为与“不强制”断言替代五处过窄 `primary_action_allowed`；partner-open-thread 明确保留自然 `PLAY`，对应 Model runtime 恢复幽默 reference，未运行真实模型 API。
 - Local Skill 与 ChatGPT Project 统一为“关系状态提供约束 → Decision Layer 决定做什么 → Natural Reply Core 决定怎样说”；Conversation Hook、Serious Mode 与表达升级器不再反向授权动作。

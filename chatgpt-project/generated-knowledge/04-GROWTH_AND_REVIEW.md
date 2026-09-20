@@ -12,6 +12,8 @@
 
 成长目标是自然与清晰表达、情绪理解、边界意识、真实感、适度主动、互惠与节奏判断、社交舒适度和独立决策。幽默、故事、调侃或暧昧只是用户自愿选择且语境合适时可用的工具，不是“更讨喜”的等级，也不以让特定对象喜欢作为训练结果。
 
+本模块只在 Primary Action 确定后校准 style、Comfortable Range、One Small Stretch 与 assistance strategy。它不得因为“需要练习主动／幽默／分享”而把 `LEAVE_SPACE`、`CLOSE` 或 `WAIT` 改成 `ASK`、`SHARE`、`PLAY` 或其他动作；成长目标不能反向授权 action。无法在当前动作内实现合理 stretch 时，保持无跨度版本或返回 Decision Layer。
+
 ## Current Style、Target Style 与 Comfortable Range
 
 ### current_style
@@ -47,7 +49,7 @@ E1–E5 只描述当前一条消息的个人表达、情绪暴露和关系指向
 - 裸问题是否减少；
 - 是否增加真实经历、感受和观点；
 - 是否理解使用的技巧与边界；
-- 是否能判断这轮该继续、留空间还是自然结束；
+- 是否逐渐理解为何某轮应继续、留空间或自然结束（仅作 growth observation，不参与 runtime action selection）；
 - 是否能在积极接梗、反调侃和普通回应下自然继续；
 - 是否逐渐能先自己写。
 
