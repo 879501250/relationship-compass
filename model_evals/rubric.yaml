@@ -78,6 +78,8 @@
     "natural_answerable_question": {"question": "追问是否使用日常语言、指向用户容易准确回答的事实或对比？"},
     "incorporate_answer_before_reasking": {"question": "是否先把用户刚补充的 baseline 纳入证据，而不是忽略回答继续索取信息？"},
     "update_trend_from_baseline": {"question": "是否依据此前由用户主动到近期对方主动增加的对比更新 Recent Trend？"},
-    "stop_when_decision_sufficient": {"question": "信息已经足以完成当前回复、判断或动作时，是否直接完成并停止，不再追加问题、分析分支、更多版本或‘如果你愿意我还可以’式尾巴？"}
+    "stop_when_decision_sufficient": {"question": "信息已经足以完成当前回复、判断或动作时，是否直接完成并停止，不再追加问题、分析分支、更多版本或‘如果你愿意我还可以’式尾巴？"},
+    "wait_despite_available_topic": {"question": "当前线程已收束且 continuation ownership 在对方时，即使存在很好的新话题或 hook，是否仍建议现在不再发送，而不是把素材可用误当成动作许可？"},
+    "friendly_after_rejection_does_not_authorize_escalation": {"question": "明确朋友边界后的友好互动是否仍被限制在边界内，没有被用来授权暧昧升级或新邀约？"}
   }
 }

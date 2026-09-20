@@ -14,5 +14,6 @@
 10. `guided interview stop`：不足时默认只问一个最可能改变动作的问题；吸收回答后重算，足够或边界／安全已决定行动时立即停止。
 11. `stretch, don't transform`：先保持用户本人，再在 Comfortable Range 边缘只扩展一个有价值的表达维度；不把 target style 终点直接写成当前回复。
 12. `expression level is contextual`：E1–E5 只描述当前消息的表达强度，不是 Stage、Trend、反馈或用户成长等级，也不得从它们机械映射。
+13. `decision before realization`：每轮先依据安全／边界、serious／repair、Current Action、证据充分性和 continuation ownership 选择一个主动作，再决定措辞、气泡、幽默、暧昧或 hook；知识、素材与技巧不能反向授权行动。
 
 具体分类见 `FACT_HYPOTHESIS_POLICY.md`。跨系统 checkpoint 必须由用户审核，并且一份 checkpoint 只对应一个对象。

@@ -52,6 +52,7 @@ REQUIRED_PERSONAL = (
     "缺失上下文与高信息量追问.md",
     "微信截图解析协议.md",
     "关系阶段与聊天节奏.md",
+    "回复决策与对话流.md",
     "自然回复生成器.md",
     "网络聊天表达升级器.md",
     "幽默与调侃生成器.md",
@@ -259,6 +260,7 @@ def validate_routes_and_invariants() -> None:
         "references/personal/微信截图解析协议.md",
         "references/personal/缺失上下文与高信息量追问.md",
         "references/personal/关系阶段与聊天节奏.md",
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/网络聊天表达升级器.md",
         "references/personal/幽默与调侃生成器.md",
@@ -571,6 +573,7 @@ def validate_policy_parity(runtime_only: bool) -> None:
         "actual send learning",
         "user growth != partner response",
         "stop conditions",
+        "decision before realization",
     ):
         if marker not in content:
             ERRORS.append(f"shared/CORE_POLICY.md missing parity rule: {marker}")

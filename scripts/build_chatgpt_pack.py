@@ -32,8 +32,9 @@ PACK_MANIFEST: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "02-DAILY_CONVERSATION.md",
-        "即时回复、幽默与主动开题",
+        "回复决策、即时表达与主动开题",
         (
+            "references/personal/回复决策与对话流.md",
             "references/personal/自然回复生成器.md",
             "references/personal/幽默与调侃生成器.md",
             "references/personal/主动话题与conversation-hook.md",

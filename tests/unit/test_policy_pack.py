@@ -18,6 +18,7 @@ class PolicyPackTests(unittest.TestCase):
             "actual send learning",
             "user growth != partner response",
             "stop conditions",
+            "decision before realization",
         ):
             self.assertIn(marker, policy)
 

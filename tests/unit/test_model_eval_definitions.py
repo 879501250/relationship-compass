@@ -89,6 +89,9 @@ class ModelEvalDefinitionTests(unittest.TestCase):
 
     def test_stress_suite_has_no_permanent_maximum_cap(self) -> None:
         definitions = runner.load_json_yaml(runner.CASES_PATH)
+        initial_stress_count = len(
+            [case for case in definitions["cases"] if case["suite"] == "stress"]
+        )
         stress = next(case for case in definitions["cases"] if case["suite"] == "stress")
         for suffix in ("extension-a", "extension-b"):
             added = copy.deepcopy(stress)
@@ -104,7 +107,27 @@ class ModelEvalDefinitionTests(unittest.TestCase):
                 runner, "validate_runtime_routes"
             ):
                 cases, _ = runner.load_definitions()
-        self.assertEqual(len([case for case in cases if case["suite"] == "stress"]), 13)
+        self.assertEqual(
+            len([case for case in cases if case["suite"] == "stress"]),
+            initial_stress_count + 2,
+        )
+
+    def test_decision_layer_stress_cases_are_present(self) -> None:
+        cases, criteria = runner.load_definitions()
+        indexed = {case["id"]: case for case in cases}
+
+        topic_case = indexed["stress-topic-material-does-not-override-ownership"]
+        self.assertIn(
+            "wait_despite_available_topic",
+            topic_case["required_criteria"],
+        )
+        boundary_case = indexed["stress-friendly-after-rejection-does-not-escalate"]
+        self.assertIn(
+            "friendly_after_rejection_does_not_authorize_escalation",
+            boundary_case["required_criteria"],
+        )
+        self.assertIn("wait_despite_available_topic", criteria)
+        self.assertIn("friendly_after_rejection_does_not_authorize_escalation", criteria)
 
     def test_high_risk_criteria_have_core_and_stress_coverage(self) -> None:
         cases, _ = runner.load_definitions()

@@ -157,30 +157,37 @@ BASE_RUNTIME_SOURCES = (
 )
 CASE_RUNTIME_REFERENCES: dict[str, tuple[str, ...]] = {
     "model-realtime-one-best": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "model-explicit-multiple-versions": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
     ),
     "model-tone-and-chunking": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/网络聊天表达升级器.md",
     ),
     "model-serious-disclosure": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "model-unknown-user-fact": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
     ),
     "model-return-continuation-ownership": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "model-partner-opens-thread": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
-        "references/personal/幽默与调侃生成器.md",
+        "references/personal/主动话题与conversation-hook.md",
     ),
     "model-review-split": (
         "references/personal/网络聊天表达升级器.md",
@@ -191,6 +198,7 @@ CASE_RUNTIME_REFERENCES: dict[str, tuple[str, ...]] = {
         "references/personal/复盘模式与实际发送学习闭环.md",
     ),
     "model-user-draft-first": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/网络聊天表达升级器.md",
     ),
@@ -231,16 +239,20 @@ CASE_RUNTIME_REFERENCES: dict[str, tuple[str, ...]] = {
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "stress-first-person-feeling-fabrication": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
     ),
     "stress-first-person-preference-fabrication": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
     ),
     "stress-implicit-continuation-ownership": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "stress-minimal-edit-real-defect": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/网络聊天表达升级器.md",
     ),
@@ -270,8 +282,19 @@ CASE_RUNTIME_REFERENCES: dict[str, tuple[str, ...]] = {
         "references/personal/关系阶段与聊天节奏.md",
     ),
     "stress-stop-without-unnecessary-tail": (
+        "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
         "references/personal/缺失上下文与高信息量追问.md",
+    ),
+    "stress-topic-material-does-not-override-ownership": (
+        "references/personal/回复决策与对话流.md",
+        "references/personal/自然回复生成器.md",
+        "references/personal/主动话题与conversation-hook.md",
+    ),
+    "stress-friendly-after-rejection-does-not-escalate": (
+        "references/personal/回复决策与对话流.md",
+        "references/personal/自然回复生成器.md",
+        "references/knowledge/08-同意边界性与亲密.md",
     ),
 }
 

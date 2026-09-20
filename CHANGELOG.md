@@ -4,6 +4,8 @@
 
 ### Added
 
+- v1.7 开发中的 Response Decision foundation：新增统一 Conversation State、有限 Primary Action taxonomy、单主动作约束以及 `WAIT / LEAVE_SPACE / CLOSE` 语义边界；这不代表完整 v1.7 已完成。
+- Contract Eval 覆盖连续追问、自然收线、已发送后等待、interview mode、hook 与 ownership、草稿保留及安全可逆动作；Behavioral Stress 新增两个高价值 Decision Layer 场景，未运行真实模型 API。
 - Moonshot/Kimi 国际官方 origin `https://api.moonshot.ai` 纳入 verified-direct registry，保留中国 origin，并增加双 endpoint、relay/伪域名、模型身份及禁止区域切换的离线回归；不代表所有 Kimi capability 已真实 smoke。
 - Official Provider Provenance Registry 增加 Google / DeepSeek 的官方 OpenAI-compatible HTTPS origin，并补充 5 个用途型 provider profile 示例与离线回归覆盖。
 - ChatGPT Project 手工 Target/Judge 导出与可分段导入路径，并与 API 路径共享 artifact schema、report 和 validator。
@@ -13,6 +15,7 @@
 
 ### Changed
 
+- Local Skill 与 ChatGPT Project 统一为“关系状态提供约束 → Decision Layer 决定做什么 → Natural Reply Core 决定怎样说”；Conversation Hook、Serious Mode 与表达升级器不再反向授权动作。
 - 仅 `validation-gemini` 示例将 retry/timeout 设为 4 次 / 120 秒，用于用户报告的暂时性容量错误；全局与 formal reference 默认策略不变。
 - Model Eval 结果目录改为从当前 Knowledge pack 动态派生，报告明确区分行为失败、provider/judge 错误与未评估 case。
 - Artifact validation 改为交叉验证 fingerprint、case/criterion 集合、responses、judgments、计数和 summary 派生结果。

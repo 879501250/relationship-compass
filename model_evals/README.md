@@ -1,6 +1,6 @@
 # Model Behavioral Eval
 
-这一层真实执行并评估 Relationship Compass 输出，不等同于 `evals/` 的 Contract Eval。当前固定 19 个 Behavioral Core、11 个 Behavioral Stress，共 30 个 case / 78 个 unique criteria；本轮没有增加或削弱考题。
+这一层真实执行并评估 Relationship Compass 输出，不等同于 `evals/` 的 Contract Eval。当前固定 19 个 Behavioral Core、13 个 Behavioral Stress，共 32 个 case / 80 个 unique criteria。v1.7 开发中的 Decision Layer foundation 保留全部 Core，并新增“好素材不覆盖 ownership”与“拒绝后的友好不授权升级”两个高价值 Stress case；本轮不调用真实模型 API。
 
 一轮 Behavioral Reference 必须分别回答：
 

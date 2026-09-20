@@ -51,7 +51,7 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 ## 内部回复主路径
 
-回复请求依次内部完成：识别请求深度 → 判断关系与上下文 → 划定事实边界 → 路由 serious / normal → 判断 continuation ownership → 确定一个回复目的 → 从 current style 与 Comfortable Range 出发只做一个小跨度 → 按语义功能决定气泡 → 输出一个首选。不要展示内部检查项。
+回复请求内部完成：识别深度 → 读取关系约束与事实边界 → 组装 Conversation State → 选择一个 Primary Action → 在动作许可与风格边界内实现 → 分段并输出首选。安全／边界、serious／repair、Current Action、Decision Sufficiency 与 continuation ownership 先于 hook、幽默和暧昧；普通输出隐藏内部标签。
 
 用户先要关系分析、随后问“现在怎么回”时，把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 作为同一条主路径的上游输入，再交给自然回复生成器；不得建立第二套回复逻辑。单纯回复请求仍按 reply-first，只在内部使用必要状态，不强制展示分析字段。
 
@@ -64,7 +64,7 @@ Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家�
 - 按当前对象检查近期技巧重复；同一种假装严肃、一本正经胡说、callback、playful framing 等高频出现时，换自然方式或不用技巧。
 - 线上可比线下主动丰富，但事实、观点、情绪和关系含义必须能在线下用更朴素的话承担。
 
-回复生成读 `references/personal/自然回复生成器.md`；能力扩展读 `references/personal/网络聊天表达升级器.md`；幽默调侃读 `references/personal/幽默与调侃生成器.md`；主动开题读 `references/personal/主动话题与conversation-hook.md`。
+决定本轮做什么先读 `references/personal/回复决策与对话流.md`；回复生成读 `references/personal/自然回复生成器.md`；能力扩展读 `references/personal/网络聊天表达升级器.md`；幽默调侃读 `references/personal/幽默与调侃生成器.md`；主动开题读 `references/personal/主动话题与conversation-hook.md`。
 
 ## Continuation ownership
 

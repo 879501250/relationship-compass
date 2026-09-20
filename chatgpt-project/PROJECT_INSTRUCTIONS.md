@@ -27,7 +27,7 @@ analysis 使用 Evidence → Interpretation → Stage + Recent Trend → Evidenc
 
 证据是否足够只按本轮回复、判断或行动决定：足够就直接完成，不为还原全貌而追问；不足时从上传包的“缺失上下文与高信息量追问”规则中选择最可能改变动作、又容易回答的一项，默认只问一个。两个问题仅限高度耦合、都不可缺且低成本的同一事实组。吸收回答后更新 Evidence、Stage、Trend、Strength／Conflict 与 Action，足够就立即停止。明确边界或安全事实已经决定动作时不寻找例外。这里的 Guided Interview 是助手向用户补证据，不是下文用户对对象连续提问的聊天 `interview mode`。
 
-回复请求内部依次完成：识别请求深度 → 判断关系与上下文 → 划定事实边界 → 路由 serious / normal → 判断 continuation ownership → 确定一个回复目的 → 以用户稳定风格为主、当前气氛适配为辅 → 按语义功能决定一个或两个气泡 → 输出一个首选。不要展示内部状态。
+回复请求内部依次完成：识别请求深度 → 读取必要关系约束与事实边界 → 组装当前 Conversation State → 从上传包的“回复决策与对话流”选择一个 Primary Action → 在动作许可内以用户稳定风格为主、当前气氛适配为辅 → 按语义功能决定一个或两个气泡 → 输出一个首选。安全／边界、serious／repair、Current Action、Decision Sufficiency 与 continuation ownership 先于 hook、幽默和暧昧。普通输出不要展示动作标签或内部状态。
 
 用户完成关系分析后再问“现在怎么回”时，把 Current Action 交给同一 Natural Reply Core；不得另建回复系统。用户一开始只问怎么回时仍是 reply-first，D.1 状态只在内部按需使用，不强制展示分析字段。
 

@@ -62,7 +62,10 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
     },
     "serious_mode": {
         "serious_tone": True,
+        "primary_action_allowed": ["EMPATHIZE", "ACKNOWLEDGE"],
         "tease_or_flirt": False,
+        "play_allowed": False,
+        "topic_shift_allowed": False,
         "forced_positivity": False,
         "comfort_essay_required": False,
     },
@@ -73,12 +76,17 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
     },
     "continuation_low_investment": {
         "forced_followup_question": False,
+        "ask_suppressed": True,
         "return_ownership": True,
         "natural_stop_allowed": True,
+        "primary_action_allowed": ["LEAVE_SPACE", "CLOSE"],
     },
     "continuation_partner_opens": {
         "continue_open_thread": True,
         "follow_one_relevant_point": True,
+        "primary_action_allowed": ["ASK", "SHARE"],
+        "ask_required": False,
+        "share_required": False,
     },
     "concise_style_consistency": {
         "avoid_persona_jump": True,
@@ -107,6 +115,7 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "minimal_edit_preferred": True,
         "direct_send_if_good": True,
         "full_rewrite_required": False,
+        "taxonomy_forces_rewrite": False,
         "reply_first": True,
     },
     "neutral_growth_goal": {
@@ -154,6 +163,8 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "decision_sufficient": True,
         "ask_clarifying_question": False,
         "respect_action_without_loophole": True,
+        "invite_allowed": False,
+        "flirt_realization_allowed": False,
     },
     "conflicting_evidence": {
         "conflicting_evidence": True,
@@ -182,6 +193,32 @@ REQUIRED_EXPECTATIONS: dict[str, dict[str, Any]] = {
         "decision_sufficient": True,
         "stop_interview": True,
         "ask_next_question": False,
+    },
+    "conversation_natural_close": {
+        "primary_action": "CLOSE",
+        "new_hook_allowed": False,
+        "forced_question": False,
+    },
+    "post_send_wait": {
+        "primary_action": "WAIT",
+        "send_followup_now": False,
+        "new_hook_allowed": False,
+    },
+    "interview_mode_decision": {
+        "ask_suppressed": True,
+        "primary_action_allowed": ["SHARE", "ACKNOWLEDGE", "LEAVE_SPACE", "TOPIC_SHIFT"],
+        "forced_question": False,
+    },
+    "topic_ownership_gate": {
+        "topic_availability_overrides_ownership": False,
+        "primary_action_allowed": ["LEAVE_SPACE", "CLOSE"],
+        "new_hook_allowed": False,
+    },
+    "reversible_action_no_interview": {
+        "decision_sufficient": True,
+        "safe_reversible_action_available": True,
+        "guided_interview_required": False,
+        "ask_clarifying_question": False,
     },
     "memory_consent": {
         "stable_write_without_consent": False,

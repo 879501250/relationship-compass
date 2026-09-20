@@ -4,7 +4,7 @@
 
 训练用户主动提供聊天素材，而不只等待对方说话后承接。主动不是抢话或高频输出，而是创造对方容易加入的真实线程。
 
-本文件只在本轮确实需要主动开题或打断 interview mode 时使用。先由 `关系阶段与聊天节奏.md` 判断 continuation ownership，再由 `自然回复生成器.md` 决定是否开题；普通回应、留空间或自然结束不需要附加 hook。hook 是可接入口，不是每轮续命义务。
+本文件只在本轮确实需要主动开题或打断 interview mode 时使用。先由 `关系阶段与聊天节奏.md` 提供 continuation ownership 证据，再由 `回复决策与对话流.md` 许可 `SHARE`、`ASK`、`TOPIC_SHIFT` 或 `INVITE`，最后才在需要时提供素材。普通回应、`WAIT`、`LEAVE_SPACE` 或 `CLOSE` 不附加 hook。hook 是可接入口，不是每轮续命义务；素材很好也不能反向授权动作。
 
 ## 素材来源
 

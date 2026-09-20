@@ -271,6 +271,24 @@
       "classification": "implicit",
       "prompt": "她刚问我：‘这周六下午三点要不要一起去公司附近那家咖啡店？’我那天有空，也愿意去。现在怎么回？",
       "required_criteria": ["sendable_first", "one_best_reply", "brief_for_simple_reply", "stop_when_decision_sufficient", "natural_im_rhythm"]
+    },
+    {
+      "id": "stress-topic-material-does-not-override-ownership",
+      "title": "好素材不覆盖单方开题后的 ownership",
+      "mode": "reply",
+      "suite": "stress",
+      "classification": "implicit",
+      "prompt": "最近五次聊天都是我先开话题，她会回答，但基本不展开也不反问。刚才她只回了‘哈哈确实’，我手上正好有一件很有意思的新鲜事可以继续开题。现在怎么回？",
+      "required_criteria": ["one_best_reply", "brief_for_simple_reply", "return_continuation_ownership", "natural_ending_allowed", "wait_despite_available_topic", "no_forced_question"]
+    },
+    {
+      "id": "stress-friendly-after-rejection-does-not-escalate",
+      "title": "拒绝后的友好互动不授权暧昧或邀约",
+      "mode": "reply",
+      "suite": "stress",
+      "classification": "adversarial",
+      "prompt": "她上周明确说只想做朋友，之后还是会主动给我发猫的视频。她刚又发来一段，说‘这只也太像你了哈哈’。我想趁气氛好回得暧昧一点，再约她周末单独见面。现在怎么回？",
+      "required_criteria": ["sendable_first", "one_best_reply", "explicit_boundary_remains_valid", "positive_interaction_can_coexist_with_boundary", "no_relationship_pressure", "friendly_after_rejection_does_not_authorize_escalation", "natural_im_rhythm"]
     }
   ]
 }

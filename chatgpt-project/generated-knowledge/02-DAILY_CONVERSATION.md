@@ -1,6 +1,139 @@
-# 即时回复、幽默与主动开题
+# 回复决策、即时表达与主动开题
 
 <!-- Generated knowledge body. Do not hand edit. -->
+
+## 来源：`references/personal/回复决策与对话流.md`
+
+# 回复决策与对话流
+
+## 定位
+
+本文件是“这一轮做什么”的唯一决策层。它先把关系证据、当前互动和用户意图收敛成一个 `Primary Action`，再把决定交给 `自然回复生成器.md` 实现为用户能认领的文字。它不负责具体措辞、句长、emoji、气泡切分、幽默机制或 E 强度，也不重算 Relationship Stage／Recent Trend。
+
+普通输出不展示动作标签、状态对象或决策树。标签只用于内部路由、测试和用户明确要求的调试模式。
+
+## Conversation State
+
+每轮只组装当前决定需要的最小状态，不新增持久化 schema，也不做数值评分：
+
+- **User Intent**：用户现在要即时回复、判断、澄清、修复、推进、退出、训练还是评估自己的草稿；即时目标优先于抽象的“保持聊天”。
+- **Relationship Constraints**：复用 `关系阶段与聊天节奏.md` 已给出的 Evidence、Stage、Recent Trend、Evidence Strength／Conflict、Current Action、边界和安全约束；本层不复制或改写这些结论。
+- **Conversation Ownership**：谁最近提供新信息、开题、延展、追问、邀约、兑现或修复；谁在连续承担推进；下一步更应由谁提供内容。
+- **Interaction Mode**：按当前语境选择 `serious / normal / conflict / repair / boundary / vulnerable / interview-risk / ordinary` 中最相关的一项或少量约束。它是路由条件，不是人格或关系标签。
+- **Decision Sufficiency**：现有信息是否足以选择一个安全、可逆、符合边界的动作。只按本轮决定判断，不要求还原完整关系。
+
+`Current Style`、`Comfortable Range` 与 E 不属于动作证据；它们在动作确定后约束如何表达。
+
+Conversation Ownership 看当前互动贡献与近期模式，不用固定消息次数、问号数或比例作机械阈值。
+
+## Primary Action taxonomy
+
+每轮只选一个主动作。稳定集合如下：
+
+| Primary Action | 这一轮要完成什么 | 常见限制 |
+| --- | --- | --- |
+| `ACKNOWLEDGE` | 准确接住对方说的事实、状态或立场 | 不自动升级成安慰、追问或解决方案 |
+| `EMPATHIZE` | 在 serious／vulnerable 场景准确承接情绪与负担 | 不抢故事，不强行积极，不用技巧稀释 |
+| `SHARE` | 提供一段真实相关的经历、观点、感受或小故事 | 所有第一人称内容必须有事实来源 |
+| `ASK` | 向对象提出一个确有交流价值的问题 | 不是默认续聊器；interview-risk 或 ownership 不支持时抑制 |
+| `CLARIFY` | 澄清含义、安排、误解或必要事实 | 只澄清会改变理解或行动的点 |
+| `PLAY` | 进行轻松、有来有回的趣味互动 | joke、tease、flirt、callback 只是实现方式；serious／boundary 下通常禁用 |
+| `TOPIC_SHIFT` | 当前线程耗尽或不宜继续时，自然转到相邻且真实的话题 | 需要 ownership 与真实素材许可，不为救场硬换题 |
+| `INVITE` | 提出具体、低压力、可退出的共同活动或下一步 | 必须通过邀约门槛，不以模糊热络代替现实互惠 |
+| `REPAIR` | 对误会、伤害、失约或冲突承担并修复 | 先处理影响，不借道歉索取安抚或关系升级 |
+| `BOUNDARY` | 表达、维持或执行必要边界 | 清晰、尊重、可执行；不留绕过拒绝的钩子 |
+| `DEESCALATE` | 降低冲突、压力、节奏或情绪强度 | 不等于否认问题；必要时与后续暂停配合 |
+| `LEAVE_SPACE` | 发送一条必要回应后，把下一步留给对方 | 不加新问题、邀约或 conversation hook |
+| `CLOSE` | 用自然或明确的收束结束当前线程 | 线程完成不是失败；不为漂亮收尾制造新负担 |
+| `WAIT` | 当前不发送新消息，等待回应、事件或对方承担下一步 | 已发出消息、对方尚未回应或重复跟进会施压时优先考虑 |
+
+`FLIRT`、`JOKE`、`TEASE`、`CALLBACK` 不是顶层动作。它们只能在 `PLAY` 或少数已获许可的 `SHARE` 实现中作为风格手段，且不得改变主动作、绕过边界或制造 persona jump。
+
+## 单一主动作与 supporting function
+
+主动作回答“这轮主要改变什么”。Supporting function 只帮助主动作落地，不能偷偷建立第二个目标。例如：
+
+- `EMPATHIZE` 可以先用一句 `ACKNOWLEDGE` 承接事实，但不能再附带 `PLAY` 或强行转题。
+- `SHARE` 可以先回应对方一句，但分享才是本轮增加的核心价值。
+- `LEAVE_SPACE` 可以包含简短 acknowledgment；一旦加入新问题、邀约或 hook，就不再是留空间。
+- `REPAIR` 可以带澄清，但澄清只服务于修复，不把责任辩解掉。
+
+语气、幽默机制、暧昧程度、emoji、气泡数、措辞和 E 属于 realization。不要因为一句话同时有两个语义功能，就把它解释成两个 Primary Action；也不要把多个彼此竞争的目标硬塞进同一轮。
+
+用户已有自然、安全且符合边界的草稿时，识别它实际在完成的主动作即可；taxonomy 不构成重写理由。
+
+## 选择优先级
+
+发生冲突时按以下顺序覆盖，越靠前越优先：
+
+1. 安全、明确停止与边界；
+2. 当前 serious、冲突降级或 repair 需要；
+3. Relationship Constraints 与既有 Current Action；
+4. Decision Sufficiency；
+5. Conversation Ownership 与互惠；
+6. 用户本轮即时目标；
+7. Comfortable Range 与 Current Style；
+8. 幽默、暧昧、技巧和其他 realization 偏好。
+
+因此，优秀的 joke、hook 或暧昧素材不能覆盖明确拒绝、serious disclosure、刚发完消息应等待、长期单方开题或 Current Action 的限制。
+
+同样，知识库、素材库或技巧库里“有内容可用”不等于当前应该使用。Knowledge availability 与 topic availability 都只能服务已经获准的动作，不能产生行动许可。
+
+## Decision Sufficiency 与 Guided Interview
+
+信息足以选出安全、可逆动作时直接决定，不因背景仍有未知而向用户追问。低风险时，`ACKNOWLEDGE`、`LEAVE_SPACE`、`CLOSE` 或 `WAIT` 往往可以在信息不完整下成立。
+
+只有缺失事实会在两个实质不同动作之间改变选择，且无法用安全可逆动作处理时，才调用 `缺失上下文与高信息量追问.md`。默认只向用户问一个高信息量问题；吸收答案后重新组装状态并停止。Guided Interview 是助手向用户补证据，不等于发给对象的 `ASK`。
+
+## 关键动作门槛
+
+### ASK
+
+`ASK` 需要同时满足：问题服务当前目标、答案确有交流价值、对方有承接空间、ownership 不要求归还、没有更低负担的动作更合适。出现以下任一情况时优先抑制：
+
+- 连续多轮是用户提问、对方只回答，已进入 interview-risk；
+- 对方没有延展，下一步 ownership 在对方；
+- serious disclosure 正在要求承接而非取证；
+- 线程已经自然完成；
+- 用户刚发出消息、对方尚未回应；
+- 问题只是为了避免沉默。
+
+对方主动开新线程时，`ASK` 与 `SHARE` 都可用，但都不是强制；选择能最好回应其具体内容且负担更合适的一项。
+
+### SHARE
+
+`SHARE` 是与 `ASK` 同级的常规动作，可用于建立双向性、打断 interview mode 或提供真实观点。只能使用当前消息、当前对话或相关 confirmed context 支持的用户事实；素材不足时改用不依赖个人事实的动作，不虚构经历、感受、偏好、计划或共同记忆。
+
+### INVITE
+
+只有以下条件共同支持时才选择 `INVITE`：明确边界与 Current Action 允许；近期互惠和现实投入不是长期单向；当前 ownership 不要求用户退回；近期没有未回应、被拒绝或连续邀约；对方的可靠性与兑现记录足够；邀约具体、低压力且有退出权。好聊、单次主动或一个好 hook 本身不构成邀约许可。
+
+### WAIT / LEAVE_SPACE / CLOSE
+
+- `WAIT`：现在不发。适用于消息已发出、需要对方回应、再次发送会形成追击，或只有新事件才值得重启；它不是冷暴力、故意吊人或操控策略。
+- `LEAVE_SPACE`：现在发一条必要回应，但不再制造接续义务。适用于需要礼貌／情绪承接、同时应把 ownership 交还对方。
+- `CLOSE`：现在发一条收束语义，让当前线程自然结束。适用于任务已经完成、对方准备离开、双方已互道结束，或明确退出当前话题／关系方向。
+
+三者都禁止追加新 hook。区别只在于“是否发送”和“是否明确完成当前线程”，不按冷淡程度排序。
+
+## 模块接口
+
+- **关系状态模块**：提供 Evidence、Stage、Recent Trend、Evidence Strength／Conflict、Current Action、边界、安全和 ownership 证据；不替决策层选具体话术。
+- **Decision Layer**：只决定 `primary_action`，并可附 `supporting_function`、硬约束、停止条件和 realization permissions；不写成品。
+- **自然回复生成器**：消费已选动作，决定怎样说、一个还是两个气泡，并输出一个首选；不得为更好听而换掉主动作。
+- **Conversation Hook 模块**：只有 `SHARE`、`ASK`、`TOPIC_SHIFT` 或 `INVITE` 已获许可且确实需要素材时才提供 hook；素材存在不代表动作获准。
+- **Serious Mode**：作为语气和风险约束，压低 `PLAY`、无必要 `ASK` 与 `TOPIC_SHIFT`，通常让 `ACKNOWLEDGE`、`EMPATHIZE`、`REPAIR`、`BOUNDARY` 或 `DEESCALATE` 优先。
+- **表达升级器**：动作确定后，按 Current Style、Comfortable Range、one small stretch 和用户自主度实现；不以成长目标改写安全或 ownership 决定。
+- **Guided Interview**：仅在 Decision Sufficiency 不足时向用户补一个会改变动作的事实；不承担日常聊天续航。
+
+## 决策检查
+
+1. 用户这一轮真正要完成什么？
+2. 安全、边界、serious、repair 或 Current Action 是否已经决定方向？
+3. 现有信息能否支持一个安全可逆动作；若能，停止补问。
+4. 下一步 ownership 在谁；这一轮是否正在变成 interview mode 或单方救场？
+5. 只选一个 Primary Action，并明确哪些动作被抑制。
+6. 最后才允许 style、hook、humor、flirt、chunking 与 E 参与实现。
 
 ## 来源：`references/personal/自然回复生成器.md`
 
@@ -8,7 +141,7 @@
 
 ## 输出目标
 
-给一条用户能认领、能发送、能承担后续的首选回复，并替用户完成本轮选择。自然不是复制 `current_style` 的短板，也不是直接扮演 `target_style` 的终点；先保持用户本人，再在 Comfortable Range 边缘只做一个有价值的小跨度。
+把 `回复决策与对话流.md` 已选择的唯一 Primary Action 实现成一条用户能认领、能发送、能承担后续的首选回复。自然不是复制 `current_style` 的短板，也不是直接扮演 `target_style` 的终点；先保持用户本人，再在 Comfortable Range 边缘只做一个有价值的小跨度。本文件决定“怎样说”，不得为了文案更有趣而把动作换成追问、邀约、转题或继续推进。
 
 ## 请求深度与输出选择
 
@@ -25,14 +158,12 @@
 ## 生成流程
 
 1. 识别用户要即时回复、分析、训练还是多个版本；简单任务不扩写成长报告。
-2. 读取当前关系、最近互动和必要约束，不用单条消息代替趋势。
+2. 从 `回复决策与对话流.md` 接收一个 Primary Action、必要 supporting function、硬约束、停止条件与 realization permissions；没有动作时先完成决策，不自行用“好写”替代“该做”。
 3. 划定回复可用事实；没有真实素材就不编。
-4. 判断是 serious 还是 normal；风险语境优先准确和边界。
-5. 判断 continuation ownership：这一轮该继续、留空间还是自然结束。
-6. 确认本轮唯一目标：承接、分享、观点、故事、开题、调侃、轻推、邀约、澄清、收线或边界。
-7. 用 `current_style`、actual-send 模式、明确舒适度反馈和 `avoid_styles` 推断当前 Comfortable Range；`target_style` 只提供用户认可的方向，默认只选一个 small stretch，并检查 interview mode 与技巧重复。
-8. 按语义功能、节奏、阶段和用户习惯决定一个或两个气泡，不按字符数切分。
-9. 内部比较少量候选，检查事实、边界、承诺、可退出性和可接续性，只展示一个首选。
+4. 用 `current_style`、actual-send 模式、明确舒适度反馈和 `avoid_styles` 推断当前 Comfortable Range；`target_style` 只提供用户认可的方向，默认只选一个 small stretch。
+5. 仅在获准动作内检查 interview mode、技巧重复与可接续性；Serious Mode 优先准确和边界。
+6. 按语义功能、节奏、阶段和用户习惯决定一个或两个气泡，不按字符数切分。
+7. 内部比较少量同动作候选，检查事实、边界、承诺、可退出性和可接续性，只展示一个首选。
 
 ## Fact Safety
 
@@ -98,6 +229,8 @@ confirmed Memory 按 scope 使用：
 - 回应后留空间或自然结束是否更合适。
 
 对方主动展开时，可以沿一个最有价值的点继续。用户已连续主动而对方低投入时，优先回应、留空间或收线，不机械追加“你呢／然后呢／周末呢”。自然结束不是失败，`哈哈那确实` 有时已经足够。
+
+这里的判断是对决策层输入的实现复核，不重新授权 `ASK`、`TOPIC_SHIFT`、`INVITE` 或新 hook。用户刚发出消息并询问是否补一句时，Primary Action 为 `WAIT` 就不生成可发送的新消息。
 
 对略高于当前稳定能力的候选，再做可接续性测试：
 
@@ -233,7 +366,7 @@ confirmed Memory 按 scope 使用：
 
 训练用户主动提供聊天素材，而不只等待对方说话后承接。主动不是抢话或高频输出，而是创造对方容易加入的真实线程。
 
-本文件只在本轮确实需要主动开题或打断 interview mode 时使用。先由 `关系阶段与聊天节奏.md` 判断 continuation ownership，再由 `自然回复生成器.md` 决定是否开题；普通回应、留空间或自然结束不需要附加 hook。hook 是可接入口，不是每轮续命义务。
+本文件只在本轮确实需要主动开题或打断 interview mode 时使用。先由 `关系阶段与聊天节奏.md` 提供 continuation ownership 证据，再由 `回复决策与对话流.md` 许可 `SHARE`、`ASK`、`TOPIC_SHIFT` 或 `INVITE`，最后才在需要时提供素材。普通回应、`WAIT`、`LEAVE_SPACE` 或 `CLOSE` 不附加 hook。hook 是可接入口，不是每轮续命义务；素材很好也不能反向授权动作。
 
 ## 素材来源
 
