@@ -845,7 +845,11 @@ def _choose_registry_model_override(
     registry_root: Path | None,
 ) -> tuple[str | None, bool]:
     """Choose a persisted same-Family override for one active Registry Preset."""
-    preset = resolver.registry.presets[preset_id]
+    preset = resolver.registry.presets.get(preset_id)
+    if preset is None:
+        raise EvalConsoleError(
+            f"Preset '{preset_id}' 已创建/选择，但刷新后的 Registry 中仍无法解析。"
+        )
     store = RegistryStore(registry_root or runner.ROOT / ".eval_console" / "model_registry")
     selected, refreshed_registry = _choose_or_create_model(
         InteractiveReader(),
@@ -856,6 +860,25 @@ def _choose_registry_model_override(
         default_model_id=preset.model_id,
     )
     return selected, refreshed_registry is not resolver.registry
+
+
+def _refresh_selected_preset_resolver(
+    preset_id: str,
+    *,
+    registry_root: Path | None,
+    credential_store_path: Path | None,
+) -> RegistryRuntimeResolver:
+    """Reload selection state before a Model picker reads a just-created Preset."""
+    refreshed = RegistryRuntimeResolver.for_project(
+        runner.ROOT,
+        registry_root=registry_root,
+        credential_store_path=credential_store_path,
+    )
+    if preset_id not in refreshed.registry.presets:
+        raise EvalConsoleError(
+            f"Preset '{preset_id}' 已创建/选择，但刷新后的 Registry 中仍无法解析。"
+        )
+    return refreshed
 
 
 def _registry_interactive_run(
@@ -890,13 +913,12 @@ def _registry_interactive_run(
         resolver, "Target", registry_root=registry_root, credential_store_path=credential_store_path
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.TARGET_ONLY} else None
     target_model = None
-    if selected is EvalExecutionMode.FULL and target is not None:
-        resolver = RegistryRuntimeResolver.for_project(
-            runner.ROOT,
+    if target is not None:
+        resolver = _refresh_selected_preset_resolver(
+            target,
             registry_root=registry_root,
             credential_store_path=credential_store_path,
         )
-    if target is not None:
         target_model, target_models_changed = _choose_registry_model_override(
             resolver, target, "Target", registry_root=registry_root
         )
@@ -911,6 +933,11 @@ def _registry_interactive_run(
     ) if selected in {EvalExecutionMode.FULL, EvalExecutionMode.JUDGE_ONLY} else None
     judge_model = None
     if judge is not None:
+        resolver = _refresh_selected_preset_resolver(
+            judge,
+            registry_root=registry_root,
+            credential_store_path=credential_store_path,
+        )
         judge_model, judge_models_changed = _choose_registry_model_override(
             resolver, judge, "Judge", registry_root=registry_root
         )

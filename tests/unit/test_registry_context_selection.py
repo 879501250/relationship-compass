@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -65,7 +66,7 @@ class RegistryContextSelectionTests(unittest.TestCase):
         self.assertEqual(selected[0], ("Target", old))
         self.assertEqual(selected[1], ("Judge", fresh))
         self.assertIn("new", selected[1][1].registry.presets)
-        reload_resolver.assert_called_once()
+        self.assertEqual(reload_resolver.call_count, 2)
 
     def test_interactive_run_carries_dirty_debug_into_request(self) -> None:
         resolver = SimpleNamespace(registry=SimpleNamespace(presets={}))
@@ -81,6 +82,7 @@ class RegistryContextSelectionTests(unittest.TestCase):
             mock.patch.object(cli, "_interactive_case_selection", return_value=["case-1"]),
             mock.patch.object(cli, "_choose_registry_preset", side_effect=["target", "judge"]),
             mock.patch.object(cli, "_choose_registry_model_override", return_value=(None, False)),
+            mock.patch.object(cli, "_refresh_selected_preset_resolver", return_value=resolver),
             mock.patch.object(cli.RegistryRuntimeResolver, "for_project", return_value=resolver),
             mock.patch.object(cli, "_interactive_concurrency", return_value=1),
             mock.patch.object(cli, "_yes_no", return_value=True),
@@ -112,6 +114,7 @@ class RegistryContextSelectionTests(unittest.TestCase):
             mock.patch.object(cli, "_interactive_case_selection", return_value=["case-1"]),
             mock.patch.object(cli, "_choose_registry_preset", side_effect=["target", "judge"]),
             mock.patch.object(cli, "_choose_registry_model_override", side_effect=[("kimi-k2.7", False), (None, False)]),
+            mock.patch.object(cli, "_refresh_selected_preset_resolver", return_value=resolver),
             mock.patch.object(cli.RegistryRuntimeResolver, "for_project", return_value=resolver),
             mock.patch.object(cli, "_interactive_concurrency", return_value=1),
             mock.patch.object(cli, "_yes_no", return_value=True),
@@ -123,6 +126,88 @@ class RegistryContextSelectionTests(unittest.TestCase):
 
         self.assertEqual(captured[0].target_model_override, "kimi-k2.7")
         self.assertIsNone(captured[0].judge_model_override)
+
+    def test_target_only_refreshes_before_model_override_for_a_new_preset(self) -> None:
+        old = SimpleNamespace(registry=SimpleNamespace(presets={}))
+        fresh_preset = SimpleNamespace(id="new-target", model_family_id="gpt", model_id="gpt-5")
+        fresh = SimpleNamespace(registry=SimpleNamespace(presets={"new-target": fresh_preset}))
+        definition = SimpleNamespace(eval_id="sample", title="Sample")
+        seen = []
+
+        with (
+            mock.patch.object(cli, "_choose", side_effect=[EvalExecutionMode.TARGET_ONLY, definition, True]),
+            mock.patch.object(cli, "_interactive_case_selection", return_value=["case-1"]),
+            mock.patch.object(cli, "_choose_registry_preset", return_value="new-target"),
+            mock.patch.object(cli.RegistryRuntimeResolver, "for_project", return_value=fresh),
+            mock.patch.object(cli, "_choose_registry_model_override", side_effect=lambda resolver, preset_id, *_args, **_kwargs: (seen.append((resolver, preset_id)) or (None, False))),
+            mock.patch.object(cli, "_interactive_concurrency", return_value=1),
+            mock.patch.object(cli, "_yes_no", return_value=True),
+            mock.patch.object(cli, "preflight_request", return_value=(None, None, {}, {})),
+            mock.patch.object(cli, "_print_registry_preflight_summary"),
+            mock.patch.object(cli, "_execute_and_print", return_value=0),
+        ):
+            self.assertEqual(cli._registry_interactive_run([definition], old, mock.Mock(), False, None, None), 0)
+
+        self.assertEqual(seen, [(fresh, "new-target")])
+
+    def test_judge_only_refreshes_before_model_override_for_a_new_preset(self) -> None:
+        old = SimpleNamespace(registry=SimpleNamespace(presets={}))
+        fresh_preset = SimpleNamespace(id="new-judge", model_family_id="gpt", model_id="gpt-5")
+        fresh = SimpleNamespace(registry=SimpleNamespace(presets={"new-judge": fresh_preset}))
+        definition = SimpleNamespace(eval_id="sample", title="Sample")
+        historical = SimpleNamespace(
+            run_dir=Path("history"), run_id="history", mode="full", failed_case_ids=(),
+            error_case_ids=(), incomplete_case_ids=(),
+        )
+        metadata = {"console": {"eval_id": "sample"}, "cases": [{"case_id": "case-1"}]}
+        seen = []
+
+        with (
+            mock.patch.object(cli, "_choose", side_effect=[EvalExecutionMode.JUDGE_ONLY, historical, True]),
+            mock.patch.object(cli, "discover_runs", return_value=[historical]),
+            mock.patch.object(cli, "find_eval", return_value=definition),
+            mock.patch.object(cli.runner, "load_json_object", return_value=metadata),
+            mock.patch.object(cli, "_choose_registry_preset", return_value="new-judge"),
+            mock.patch.object(cli.RegistryRuntimeResolver, "for_project", return_value=fresh),
+            mock.patch.object(cli, "_choose_registry_model_override", side_effect=lambda resolver, preset_id, *_args, **_kwargs: (seen.append((resolver, preset_id)) or (None, False))),
+            mock.patch.object(cli, "_interactive_concurrency", return_value=1),
+            mock.patch.object(cli, "_yes_no", return_value=True),
+            mock.patch.object(cli, "preflight_request", return_value=(None, None, {}, {})),
+            mock.patch.object(cli, "_print_registry_preflight_summary"),
+            mock.patch.object(cli, "_execute_and_print", return_value=0),
+        ):
+            self.assertEqual(cli._registry_interactive_run([definition], old, mock.Mock(), False, None, None), 0)
+
+        self.assertEqual(seen, [(fresh, "new-judge")])
+
+    def test_full_run_refreshes_each_new_preset_before_its_model_override(self) -> None:
+        old = SimpleNamespace(registry=SimpleNamespace(presets={}))
+        target = SimpleNamespace(registry=SimpleNamespace(presets={"new-target": SimpleNamespace(id="new-target", model_family_id="gpt", model_id="gpt-5")}))
+        judge = SimpleNamespace(registry=SimpleNamespace(presets={"new-judge": SimpleNamespace(id="new-judge", model_family_id="gpt", model_id="gpt-5")}))
+        definition = SimpleNamespace(eval_id="sample", title="Sample")
+        seen = []
+
+        with (
+            mock.patch.object(cli, "_choose", side_effect=[EvalExecutionMode.FULL, definition, True]),
+            mock.patch.object(cli, "_interactive_case_selection", return_value=["case-1"]),
+            mock.patch.object(cli, "_choose_registry_preset", side_effect=["new-target", "new-judge"]),
+            mock.patch.object(cli.RegistryRuntimeResolver, "for_project", side_effect=[target, judge]),
+            mock.patch.object(cli, "_choose_registry_model_override", side_effect=lambda resolver, preset_id, *_args, **_kwargs: (seen.append((resolver, preset_id)) or (None, False))),
+            mock.patch.object(cli, "_interactive_concurrency", return_value=1),
+            mock.patch.object(cli, "_yes_no", return_value=True),
+            mock.patch.object(cli, "preflight_request", return_value=(None, None, {}, {})),
+            mock.patch.object(cli, "_print_registry_preflight_summary"),
+            mock.patch.object(cli, "_execute_and_print", return_value=0),
+        ):
+            self.assertEqual(cli._registry_interactive_run([definition], old, mock.Mock(), False, None, None), 0)
+
+        self.assertEqual(seen, [(target, "new-target"), (judge, "new-judge")])
+
+    def test_model_override_reports_missing_preset_after_refresh_without_key_error(self) -> None:
+        resolver = SimpleNamespace(registry=SimpleNamespace(presets={}))
+
+        with self.assertRaisesRegex(cli.EvalConsoleError, "刷新后的 Registry"):
+            cli._choose_registry_model_override(resolver, "missing", "Target", registry_root=None)
 
     def test_runtime_back_from_vendor_or_preset_creation_stays_in_selection(self) -> None:
         vendor = SimpleNamespace(id="vendor", name="Vendor", protocol="openai_compatible_chat", base_urls=(SimpleNamespace(protocol=None),))
