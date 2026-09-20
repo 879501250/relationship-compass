@@ -187,7 +187,7 @@ CASE_RUNTIME_REFERENCES: dict[str, tuple[str, ...]] = {
     "model-partner-opens-thread": (
         "references/personal/回复决策与对话流.md",
         "references/personal/自然回复生成器.md",
-        "references/personal/主动话题与conversation-hook.md",
+        "references/personal/幽默与调侃生成器.md",
     ),
     "model-review-split": (
         "references/personal/网络聊天表达升级器.md",

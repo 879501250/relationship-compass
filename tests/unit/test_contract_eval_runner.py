@@ -58,6 +58,32 @@ class ContractEvalRunnerTests(unittest.TestCase):
         ):
             run_contract_evals.validate_cases(cases)
 
+    def test_contextual_decision_contracts_do_not_use_action_allowlists(self) -> None:
+        contextual_categories = {
+            "serious_mode",
+            "continuation_low_investment",
+            "continuation_partner_opens",
+            "interview_mode_decision",
+            "topic_ownership_gate",
+        }
+        for case in self.cases:
+            if case["category"] in contextual_categories:
+                self.assertNotIn("primary_action_allowed", case["expected"], case["id"])
+
+    def test_exact_primary_actions_are_limited_to_deterministic_contexts(self) -> None:
+        exact = {
+            case["category"]: case["expected"]["primary_action"]
+            for case in self.cases
+            if "primary_action" in case["expected"]
+        }
+        self.assertEqual(
+            exact,
+            {
+                "conversation_natural_close": "CLOSE",
+                "post_send_wait": "WAIT",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

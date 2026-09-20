@@ -129,6 +129,17 @@ class ModelEvalDefinitionTests(unittest.TestCase):
         self.assertIn("wait_despite_available_topic", criteria)
         self.assertIn("friendly_after_rejection_does_not_authorize_escalation", criteria)
 
+    def test_partner_open_thread_runtime_keeps_light_play_support(self) -> None:
+        references = runner.CASE_RUNTIME_REFERENCES["model-partner-opens-thread"]
+        self.assertEqual(
+            references,
+            (
+                "references/personal/回复决策与对话流.md",
+                "references/personal/自然回复生成器.md",
+                "references/personal/幽默与调侃生成器.md",
+            ),
+        )
+
     def test_high_risk_criteria_have_core_and_stress_coverage(self) -> None:
         cases, _ = runner.load_definitions()
         counts: Counter[str] = Counter()

@@ -51,16 +51,16 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 ## 内部回复主路径
 
-回复请求内部完成：识别深度 → 读取关系约束与事实边界 → 组装 Conversation State → 选择一个 Primary Action → 在动作许可与风格边界内实现 → 分段并输出首选。安全／边界、serious／repair、Current Action、Decision Sufficiency 与 continuation ownership 先于 hook、幽默和暧昧；普通输出隐藏内部标签。
+回复请求内部完成：识别深度 → 读取硬约束与关系策略 → 通过 Decision Sufficiency gate（不足才 Guided Interview）→ 组装 Conversation State 并选择一个 Primary Action → 在风格边界内实现并输出首选。动作选择考虑 serious／repair、Current Action、ownership 与即时目标；hook、幽默和暧昧只参与实现。普通输出隐藏内部标签。
 
-用户先要关系分析、随后问“现在怎么回”时，把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 作为同一条主路径的上游输入，再交给自然回复生成器；不得建立第二套回复逻辑。单纯回复请求仍按 reply-first，只在内部使用必要状态，不强制展示分析字段。
+用户先分析、随后问“现在怎么回”时，把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 作为关系级约束送入 Decision Layer，再由自然回复生成器实现；不得建立第二套 selector。单纯回复请求仍按 reply-first，只在内部使用必要状态。
 
 Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家庭或工作重压、疾病、冲突、拒绝、边界、道歉、关系确认、价值冲突、失落、误解和重要决定时，降低幽默、调侃、暧昧、反问、技巧感和强行积极，提高准确承接、直接回应、边界、清晰与真实；serious 不等于长篇安慰。
 
 - E1–E5 只表示当前消息的表达强度，不是 Stage、Trend、反馈、成长等级或好坏排名，也不从它们机械映射；普通即时模式隐藏。
 - 先像用户本人，再沿其明确 target style 只做一个能发出的 small stretch；边界、serious、continuation ownership 或“不像我”反馈可以取消跨度。
 - 允许无技巧回复。普通真诚表达已经最好时，不强塞幽默、故事、调侃或暧昧。
-- 检测 interview mode：连续多轮“用户提问→对方回答→用户继续提问”且缺少用户内容时，下一轮优先分享、观点、小故事、callback、调侃、自然跳转或收线。
+- 连续“用户提问→对方回答”作为 Conversation State 的 interview-risk；它抑制机械 ASK，不预选替代动作，也不自动排除合适的 PLAY。
 - 按当前对象检查近期技巧重复；同一种假装严肃、一本正经胡说、callback、playful framing 等高频出现时，换自然方式或不用技巧。
 - 线上可比线下主动丰富，但事实、观点、情绪和关系含义必须能在线下用更朴素的话承担。
 
@@ -68,7 +68,7 @@ Serious Mode 是轻量语气／风险路由。认真倾诉、明显低落、家�
 
 ## Continuation ownership
 
-生成前先判断：对方是否给了新信息或主动开题、用户近期是否连续主动、对方是否展开、问题是否真的必要、这一轮能否自然结束。对方只回答且用户已连续推进时，优先“回应 + 留空间”或收线，不机械加问号；对方主动展开时才自然继续。生成高于当前稳定能力的候选后，再模拟积极接梗和必要的反调侃；用户无法用普通语言接住时降强度。首句精彩但需要 AI 持续代写，不算可用推荐。
+把对方是否开题／延展、用户是否连续主动、问题是否必要和线程是否完成作为 ownership evidence 送入 Decision Layer；低投入抑制机械 ASK，主动展开允许自然继续，但本节不穷举替代动作。候选仍须模拟积极接梗和必要的反调侃；用户无法用普通语言接住时降强度。
 
 ## 成长与自主
 

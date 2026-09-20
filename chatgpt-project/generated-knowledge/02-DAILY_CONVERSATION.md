@@ -26,6 +26,16 @@
 
 Conversation Ownership 看当前互动贡献与近期模式，不用固定消息次数、问号数或比例作机械阈值。
 
+## Relationship Current Action 与 Primary Action
+
+`Current Action` 是关系状态模块给出的 **relationship-level strategy / constraint**：它回答“从当前关系证据看，接下来总体应维持什么方向”。`Primary Action` 是本层选择的 **turn-level executable action**：它回答“当前这一轮具体做什么”。Current Action 只作为约束和输入，不是第二个 Action Selector，也不自动映射成某个 Primary Action。
+
+典型映射：
+
+- Current Action“把推进责任交还对方”可能在具体一轮映射为 `WAIT`、`LEAVE_SPACE` 或 `CLOSE`，由是否已经发送、是否仍需回应和线程是否完成决定。
+- Current Action“先处理误会”可能映射为 `CLARIFY`、`REPAIR` 或 `DEESCALATE`，由责任、伤害与当前冲突强度决定。
+- Current Action“可以尝试一次低压力见面”不自动等于 `INVITE`；仍须通过当前 ownership、最近邀约历史、可靠性、边界和时机门槛。
+
 ## Primary Action taxonomy
 
 每轮只选一个主动作。稳定集合如下：
@@ -62,20 +72,16 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 
 用户已有自然、安全且符合边界的草稿时，识别它实际在完成的主动作即可；taxonomy 不构成重写理由。
 
-## 选择优先级
+## 决策协议
 
-发生冲突时按以下顺序覆盖，越靠前越优先：
+这不是数值评分或复杂状态机。按不同职责依次处理：
 
-1. 安全、明确停止与边界；
-2. 当前 serious、冲突降级或 repair 需要；
-3. Relationship Constraints 与既有 Current Action；
-4. Decision Sufficiency；
-5. Conversation Ownership 与互惠；
-6. 用户本轮即时目标；
-7. Comfortable Range 与 Current Style；
-8. 幽默、暧昧、技巧和其他 realization 偏好。
+1. **Hard Constraints**：先应用安全、明确停止、明确边界与其他不可绕过的限制；它们可以直接排除或决定动作方向。
+2. **Decision Gate**：再问现有证据能否选择一个安全、可逆动作。若不能，且缺失事实会实质改变动作，进入 Guided Interview；若能，停止补问并进入 Action Selection。
+3. **Action Selection**：在信息足够后，依次处理当前 serious／repair need、Relationship Constraints／Current Action、Conversation Ownership／互惠、用户本轮即时目标，最终只选一个 Primary Action。
+4. **Realization**：动作确定后，才使用 Current Style、Comfortable Range、humor、flirt、technique、chunking 与 E 决定怎样表达。
 
-因此，优秀的 joke、hook 或暧昧素材不能覆盖明确拒绝、serious disclosure、刚发完消息应等待、长期单方开题或 Current Action 的限制。
+因此，Decision Sufficiency 是“能否进入动作选择”的 gate，不是与 serious、ownership 或用户目标并列竞争的动作优先级。优秀的 joke、hook 或暧昧素材不能覆盖明确拒绝、serious disclosure、刚发完消息应等待、长期单方开题或 Current Action 的限制。
 
 同样，知识库、素材库或技巧库里“有内容可用”不等于当前应该使用。Knowledge availability 与 topic availability 都只能服务已经获准的动作，不能产生行动许可。
 
@@ -98,7 +104,7 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 - 用户刚发出消息、对方尚未回应；
 - 问题只是为了避免沉默。
 
-对方主动开新线程时，`ASK` 与 `SHARE` 都可用，但都不是强制；选择能最好回应其具体内容且负担更合适的一项。
+对方主动开新线程表示允许自然继续，不强制 `ASK` 或 `SHARE`。普通互惠场景可按具体内容选择 `ACKNOWLEDGE`、`SHARE`、`ASK`、`PLAY` 或其他真正服务当前目标的动作；轻松有趣的线程、无 serious／boundary 限制且用户风格可承担时，`PLAY` 可以是最佳动作。
 
 ### SHARE
 
@@ -129,11 +135,10 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 ## 决策检查
 
 1. 用户这一轮真正要完成什么？
-2. 安全、边界、serious、repair 或 Current Action 是否已经决定方向？
-3. 现有信息能否支持一个安全可逆动作；若能，停止补问。
-4. 下一步 ownership 在谁；这一轮是否正在变成 interview mode 或单方救场？
-5. 只选一个 Primary Action，并明确哪些动作被抑制。
-6. 最后才允许 style、hook、humor、flirt、chunking 与 E 参与实现。
+2. 安全、明确停止或边界是否构成硬约束？
+3. 现有信息能否支持一个安全可逆动作；不能且关键缺口会改变动作时才 Guided Interview。
+4. gate 通过后，再结合 serious／repair、Current Action、ownership／互惠与即时目标选择一个 Primary Action。
+5. 最后才允许 style、hook、humor、flirt、chunking 与 E 参与实现。
 
 ## 来源：`references/personal/自然回复生成器.md`
 
@@ -161,7 +166,7 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 2. 从 `回复决策与对话流.md` 接收一个 Primary Action、必要 supporting function、硬约束、停止条件与 realization permissions；没有动作时先完成决策，不自行用“好写”替代“该做”。
 3. 划定回复可用事实；没有真实素材就不编。
 4. 用 `current_style`、actual-send 模式、明确舒适度反馈和 `avoid_styles` 推断当前 Comfortable Range；`target_style` 只提供用户认可的方向，默认只选一个 small stretch。
-5. 仅在获准动作内检查 interview mode、技巧重复与可接续性；Serious Mode 优先准确和边界。
+5. 仅在获准动作内检查事实安全、技巧重复、Serious Mode 约束与可接续性，不重新判断或替换 Primary Action。
 6. 按语义功能、节奏、阶段和用户习惯决定一个或两个气泡，不按字符数切分。
 7. 内部比较少量同动作候选，检查事实、边界、承诺、可退出性和可接续性，只展示一个首选。
 
@@ -204,7 +209,7 @@ confirmed Memory 按 scope 使用：
 ## Message Chunking
 
 - **一个气泡**：回应单一信息，或一句已经自然完整。
-- **两个气泡**：第一条回应对方，第二条补充自己的内容；或第一条回应，第二条自然开启确有必要的新话题。
+- **两个气泡**：第一条回应对方，第二条补充自己的内容；或第一条回应，第二条实现已获 Primary Action 许可的新话题。
 - 分段依据是语义功能、自然停顿、强调、关系阶段和用户习惯，不是“超过多少字”。一句最自然时不强拆；两个功能确实分开时不硬塞成长句。
 - 对方一句，不默认回小作文；serious 也不自动增加气泡和字数。
 
@@ -214,23 +219,20 @@ confirmed Memory 按 scope 使用：
 
 - 可以比用户过去更主动、有画面或有趣，但不能使用用户不理解、不能接续的黑话。
 - 允许真实紧张、在意、歉意和明确观点，不表演完美高情商。
-- 承诺必须绑定已确认的真实时间或行动；信息不足时优先用安全版本，只有关键未知会改变建议时才按 `缺失上下文与高信息量追问.md` 追问。
+- 承诺必须绑定已确认的真实时间或行动；信息不足时优先用安全版本，若关键未知使当前动作无法安全实现，则退回 Decision Layer，按 `缺失上下文与高信息量追问.md` 判断是否补问。
 - 不写绝对保证、咨询腔、鸡汤、土味情话、霸总命令或冒犯式调侃。
 - 普通真诚的一句已经最好时，选择无技巧回复。
 
-## Continuation Ownership
+## Realization Validation
 
-生成前判断：
+Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选择。本文件只验证候选有没有越权：
 
-- 对方刚刚是否给了新信息、感受、故事或主动开的线程；
-- 用户近期是否连续发起、追问、补解释或单方救场；
-- 对方是在延展，还是只回答用户的问题；
-- 新问题是否真的服务本轮目标；
-- 回应后留空间或自然结束是否更合适。
+- 非 `ASK` 候选不得偷偷用新问题承担续聊；supporting question 必须已获明确许可且不改变主动作；
+- 不得擅自加入未获许可的 `TOPIC_SHIFT`、`INVITE` 或新 hook；
+- `LEAVE_SPACE` 候选不得重新制造接续义务，`WAIT` 不得输出可发送的新消息；
+- serious、boundary 或事实约束必须在措辞中保持有效。
 
-对方主动展开时，可以沿一个最有价值的点继续。用户已连续主动而对方低投入时，优先回应、留空间或收线，不机械追加“你呢／然后呢／周末呢”。自然结束不是失败，`哈哈那确实` 有时已经足够。
-
-这里的判断是对决策层输入的实现复核，不重新授权 `ASK`、`TOPIC_SHIFT`、`INVITE` 或新 hook。用户刚发出消息并询问是否补一句时，Primary Action 为 `WAIT` 就不生成可发送的新消息。
+候选若与 selected Primary Action 或当前硬约束发生实质冲突，应拒绝该候选并返回 Decision Layer 重新决定；Natural Reply Core 不得静默改成另一个 Primary Action。
 
 对略高于当前稳定能力的候选，再做可接续性测试：
 
@@ -246,15 +248,15 @@ confirmed Memory 按 scope 使用：
 对方反调侃：用户能否接住而不防御、不升级比赛？
 ```
 
-如果后续必须再生成更高级台词、用户不理解潜台词、无法回到真实内容或线下不敢承担核心意思，候选失败。降低 E、换观察式分享/简单 callback，或使用无技巧版本。
+如果后续必须再生成更高级台词、用户不理解潜台词、无法回到真实内容或线下不敢承担核心意思，候选失败。在同一 Primary Action 内降低 E 或换无技巧实现；若无法合规实现，返回 Decision Layer，而不是在本层换动作。
 
 ## 表达重复检测
 
 按对象查看最近使用的主技巧。假装严肃、一本正经胡说、callback、playful framing、轻度夸张或其他机制连续/高频出现时：
 
-1. 先考虑普通分享或观点；
-2. 再考虑与语境更匹配的另一技巧；
-3. 不为了轮换而使用不合适技巧。
+1. 先改用同一 Primary Action 的普通、无技巧实现；
+2. 再考虑与语境匹配、且未越过 realization permissions 的另一技巧；
+3. 若只能靠更换动作解决，拒绝候选并返回 Decision Layer。
 
 ## 输出契约
 
@@ -284,7 +286,7 @@ confirmed Memory 按 scope 使用：
 - 是否像用户本人，而不是突然换了 persona？
 - 是否只做一个用户发得出去的小跨度；用户草稿已经够好时是否仍被无必要重写？
 - 一个或两个气泡是按语义功能决定的吗？
-- 这一轮真的需要问题，还是回应后留空间更自然？
+- 候选是否偷偷新增了未获许可的问题、推进或接续义务？
 - 是否超出 Comfortable Range，或把 Stage／Trend／对方反馈机械映射成更高 E？
 - 是否只是为了显得会聊而加技巧？
 - 对方积极接住后，用户能自然继续吗？
@@ -406,7 +408,7 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 
 ## 打断 interview mode
 
-连续多轮用户只提问时，下一轮禁止裸问题。按优先级选一项：
+连续多轮用户只提问时，Decision Layer 将其记为 interview-risk 并抑制机械 `ASK`，但不会穷举替代动作，也不自动禁止合适的 `PLAY`。只有 Decision Layer 已许可 `SHARE` 或 `TOPIC_SHIFT` 等需要 hook material 的动作时，本文件才从以下形式中提供素材：
 
 1. 回应对方答案后补一段自己的相关内容；
 2. 说一个具体观点；
@@ -415,7 +417,7 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 5. 把当前线程轻轻跳到相邻话题；
 6. 线程已经耗尽时收线。
 
-分享后可以留一个轻问题，但不能再用问题承担全部内容。
+分享后只有在 supporting question 已获许可时才可留一个轻问题，且不能再用问题承担全部内容。
 
 ## 小故事三拍
 
@@ -436,4 +438,4 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 
 ## Continuation ownership
 
-对方已主动展开时，沿一条线即可；用户近期连续开题而对方只回答时，不再生成新 hook，回应后留空间或收线。确实适合主动开题时，再模拟对方最积极的合理回应。用户若无法解释自己的观点、讲完真实后续或接住对方反问，就缩短素材或选择更简单的 hook。开题的目标是打开双向交换，不是让 AI 连续代写整段表演。
+对方已主动展开时，hook 可沿已获许可的一条线提供 material；用户近期连续开题而对方只回答时，不再生成新 hook。至于本轮回应、留空间、收线还是等待，由 Decision Layer 决定，本文件不代选动作。确实获准主动开题时，再模拟对方最积极的合理回应。用户若无法解释自己的观点、讲完真实后续或接住对方反问，就缩短素材或选择更简单的 hook。开题的目标是打开双向交换，不是让 AI 连续代写整段表演。

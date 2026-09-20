@@ -15,6 +15,8 @@
 
 ### Changed
 
+- v1.7-A.1 Decision Layer Stabilization 将 Decision Sufficiency 从动作优先级分离为 gate，明确 relationship-level Current Action 只约束 turn-level Primary Action，并清理 Skill、Natural Reply Core 与 hook 中的重复 selector。
+- Contract Eval 用抑制项、必需行为与“不强制”断言替代五处过窄 `primary_action_allowed`；partner-open-thread 明确保留自然 `PLAY`，对应 Model runtime 恢复幽默 reference，未运行真实模型 API。
 - Local Skill 与 ChatGPT Project 统一为“关系状态提供约束 → Decision Layer 决定做什么 → Natural Reply Core 决定怎样说”；Conversation Hook、Serious Mode 与表达升级器不再反向授权动作。
 - 仅 `validation-gemini` 示例将 retry/timeout 设为 4 次 / 120 秒，用于用户报告的暂时性容量错误；全局与 formal reference 默认策略不变。
 - Model Eval 结果目录改为从当前 Knowledge pack 动态派生，报告明确区分行为失败、provider/judge 错误与未评估 case。

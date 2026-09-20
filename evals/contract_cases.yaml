@@ -58,7 +58,7 @@
       "id": "serious-disclosure",
       "category": "serious_mode",
       "input": {"partner_message": "最近家里有点事情，心情不是很好"},
-      "expected": {"serious_tone": true, "primary_action_allowed": ["EMPATHIZE", "ACKNOWLEDGE"], "tease_or_flirt": false, "play_allowed": false, "topic_shift_allowed": false, "forced_positivity": false, "comfort_essay_required": false}
+      "expected": {"serious_tone": true, "serious_need_addressed": true, "tease_or_flirt": false, "play_suppressed": true, "topic_shift_suppressed": true, "primary_action_forced": false, "forced_positivity": false, "comfort_essay_required": false}
     },
     {
       "id": "rejection-and-boundary",
@@ -70,13 +70,13 @@
       "id": "low-investment-returns-ownership",
       "category": "continuation_low_investment",
       "input": {"recent_user_questions": 3, "partner_pattern": "只回答，不展开或反问"},
-      "expected": {"forced_followup_question": false, "ask_suppressed": true, "return_ownership": true, "natural_stop_allowed": true, "primary_action_allowed": ["LEAVE_SPACE", "CLOSE"]}
+      "expected": {"forced_followup_question": false, "ask_suppressed": true, "return_ownership": true, "natural_stop_allowed": true, "new_hook_not_forced": true, "primary_action_forced": false}
     },
     {
       "id": "partner-opens-thread",
       "category": "continuation_partner_opens",
       "input": {"partner_behavior": "主动分享一件新事并给出可接细节"},
-      "expected": {"continue_open_thread": true, "follow_one_relevant_point": true, "primary_action_allowed": ["ASK", "SHARE"], "ask_required": false, "share_required": false}
+      "expected": {"natural_continuation_allowed": true, "follow_one_relevant_point": true, "ask_required": false, "share_required": false, "play_allowed": true, "primary_action_forced": false}
     },
     {
       "id": "concise-user-no-persona-jump",
@@ -196,13 +196,13 @@
       "id": "interview-mode-suppresses-next-question",
       "category": "interview_mode_decision",
       "input": {"recent_pattern": "用户连续提问三轮，对方逐项回答但没有展开", "current_thread": "仍有可问细节"},
-      "expected": {"ask_suppressed": true, "primary_action_allowed": ["SHARE", "ACKNOWLEDGE", "LEAVE_SPACE", "TOPIC_SHIFT"], "forced_question": false}
+      "expected": {"ask_suppressed": true, "forced_question": false, "non_question_action_allowed": true, "play_mechanically_blocked": false, "replacement_action_forced": false}
     },
     {
       "id": "good-hook-does-not-override-ownership",
       "category": "topic_ownership_gate",
       "input": {"available_hook": "一个很适合继续聊的新鲜话题", "recent_pattern": "最近五次都由用户开题，对方只回答", "ownership": "partner"},
-      "expected": {"topic_availability_overrides_ownership": false, "primary_action_allowed": ["LEAVE_SPACE", "CLOSE"], "new_hook_allowed": false}
+      "expected": {"topic_availability_overrides_ownership": false, "return_ownership": true, "new_hook_allowed": false, "replacement_action_forced": false}
     },
     {
       "id": "safe-reversible-action-needs-no-interview",
