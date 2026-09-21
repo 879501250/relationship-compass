@@ -1,10 +1,39 @@
 # 主动话题与 Conversation Hook
 
-## 定位
+## 定位：material provider
+
+`Architecture Marker: HOOK_MATERIAL_PROVIDER_V1`
 
 训练用户主动提供聊天素材，而不只等待对方说话后承接。主动不是抢话或高频输出，而是创造对方容易加入的真实线程。
 
 本文件只在 Decision Handoff 已选择并许可需要素材的动作后使用：先由 `关系阶段与聊天节奏.md` 提供 continuation ownership 证据，再由 `回复决策与对话流.md` 选择 `SHARE`、`TOPIC_SHIFT` 或其他获准动作，最后才按 handoff 提供 material。它不生成最终候选，不补 supporting question／invite，也不因素材可用触发路由。普通回应、`WAIT`、`LEAVE_SPACE` 或 `CLOSE` 不附加 hook；素材很好也不能反向授权动作。
+
+## Provider output contract
+
+```text
+Hook input:
+Decision Handoff
++ confirmed facts
++ approved action/material need
+
+Hook output:
+material candidates only
+- fact-grounded detail
+- opinion seed
+- story seed
+- callback seed
+- adjacent-topic seed
+- activity/topic seed
+
+Hook forbidden:
+- no action permission
+- no replacement action
+- no supporting function generation
+- no invite generation
+- no close/wait selection
+```
+
+Hook 只返回素材，不把素材写成最终回复。Natural Reply 消费 handoff 与获准 material 后组装、校验 candidate；Decision Layer 仍独占 Primary Action、supporting permissions 与 provider permissions。若没有安全、真实且符合 handoff 的素材，返回 `no material candidate`，不换动作；必要时把 material unavailable／unnecessary 结果交回现有 Decision Handoff／Decision Layer。
 
 ## 素材来源
 
@@ -12,8 +41,8 @@
 2. **共同历史**：真实旧梗、未完话题、一起经历和对方提过的细节。
 3. **个人观点**：对作品、工作、习惯或轻争议的明确偏好。
 4. **小故事**：真实的场景、转折和余味。
-5. **情境邀请**：把双方放进一个轻量、可退出的共同想象。
-6. **共同活动**：推荐、交换、挑战、低压力邀约或以后可做的小事。
+5. **共同想象素材**：轻量、可退出且不默认关系的情境 seed。
+6. **共同活动素材**：某个展、某家店、某部电影或共同兴趣活动等 activity／topic seed；`activity idea != INVITE permission`，不生成邀请措辞。
 
 不得虚构经历、共同记忆、热门事件观点或未来承诺。
 
@@ -24,7 +53,7 @@
 - **反差钩子**：真实预期与结果的差异。
 - **未完线程**：先给场景和转折，不堆完所有解释。
 - **共同想象**：短小、有退出权，不直接默认关系。
-- **自然邀请**：内容已互惠时，把话题落到一个具体下一步。
+- **活动／共同兴趣种子**：提供可讨论的具体活动、地点或作品，只是 material，不产生见面或共同参与的 permission。
 
 hook 不一定是问号。对方可以通过评价、接梗、分享类似经历或给安排进入。
 
@@ -33,6 +62,8 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 ```text
 真实素材 + 我的态度/情绪 + 一个可接钩子
 ```
+
+这是供 Natural Reply 使用的素材组织骨架，不是最终回复 contract，也不新增 `ASK`、`INVITE` 或其他 supporting function。
 
 示例骨架：
 
@@ -44,14 +75,14 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 
 ## 打断 interview mode
 
-连续多轮用户只提问时，Decision Layer 将其记为 interview-risk 并抑制机械 `ASK`，但不会穷举替代动作，也不自动禁止合适的 `PLAY`。只有 Decision Layer 已许可 `SHARE` 或 `TOPIC_SHIFT` 等需要 hook material 的动作时，本文件才从以下形式中提供素材：
+连续多轮用户只提问时，Decision Layer 将其记为 interview-risk 并抑制机械 `ASK`，但不会穷举替代动作，也不自动禁止合适的 `PLAY`。只有 Decision Layer 已许可 `SHARE` 或 `TOPIC_SHIFT` 等需要 hook material 的动作时，本文件才提供对应素材候选：
 
-1. 回应对方答案后补一段自己的相关内容；
-2. 说一个具体观点；
-3. 讲三句以内的小故事；
-4. 使用真实 callback；
-5. 把当前线程轻轻跳到相邻话题；
-6. 线程已经耗尽时收线。
+1. 与对方答案相关的 fact-grounded detail；
+2. 一个真实 opinion seed；
+3. 三句以内真实故事所需的 story seed；
+4. 已确认共同历史中的 callback seed；
+5. 与当前线程相邻的 adjacent-topic seed；
+6. 线程已经耗尽、没有真实相邻素材或 handoff 不再需要素材时，返回 `no material candidate`，并把 exhausted-thread／ownership evidence 交回 Decision Layer。
 
 分享后只有在 supporting question 已获许可时才可留一个轻问题，且不能再用问题承担全部内容。
 
@@ -65,12 +96,18 @@ hook 不一定是问号。对方可以通过评价、接梗、分享类似经历
 
 普通故事不需要传奇性。优先具体、短、有一个画面。对方正在倾诉时不要抢着用自己的故事覆盖其情绪。
 
-## 话题节奏
+## 话题节奏作为 evidence
 
-- 对方积极延展：沿最有情绪或行动价值的一条线继续，不逐项追问。
-- 对方普通回应：可补一次自己的内容，仍无延展就收线。
-- 对方不回应：不连续制造新 hook 救场；等待自然事件或其主动。
-- 近期总由用户开题：检查互惠，不把“会制造话题”变成长期单方供给。
+Observed conversation response 只形成 material availability／ownership evidence，再交给 Decision Layer；不是 Hook 的 turn-action selector：
+
+| Observed response | Hook-level result | Decision boundary |
+| --- | --- | --- |
+| 对方积极延展 | 记录有可用相邻 material；handoff 确实请求时才返回相关 seed | 不选择 `SHARE / ASK / PLAY / TOPIC_SHIFT` |
+| 对方普通回应 | 形成 low-extension／ownership evidence | 不自动补 `SHARE`，也不选择 `CLOSE` |
+| 对方不回应 | 形成 ownership／no-new-material constraint，并返回 `no material candidate` | 不选择 `WAIT` |
+| 近期总由用户开题 | 形成持续单方供给的 ownership evidence；通常不再提供新 seed | 不选择 `LEAVE_SPACE / CLOSE / WAIT` |
+
+是否继续、分享、提问、玩笑、转题、邀请、留空间、收线或等待，只由 Decision Layer 根据完整 Conversation State 决定。
 
 ## Continuation ownership
 

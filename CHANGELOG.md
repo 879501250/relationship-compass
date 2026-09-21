@@ -33,6 +33,7 @@
 
 ### Fixed
 
+- v1.7-B2 closure 修复 Conversation Hook 的 provider ownership：活动、共同兴趣与相邻话题只输出 material seed；线程耗尽、普通回应或未回复只形成 evidence／`no material candidate`，不再隐式选择 `INVITE / CLOSE / WAIT`。
 - 新 provider 配置统一按 transport、canonical vendor 与精确 origin 判定官方接入路径；保留 OpenAI / Moonshot 支持、模型身份独立性及历史 artifact 原始 provenance，不调用真实 API。
 - Target 输入不再泄漏 case id、reply/analysis mode 或 rubric criterion。
 - 重新生成过期的 ChatGPT Knowledge pack，并将 `.work/` 排除出版本控制。

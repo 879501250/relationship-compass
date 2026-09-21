@@ -14,6 +14,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / "tests" / "fixtures" / "runtime_reference_roles.json"
 CANONICAL_SELECTOR = "references/personal/回复决策与对话流.md"
+HOOK_PROVIDER = "references/personal/主动话题与conversation-hook.md"
 ALLOWED_ROLES = {
     "CANONICAL_SELECTOR",
     "CONSTRAINT_PROVIDER",
@@ -138,7 +139,7 @@ def collect_errors(root: Path = ROOT) -> list[str]:
 
     expected_roles = {
         "references/personal/幽默与调侃生成器.md": "REALIZATION_PROVIDER",
-        "references/personal/主动话题与conversation-hook.md": "REALIZATION_PROVIDER",
+        HOOK_PROVIDER: "REALIZATION_PROVIDER",
         "references/personal/投入预算与停止条件.md": "CONSTRAINT_PROVIDER",
     }
     for path, expected_role in expected_roles.items():
@@ -206,6 +207,20 @@ def collect_errors(root: Path = ROOT) -> list[str]:
     ):
         if marker not in natural:
             errors.append(f"Natural Reply missing B2 lifecycle guardrail: {marker}")
+
+    hook = (root / HOOK_PROVIDER).read_text(encoding="utf-8")
+    for marker in (
+        "Architecture Marker: HOOK_MATERIAL_PROVIDER_V1",
+        "material candidates only",
+        "no action permission",
+        "no replacement action",
+        "no supporting function generation",
+        "no invite generation",
+        "no close/wait selection",
+        "no material candidate",
+    ):
+        if marker not in hook:
+            errors.append(f"Hook missing material-provider guardrail: {marker}")
 
     for path in HIGH_RISK_PRACTICAL:
         content = (root / path).read_text(encoding="utf-8")

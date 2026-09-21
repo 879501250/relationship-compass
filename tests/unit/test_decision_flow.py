@@ -19,6 +19,7 @@ import run_model_evals as model_runner  # noqa: E402
 
 DECISION_PATH = "references/personal/回复决策与对话流.md"
 NATURAL_PATH = "references/personal/自然回复生成器.md"
+HOOK_PATH = "references/personal/主动话题与conversation-hook.md"
 EXPECTED_ACTIONS = {
     "ACKNOWLEDGE",
     "EMPATHIZE",
@@ -112,6 +113,60 @@ class DecisionRealizationFlowTests(unittest.TestCase):
         for stop_action in ("LEAVE_SPACE", "CLOSE"):
             self.assertIn("minimal Natural Reply", rows[stop_action][0])
             self.assertNotIn("Hook", rows[stop_action][0])
+
+    def test_hook_contract_returns_material_only(self) -> None:
+        hook = read(HOOK_PATH)
+        contract = section(hook, "## Provider output contract", "## 素材来源")
+
+        self.assertIn("Architecture Marker: HOOK_MATERIAL_PROVIDER_V1", hook)
+        self.assertIn("Decision Handoff", contract)
+        self.assertIn("material candidates only", contract)
+        for material in (
+            "fact-grounded detail",
+            "opinion seed",
+            "story seed",
+            "callback seed",
+            "adjacent-topic seed",
+            "activity/topic seed",
+        ):
+            self.assertIn(material, contract)
+        for denied_capability in (
+            "no action permission",
+            "no replacement action",
+            "no supporting function generation",
+            "no invite generation",
+            "no close/wait selection",
+        ):
+            self.assertIn(denied_capability, contract)
+        self.assertIn("Natural Reply 消费 handoff", contract)
+
+    def test_activity_material_never_becomes_invite_permission(self) -> None:
+        hook = read(HOOK_PATH)
+        sources = section(hook, "## 素材来源", "## Hook 类型")
+        hook_types = section(hook, "## Hook 类型", "## 开题结构")
+
+        self.assertIn("共同活动素材", sources)
+        self.assertIn("activity idea != INVITE permission", sources)
+        self.assertIn("活动／共同兴趣种子", hook_types)
+        self.assertIn("只是 material", hook_types)
+        self.assertNotIn("低压力邀约", sources)
+        self.assertNotIn("自然邀请", hook_types)
+
+    def test_hook_conversation_evidence_cannot_select_close_or_wait(self) -> None:
+        hook = read(HOOK_PATH)
+        interview = section(hook, "## 打断 interview mode", "## 小故事三拍")
+        rhythm = section(hook, "## 话题节奏作为 evidence", "## Continuation ownership")
+
+        self.assertIn("no material candidate", interview)
+        self.assertIn("exhausted-thread／ownership evidence", interview)
+        self.assertNotIn("线程已经耗尽时收线", interview)
+        self.assertIn("low-extension／ownership evidence", rhythm)
+        self.assertIn("ownership／no-new-material constraint", rhythm)
+        self.assertIn("不自动补 `SHARE`", rhythm)
+        self.assertIn("不选择 `WAIT`", rhythm)
+        self.assertIn("不选择 `LEAVE_SPACE / CLOSE / WAIT`", rhythm)
+        self.assertNotIn("仍无延展就收线", rhythm)
+        self.assertNotIn("等待自然事件或其主动", rhythm)
 
     def test_wait_is_not_disguised_as_a_sendable_message(self) -> None:
         decision = read(DECISION_PATH)
