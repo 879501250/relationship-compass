@@ -163,6 +163,7 @@ def collect_errors(root: Path = ROOT) -> list[str]:
         errors.append(f"Primary Action taxonomy changed: {sorted(actions)}")
     for marker in (
         "Architecture Marker: COMPOSITION_GATING_V1",
+        "Architecture Marker: DECISION_REALIZATION_FLOW_V1",
         "0..N explicitly permitted supporting functions",
         "same-action repair",
         "reject candidate → return Decision Layer",
@@ -172,6 +173,39 @@ def collect_errors(root: Path = ROOT) -> list[str]:
     ):
         if marker not in decision:
             errors.append(f"Decision Layer missing composition guardrail: {marker}")
+
+    handoff_fields = (
+        "primary_action",
+        "supporting_functions",
+        "hard_constraints",
+        "stop_conditions",
+        "realization_permissions",
+        "decision_basis",
+    )
+    for field in handoff_fields:
+        if f"| `{field}` |" not in decision:
+            errors.append(f"Decision Handoff missing field: {field}")
+    for marker in (
+        "## Unified entry paths",
+        "Type A — realization failure",
+        "Type B — decision-level conflict",
+        "同一 action + 同一 rejection reason",
+        "no realization provider；no sendable candidate",
+    ):
+        if marker not in decision:
+            errors.append(f"Decision Layer missing B2 flow guardrail: {marker}")
+
+    natural = (root / "references/personal/自然回复生成器.md").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "Architecture Marker: DECISION_REALIZATION_FLOW_V1",
+        "## Decision Handoff 输入",
+        "## Validation outcome 与 failure handling",
+        "不得附带 replacement action",
+    ):
+        if marker not in natural:
+            errors.append(f"Natural Reply missing B2 lifecycle guardrail: {marker}")
 
     for path in HIGH_RISK_PRACTICAL:
         content = (root / path).read_text(encoding="utf-8")

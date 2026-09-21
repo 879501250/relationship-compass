@@ -4,6 +4,8 @@
 
 ### Added
 
+- v1.7-B2 Flow Integration 的 `DECISION_REALIZATION_FLOW_V1`：正式定义六字段 Decision Handoff、按动作加载的 realization routing、八项候选验证与四类入口统一主链。
+- Type A same-action repair、Type B decision rejection、无变化状态下禁止重复同一 action/reason，以及以安全替代动作、`WAIT / LEAVE_SPACE / CLOSE` 或必要 Guided Interview 终止的有限重决策协议。
 - v1.7-B1 Closure Audit 的 test-time runtime role registry 与 Decision Layer ownership checker；覆盖 canonical、practical、knowledge、curated、ChatGPT instructions 和生成镜像，不引入生产 schema。
 - v1.7 开发中的 Response Decision foundation：新增统一 Conversation State、有限 Primary Action taxonomy、单主动作约束以及 `WAIT / LEAVE_SPACE / CLOSE` 语义边界；这不代表完整 v1.7 已完成。
 - Contract Eval 覆盖连续追问、自然收线、已发送后等待、interview mode、hook 与 ownership、草稿保留及安全可逆动作；Behavioral Stress 新增两个高价值 Decision Layer 场景，未运行真实模型 API。
@@ -16,6 +18,7 @@
 
 ### Changed
 
+- Natural Reply Core 现在只消费 Decision Handoff、按 permission 组装和验证候选；Humor、Hook、Expression Upgrader 与 Guided Interview 接入同一生命周期，仍不拥有动作选择权。
 - v1.7-B1 Closure Audit 正式定义 Composition Gating，并将情绪价值、巧妙接话、聊天主动化及其余扫描命中的 practical／knowledge 流水线收敛为 permission-gated components；B1 至此封版，但未进入 B2，也不代表完整 v1.7 已完成。
 - v1.7-B1.1 Selector Leak Closure 清理 Humor repetition、自然流／主动档位、feedback 表格与 practical composition pattern 中的残留 turn-action fallback；失败候选只在同一动作内改 realization，或返回 Decision Layer，未进入 v1.7-B2。
 - v1.7-B1 Selector Consolidation 确立 `回复决策与对话流.md` 为唯一 turn-level Primary Action selector；Humor、Hook、Natural Reply、Expression Upgrader、Investment 与 practical references 分别收敛为 realization、style/growth 或 relationship constraint provider，未进入 v1.7-B2。

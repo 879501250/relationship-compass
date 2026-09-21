@@ -85,6 +85,66 @@ one Primary Action
 
 用户已有自然、安全且符合边界的草稿时，识别它实际在完成的主动作即可；taxonomy 不构成重写理由。
 
+## Decision Handoff 与 realization routing
+
+`Architecture Marker: DECISION_REALIZATION_FLOW_V1`
+
+Action Selection 完成后，本层产生一份只在当前轮使用的轻量 `Decision Handoff`。它是文档级内部契约，不是持久化 schema、日志要求、工作流引擎或普通用户可见的推理轨迹：
+
+| Field | Contract |
+| --- | --- |
+| `primary_action` | 14 个稳定动作中唯一一个；只有本层可写入或替换 |
+| `supporting_functions` | 本层逐项显式许可、只服务主动作的功能；空集合合法 |
+| `hard_constraints` | safety、boundary、serious、fact、ownership 与其他不可绕过限制 |
+| `stop_conditions` | 何时不得继续生成、追问、开题、邀约或追击 |
+| `realization_permissions` | 允许加载的 provider、组件、问题、hook、幽默、风格跨度与明确禁项 |
+| `decision_basis` | 足以解释本轮选择的最小定性依据；不含分数、概率或隐藏长推理 |
+
+普通输出隐藏 handoff；调试时也只显示必要摘要。Handoff 不包含 secondary selector、`actions[]`、action score、概率或下游 fallback action。下游只能消费，不能补写 permission、改变 stop condition 或重选动作。
+
+Provider 按动作按需加载；未列为需要时直接由 Natural Reply 实现：
+
+| Primary Action | Realization route | 不可越过的边界 |
+| --- | --- | --- |
+| `ACKNOWLEDGE` | Natural Reply | 不自动增加安慰、问题或解决方案 |
+| `EMPATHIZE` | Natural Reply；handoff 明确允许时才加载情绪类 practical component | practical 只给表达组件，不加问题或新目标 |
+| `SHARE` | Natural Reply；只有 handoff 许可且需要从已确认事实整理素材时才加载 Hook material | Hook 不得借素材增加问题、转题或邀约 |
+| `ASK` | Natural Reply | 只实现已选问题功能，不追加第二问题或新目标 |
+| `CLARIFY` | Natural Reply；确需结构时可加载对应 practical component | 只澄清会改变理解或行动的点 |
+| `PLAY` | Humor provider → Natural Reply | Humor 只生成同一 `PLAY` 的 realization |
+| `TOPIC_SHIFT` | Hook material → Natural Reply | 先选动作后取素材；问题、分享仍需各自 permission |
+| `INVITE` | invite practical component → Natural Reply | 只有已选 `INVITE` 后才能生成邀约结构 |
+| `REPAIR` | Natural Reply；确需结构时可加载 repair practical component | 修复组件不得改成辩解、追问或升级关系 |
+| `BOUNDARY` | Natural Reply；确需结构时可加载 boundary practical component | 不留绕过边界的钩子 |
+| `DEESCALATE` | Natural Reply；确需结构时可加载 de-escalation practical component | 不否认问题，不偷偷开启新线程 |
+| `LEAVE_SPACE` | minimal Natural Reply | 禁止 question、hook、invite、topic extension 与 playfulness |
+| `CLOSE` | minimal Natural Reply | 禁止尾钩、问题、邀约与新话题 |
+| `WAIT` | no realization provider；no sendable candidate | 只向用户说明现在不发送，不生成给对象的话 |
+
+`WAIT` 是系统对“当前不发”的决定；“那我先等等”“先不打扰你啦”都已经是可发送消息，因此不是 `WAIT`，只能在其他动作与语境确实许可时作为候选。
+
+## Unified entry paths
+
+所有入口共享 `Hard Constraints → Decision Sufficiency → Conversation State → Decision Layer → Decision Handoff → action-specific providers → Natural Reply → Realization Validation`，不得因入口不同绕开选择或校验：
+
+| Entry | 进入统一主链的方式 |
+| --- | --- |
+| reply-first | 内部组装必要状态并完成完整主链；外部仍先给一个首选 |
+| analysis → reply | 把 Evidence、Stage／Trend、Strength／Conflict 与 Current Action 作为关系约束送回同一 Decision Layer |
+| draft-first | 先识别草稿正在实现的动作，再由 Decision Layer 验证；合法就尽量保留，非法时由 Decision Layer 选择替代动作 |
+| training／simulation | 训练标签、示例目标或模拟角色只形成意图／约束；任何可发送候选仍走完整主链，标签不自动成为动作 permission |
+
+## Realization rejection 与 redecision
+
+验证失败分两类，避免把文案修复和动作冲突混在一起：
+
+- **Type A — realization failure**：动作仍正确，只是具体候选出现技巧重复、措辞、风格、长度、事实表达或组件组合问题。Natural Reply 或已加载 provider 必须在同一 `primary_action`、同一 permissions 和 constraints 内做 `same-action repair`；例如 `PLAY` callback 重复时改用观察式幽默或 technique-free `PLAY`。
+- **Type B — decision-level conflict**：已选动作在当前状态下无法安全、真实或符合 serious／boundary／ownership 实现，且不存在同动作的合规实现。下游只返回 rejected primary action、明确 rejection reason 与原 Conversation State，不得选择 replacement action。
+
+Decision Layer 收到 Type B 后，把 rejection reason 作为当前轮临时 decision constraint 重新选择。Conversation State 与证据没有变化时，禁止立即重选“同一 action + 同一 rejection reason”；每次 rejection 都必须缩小仍可合法选择的动作集合，不能在 Decision 与 realization 之间循环。
+
+重决策必须终止于：一个不同且安全可逆的动作；或语义合适的 `WAIT / LEAVE_SPACE / CLOSE`。只有 rejection 暴露了新的关键证据缺口、且已无安全可逆动作时，才重新进入 Guided Interview；不能用追问逃避本可直接完成的决定。
+
 ## 决策协议
 
 这不是数值评分或复杂状态机。按不同职责依次处理：
@@ -165,7 +225,15 @@ Serious Mode 在本层作为 action selection constraint，可抑制 `PLAY`、�
 
 ## 输出目标
 
-把 `回复决策与对话流.md` 已选择的唯一 Primary Action 实现成一条用户能认领、能发送、能承担后续的首选回复。自然不是复制 `current_style` 的短板，也不是直接扮演 `target_style` 的终点；先保持用户本人，再在 Comfortable Range 边缘只做一个有价值的小跨度。本文件决定“怎样说”，不得为了文案更有趣而把动作换成追问、邀约、转题或继续推进。
+消费 `回复决策与对话流.md` 产生的 Decision Handoff，把唯一 Primary Action 实现成一条用户能认领、能发送、能承担后续的首选回复。自然不是复制 `current_style` 的短板，也不是直接扮演 `target_style` 的终点；先保持用户本人，再在 Comfortable Range 边缘只做一个有价值的小跨度。本文件决定“怎样说”，不得为了文案更有趣而把动作换成追问、邀约、转题或继续推进。
+
+`Architecture Marker: DECISION_REALIZATION_FLOW_V1`
+
+## Decision Handoff 输入
+
+生成前必须收到 `primary_action`、`supporting_functions`、`hard_constraints`、`stop_conditions`、`realization_permissions`、`decision_basis`。这六项只属于当前轮；缺失或互相冲突时返回 Decision Layer，不在本文件中推测 permission、创建 secondary action、计算 action score／概率或补一个 fallback action。
+
+本文件负责：按 handoff 调用已许可 provider、组装候选、执行 Realization Validation、在动作不变时修复一次语义问题，并返回通过的候选或结构化拒绝。它不负责选择策略、覆盖边界、自动添加 supporting function，或在拒绝后替用户挑新动作；不得静默改成另一个 Primary Action。
 
 ## 请求深度与输出选择
 
@@ -181,13 +249,13 @@ Serious Mode 在本层作为 action selection constraint，可抑制 `PLAY`、�
 
 ## 生成流程
 
-1. 识别用户要即时回复、分析、训练还是多个版本；简单任务不扩写成长报告。
-2. 从 `回复决策与对话流.md` 接收一个 Primary Action、必要 supporting function、硬约束、停止条件与 realization permissions；没有动作时先完成决策，不自行用“好写”替代“该做”。
+1. 识别用户要即时回复、分析、草稿校准、训练还是多个版本；入口只改变展示深度，不改变统一主链。
+2. 从 `回复决策与对话流.md` 接收完整 Decision Handoff；`WAIT` 在此短路为“无 sendable candidate”，只可向用户说明不要发送。
 3. 划定回复可用事实；没有真实素材就不编。
-4. 用 `current_style`、actual-send 模式、明确舒适度反馈和 `avoid_styles` 推断当前 Comfortable Range；`target_style` 只提供用户认可的方向，默认只选一个 small stretch。
-5. 仅在获准动作内检查事实安全、技巧重复、Serious Mode 约束与可接续性，不重新判断或替换 Primary Action。
-6. 按语义功能、节奏、阶段和用户习惯决定一个或两个气泡，不按字符数切分。
-7. 内部比较少量同动作候选，检查事实、边界、承诺、可退出性和可接续性，只展示一个首选。
+4. 按 `primary_action` 与 `realization_permissions` 加载所需 provider：`PLAY` 才加载 Humor；`TOPIC_SHIFT` 或获准 `SHARE` 需要从已确认事实整理素材时才加载 Hook material；`INVITE` 或其他获准动作确需结构时才加载对应 practical component。
+5. 用 `current_style`、actual-send 模式、明确舒适度反馈和 `avoid_styles` 推断当前 Comfortable Range；`target_style` 只提供用户认可的方向，默认只选一个 small stretch。
+6. 组装少量同动作候选；按语义功能、节奏和用户习惯决定一个或两个气泡，不按字符数切分。
+7. 对每个候选执行完整 Realization Validation；通过才展示一个首选，失败按同动作修复或拒绝流程处理。
 
 ## Fact Safety
 
@@ -244,14 +312,23 @@ confirmed Memory 按 scope 使用：
 
 ## Realization Validation
 
-Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选择。本文件只验证候选有没有越权：
+Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选择。本文件逐项验证候选，不凭“读起来不错”跳过任何一项：
+
+1. **action fidelity**：候选的主要效果仍是 `primary_action`，没有暗中换动作；
+2. **supporting function permission**：每个辅助功能都在 handoff 中显式许可且不与主动作竞争；
+3. **stop semantics**：`stop_conditions` 仍有效，`WAIT / LEAVE_SPACE / CLOSE` 的停止含义未被尾巴破坏；
+4. **fact safety**：第一人称事实、共同经历、偏好、计划与承诺都有可用证据；
+5. **style compatibility**：像用户本人，最多一个可承担的 small stretch；
+6. **ownership compatibility**：没有把本应交还的推进责任重新拿回来；
+7. **serious compatibility**：serious／vulnerable／repair 语境没有被玩笑、技巧或强行积极覆盖；
+8. **boundary / safety**：边界、拒绝、可退出性与安全约束没有被软化或绕过。
 
 - 非 `ASK` 候选不得偷偷用新问题承担续聊；supporting question 必须已获明确许可且不改变主动作；
 - 不得擅自加入未获许可的 `TOPIC_SHIFT`、`INVITE` 或新 hook；
 - `LEAVE_SPACE` 候选不得重新制造接续义务，`WAIT` 不得输出可发送的新消息；
 - serious、boundary 或事实约束必须在措辞中保持有效。
 
-候选若与 selected Primary Action 或当前硬约束发生实质冲突，应拒绝该候选并返回 Decision Layer 重新决定；Natural Reply Core 不得静默改成另一个 Primary Action。
+“那我先等等”“先不打扰你啦”等句子本身是可发送消息，不能包装成 `WAIT` candidate。`WAIT` 的用户可见结果只能是助手对用户的建议，例如“现在先别发，等对方回应”，且不得用引号伪装成目标回复。
 
 对略高于当前稳定能力的候选，再做可接续性测试：
 
@@ -268,6 +345,14 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 ```
 
 如果后续必须再生成更高级台词、用户不理解潜台词、无法回到真实内容或线下不敢承担核心意思，候选失败。在同一 Primary Action 内降低 E 或换无技巧实现；若无法合规实现，返回 Decision Layer，而不是在本层换动作。
+
+## Validation outcome 与 failure handling
+
+- **PASS**：候选通过八项验证，返回一个 sendable candidate；`WAIT` 例外地返回 no sendable candidate。
+- **Type A / REPAIRABLE**：Primary Action 仍成立，失败来自具体实现。只允许 same-action repair，保持 handoff 的 action、supporting permissions、hard constraints 与 stop conditions；修复后重新跑完整验证。
+- **Type B / REJECT**：同一动作已没有安全、真实、合规实现。返回 rejected primary action、rejection reason 与原 Conversation State；不得附带 replacement action 或在下游直接生成另一动作候选。
+
+Type A 修复仍不通过时升级为 Type B。Decision Layer 把 rejection reason 作为当前轮临时约束重决策；没有新证据时不得再次选择同一 action + 同一 reason。Natural Reply 只消费新的 handoff，不维护重试计数，也不参与替代动作选择。
 
 ## 表达重复检测
 
@@ -345,7 +430,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 3. 从观察式幽默、callback、轻度调侃、playful framing、其他技巧或无技巧 `PLAY` 中选择一种实现；先检查当前对象近期重复。
 4. 检查“一起笑，不是笑对方”：去掉表情后仍不应像羞辱。
 5. 保留出口，并验证用户能承担积极接梗、反调侃、普通回应或不接梗。
-6. 候选若与 serious、boundary、ownership 或 fact safety 冲突，拒绝 realization 并返回 Decision Layer；不得在本文件内选择替代 Primary Action。
+6. 候选若只是技巧重复或具体实现失误，在同一 `PLAY` 与原 handoff permissions 内修复；若 `PLAY` 本身与 serious、boundary、ownership 或 fact safety 冲突，作为 Type B 拒绝 realization 并返回 Decision Layer，同时携带 reason；不得在本文件内选择替代 Primary Action。
 
 ## 轻度调侃四问
 
@@ -354,7 +439,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 - 对方不接时，这句话能自然当成普通评论过去吗？
 - 用户被反调侃时能轻松承认、回到内容，而不是争输赢吗？
 
-任一答案不理想，就在同一 `PLAY` 内降低强度、换无技巧实现；无法合规实现时返回 Decision Layer，不改选其他动作。
+任一答案不理想，就把它视为 Type A，在同一 `PLAY` 内降低强度、改用观察式幽默或 technique-free `PLAY`；仍无法合规实现时转为 Type B 返回 Decision Layer，不改选其他动作。
 
 ## 重复检测
 
@@ -390,7 +475,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 
 训练用户主动提供聊天素材，而不只等待对方说话后承接。主动不是抢话或高频输出，而是创造对方容易加入的真实线程。
 
-本文件只在本轮确实需要主动开题或打断 interview mode 时使用。先由 `关系阶段与聊天节奏.md` 提供 continuation ownership 证据，再由 `回复决策与对话流.md` 许可 `SHARE`、`ASK`、`TOPIC_SHIFT` 或 `INVITE`，最后才在需要时提供素材。普通回应、`WAIT`、`LEAVE_SPACE` 或 `CLOSE` 不附加 hook。hook 是可接入口，不是每轮续命义务；素材很好也不能反向授权动作。
+本文件只在 Decision Handoff 已选择并许可需要素材的动作后使用：先由 `关系阶段与聊天节奏.md` 提供 continuation ownership 证据，再由 `回复决策与对话流.md` 选择 `SHARE`、`TOPIC_SHIFT` 或其他获准动作，最后才按 handoff 提供 material。它不生成最终候选，不补 supporting question／invite，也不因素材可用触发路由。普通回应、`WAIT`、`LEAVE_SPACE` 或 `CLOSE` 不附加 hook；素材很好也不能反向授权动作。
 
 ## 素材来源
 

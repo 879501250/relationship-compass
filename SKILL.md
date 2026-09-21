@@ -51,9 +51,9 @@ Local 与 ChatGPT 的共同底线以 `shared/CORE_POLICY.md` 和 `shared/FACT_HY
 
 ## 内部回复主路径
 
-回复请求内部完成：识别深度 → 硬约束与关系策略 → Decision Sufficiency gate（不足才 Guided Interview）→ Conversation State → 只由 `回复决策与对话流.md` 选择 Primary Action → 下游实现首选。serious／repair、Current Action、ownership 与即时目标只在该层参与选择；hook、幽默、practical 与成长目标不能授权或替换动作。
+所有回复入口统一走 `DECISION_REALIZATION_FLOW_V1`：硬约束 → Decision Sufficiency（不足才 Guided Interview）→ Conversation State → 只由 `回复决策与对话流.md` 选择 Primary Action／产生 handoff → 按动作 realization → Natural Reply 校验。失败先 same-action repair；动作冲突返回 Decision Layer。草稿和训练标签不能绕过 selector 或授权动作。
 
-用户先分析、随后问“现在怎么回”时，把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 作为关系级约束送入 Decision Layer，再由自然回复生成器实现；不得建立第二套 selector。单纯回复请求仍按 reply-first，只在内部使用必要状态。
+分析后回复把 Evidence → Stage + Trend → Evidence Strength／Conflict → Current Action 送回同一 Decision Layer；reply-first 只隐藏内部状态。
 
 Serious Mode 分两层：在 Decision Layer 可抑制 `PLAY`、无必要 `ASK`、`TOPIC_SHIFT`；在下游只降低幽默、暧昧、反问、技巧感和强行积极，提高准确、直接与清晰。Natural Reply 不得据此换动作；serious 不等于长篇安慰。
 
@@ -64,7 +64,7 @@ Serious Mode 分两层：在 Decision Layer 可抑制 `PLAY`、无必要 `ASK`�
 - 按当前对象检查近期技巧重复；同一种假装严肃、一本正经胡说、callback、playful framing 等高频出现时，换自然方式或不用技巧。
 - 线上可比线下主动丰富，但事实、观点、情绪和关系含义必须能在线下用更朴素的话承担。
 
-回复类先读 `references/personal/回复决策与对话流.md`，动作确定后读 `references/personal/自然回复生成器.md`。按需追加：`PLAY` 读 `references/personal/幽默与调侃生成器.md`；获准 `SHARE / TOPIC_SHIFT` 且缺素材才读 `references/personal/主动话题与conversation-hook.md`；`INVITE` 需结构才读 practical。
+回复类先读 `references/personal/回复决策与对话流.md`，动作确定后读 `references/personal/自然回复生成器.md`。按需追加：`PLAY` 读 `references/personal/幽默与调侃生成器.md`；获准 `SHARE / TOPIC_SHIFT` 且需素材才读 `references/personal/主动话题与conversation-hook.md`；`INVITE` 需结构才读 practical。`WAIT` 不生成候选。
 
 ## Continuation ownership
 

@@ -16,5 +16,7 @@
 12. `expression level is contextual`：E1–E5 只描述当前消息的表达强度，不是 Stage、Trend、反馈或用户成长等级，也不得从它们机械映射。
 13. `decision before realization`：先应用安全／边界等硬约束，再用 decision sufficiency gate 判断是否需要补证据；信息足够后，才依据 serious／repair、Current Action 和 continuation ownership 选择一个主动作，最后决定措辞、气泡、幽默、暧昧或 hook。知识、素材与技巧不能反向授权行动。
 14. `single action selector`：只有 `references/personal/回复决策与对话流.md` 可选择 turn-level Primary Action。关系状态与投入模块只提供 Current Action／约束；Natural Reply、Humor、Hook、Expression Upgrader 与 practical references 只实现、校验或训练。下游冲突时拒绝候选并返回 Decision Layer，不得静默换动作。
+15. `decision handoff before providers`：所有回复入口都先产生同一份单轮、临时 Decision Handoff，再按已选动作加载需要的 realization provider；未获许可的 Humor、Hook、practical 或 supporting function 不得进入候选。
+16. `bounded realization lifecycle`：候选先验证 action fidelity、permission、stop semantics、fact、style、ownership、serious 与 boundary／safety。实现瑕疵只做 same-action repair；动作本身无法安全或真实实现时返回 Decision Layer，并把拒绝原因作为当前轮临时约束。状态无变化时不得以相同原因立即重选同一动作。
 
 具体分类见 `FACT_HYPOTHESIS_POLICY.md`。跨系统 checkpoint 必须由用户审核，并且一份 checkpoint 只对应一个对象。
