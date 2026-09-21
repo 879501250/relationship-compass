@@ -59,16 +59,29 @@ Conversation Ownership 看当前互动贡献与近期模式，不用固定消息
 
 `FLIRT`、`JOKE`、`TEASE`、`CALLBACK` 不是顶层动作。它们只能在 `PLAY` 或少数已获许可的 `SHARE` 实现中作为风格手段，且不得改变主动作、绕过边界或制造 persona jump。
 
-## 单一主动作与 supporting function
+## Composition Gating
 
-主动作回答“这轮主要改变什么”。Supporting function 只帮助主动作落地，不能偷偷建立第二个目标。例如：
+`Architecture Marker: COMPOSITION_GATING_V1`
 
-- `EMPATHIZE` 可以先用一句 `ACKNOWLEDGE` 承接事实，但不能再附带 `PLAY` 或强行转题。
-- `SHARE` 可以先回应对方一句，但分享才是本轮增加的核心价值。
-- `LEAVE_SPACE` 可以包含简短 acknowledgment；一旦加入新问题、邀约或 hook，就不再是留空间。
-- `REPAIR` 可以带澄清，但澄清只服务于修复，不把责任辩解掉。
+任何成品回复都只能按以下结构组合：
 
-语气、幽默机制、暧昧程度、emoji、气泡数、措辞和 E 属于 realization。不要因为一句话同时有两个语义功能，就把它解释成两个 Primary Action；也不要把多个彼此竞争的目标硬塞进同一轮。
+```text
+one Primary Action
++ 0..N explicitly permitted supporting functions
++ realization components
+```
+
+主动作回答“这轮主要改变什么”。Supporting function 只帮助主动作落地，不是 secondary action、`actions[]` 或另一套 taxonomy；它不能改变主要目标、建立新的 conversation objective，或与 Primary Action 竞争。每个 supporting function 必须由本 Decision Layer 根据当前 Conversation State **显式许可**，不得由 Natural Reply、Humor、Hook、practical 的流程、示例或好素材自动生成。
+
+- `EMPATHIZE` 可以获准一句 supporting acknowledgment；只有本层另行许可 supporting `ASK` 时，才可附一个低负担问题。
+- `SHARE` 可以获准 supporting acknowledgment；第一人称内容仍须有 confirmed fact，模板里出现故事不构成 `SHARE` permission。
+- `REPAIR` 可以获准 supporting clarification，但澄清只能服务修复，不能把责任辩解掉。
+- `ASK / TOPIC_SHIFT / INVITE / PLAY` 属于高推进功能：无论作为 Primary Action 还是 supporting function，都必须有本层明确 permission；practical 不得因为“延续、救场、主动、好玩或聊得顺”自动增加。
+- `LEAVE_SPACE` 只可带不制造接续义务的 acknowledgment；`CLOSE` 不加尾钩；`WAIT` 不产生任何可发送消息。三者都禁止 question、hook、invite、topic extension 或 playfulness 覆盖其语义。
+
+语气、幽默机制、暧昧程度、emoji、气泡数、措辞和 E 属于 realization。不要因为一句话同时有两个语义功能，就把它解释成两个 Primary Action；也不要把多个彼此竞争的目标硬塞进同一轮。Serious／vulnerable／repair／boundary 与 fact safety 约束始终保留，不能因“更有情绪价值”或“更自然”自动追加技巧。
+
+下游验证顺序固定为：先在同一动作与已许可 supporting functions 内做 `same-action repair`；仍冲突则 `reject candidate → return Decision Layer`。下游不得自行补一个 supporting function，也不得静默重选动作。
 
 用户已有自然、安全且符合边界的草稿时，识别它实际在完成的主动作即可；taxonomy 不构成重写理由。
 

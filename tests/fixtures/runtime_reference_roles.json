@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "inventory_scope": "test-time architecture inventory; not a production or memory schema",
+  "roles": {
+    "CANONICAL_SELECTOR": [
+      "references/personal/回复决策与对话流.md"
+    ],
+    "CONSTRAINT_PROVIDER": [
+      "SKILL.md",
+      "chatgpt-project/PROJECT_INSTRUCTIONS.md",
+      "references/personal/关系阶段与聊天节奏.md",
+      "references/personal/投入预算与停止条件.md",
+      "references/practical/关系投入失衡：互惠判断、降级投入与退出决策.md",
+      "shared/CORE_POLICY.md"
+    ],
+    "EVIDENCE_PROVIDER": [
+      "references/curated/INDEX.md",
+      "references/curated/attraction.md",
+      "references/curated/boundaries.md",
+      "references/curated/conflict-and-repair.md",
+      "references/curated/conversation.md",
+      "references/curated/intimacy.md",
+      "references/curated/personal-growth.md",
+      "references/curated/relationship-start.md",
+      "references/knowledge/01-证据分级与内容边界.md",
+      "references/knowledge/02-亲密关系心理学总论.md",
+      "references/knowledge/03-依恋理论与情绪调节.md",
+      "references/knowledge/04-MBTI人格与匹配.md",
+      "references/knowledge/06-吸引约会与关系启动.md",
+      "references/knowledge/09-在线约会与数字关系.md",
+      "references/knowledge/11-婚姻家庭与生命周期.md",
+      "references/knowledge/12-金钱家务育儿与双方家庭.md",
+      "references/knowledge/13-现代婚姻变迁史.md",
+      "references/knowledge/14-社会发展与家庭变迁.md",
+      "references/knowledge/19-核心书单与论文索引.md",
+      "references/personal/memory_lifecycle.md",
+      "references/personal/微信截图解析协议.md",
+      "references/personal/缺失上下文与高信息量追问.md",
+      "references/practical/长期记忆与关系档案.md",
+      "references/practical/ChatLab聊天记录分析适配.md",
+      "shared/FACT_HYPOTHESIS_POLICY.md"
+    ],
+    "REALIZATION_PROVIDER": [
+      "references/personal/主动话题与conversation-hook.md",
+      "references/personal/幽默与调侃生成器.md",
+      "references/personal/自然回复生成器.md"
+    ],
+    "COMPOSITION_PROVIDER": [
+      "references/practical/00-导读与使用分级.md",
+      "references/practical/被孤立如何破局：从自我调适到建立连接的实用指南.md",
+      "references/practical/废话文学回复指南：轻松应对各类场景.md",
+      "references/practical/高情商拒绝他人：体面护边界的实用指南.md",
+      "references/practical/公开表达案例的伦理转译.md",
+      "references/practical/化解尴尬：轻松救场的实用指南.md",
+      "references/practical/获得领导青睐：从价值匹配到信任建立的实用指南.md",
+      "references/practical/聊天化被动为主动：引导互动的实用指南.md",
+      "references/practical/巧妙接话技巧：让沟通更流畅的实用指南.md",
+      "references/practical/实战话术编排器：从一句回复到后续分支.md",
+      "references/practical/托人办事的高效话术指南.md",
+      "references/practical/万能吵架技巧：理性冲突处理指南.md",
+      "references/practical/万能夸人的话术技巧：真诚认可的实用指南.md",
+      "references/practical/为他人提供情绪价值：温暖且有效的回应指南.md",
+      "references/practical/有效拓展人脉：从建立到维护的实用指南.md",
+      "references/practical/主动表达、第一次见面与自然接触.md"
+    ],
+    "STYLE_GROWTH_PROVIDER": [
+      "references/personal/成长状态与记忆适配.md",
+      "references/personal/网络聊天表达升级器.md",
+      "references/practical/提高气场：从内到外的力量感塑造指南.md",
+      "references/practical/提升表达逻辑性：从混乱到清晰的实用指南.md"
+    ],
+    "REVIEW_TRAINING_ONLY": [
+      "references/knowledge/10-恋爱哲学.md",
+      "references/knowledge/18-实用练习与对话卡.md",
+      "references/knowledge/20-经典社交体系的机制、证据与风险边界.md",
+      "references/personal/复盘模式与实际发送学习闭环.md",
+      "references/practical/场景感、松弛感与社交校准：从接话到关系推进.md",
+      "references/practical/自然流、内在状态与结构化互动：伦理能力转译.md"
+    ],
+    "SAFETY_KNOWLEDGE": [
+      "references/knowledge/05-PUA操控与伦理替代.md",
+      "references/knowledge/07-沟通冲突与修复.md",
+      "references/knowledge/08-同意边界性与亲密.md",
+      "references/knowledge/15-分手背叛与关系修复.md",
+      "references/knowledge/16-多元关系与反刻板印象.md",
+      "references/knowledge/17-中国法律安全与危机转介.md"
+    ],
+    "GENERATED_MIRROR": [
+      "chatgpt-project/generated-knowledge/01-CORE_POLICY.md",
+      "chatgpt-project/generated-knowledge/02-DAILY_CONVERSATION.md",
+      "chatgpt-project/generated-knowledge/03-RELATIONSHIP_SIGNALS.md",
+      "chatgpt-project/generated-knowledge/04-GROWTH_AND_REVIEW.md",
+      "chatgpt-project/generated-knowledge/05-SAFETY_AND_EVIDENCE.md",
+      "chatgpt-project/generated-knowledge/06-CURATED_CLAIMS.md"
+    ]
+  },
+  "non_runtime_roots": [
+    "knowledge-management/",
+    "model_evals/",
+    "research/",
+    "scripts/",
+    "sync/",
+    "tests/"
+  ]
+}

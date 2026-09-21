@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from eval_console.test_runner import TestSuiteRequest, TestSuiteRunner
 from date_utils import normalize_iso8601
 from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
+from check_decision_layer_ownership import collect_errors as collect_ownership_errors
 from knowledge_intake import KnowledgeIntakeError, parse_proposal
 from knowledge_schema import KnowledgeSchemaError, load_registry, stable_claim_id
 from run_model_evals import command_validate as validate_model_eval_command
@@ -143,6 +144,7 @@ def validate_inventory(runtime_only: bool) -> None:
     require("scripts/run_tests.py")
     require("scripts/run_contract_evals.py")
     require("scripts/run_model_evals.py")
+    require("scripts/check_decision_layer_ownership.py")
     require("scripts/knowledge_schema.py")
     require("scripts/knowledge_intake.py")
     require("scripts/knowledge_merge.py")
@@ -167,6 +169,7 @@ def validate_inventory(runtime_only: bool) -> None:
         require_test_suite("tests/unit")
         require_test_suite("tests/integration")
         require("tests/unit/test_repository_convergence.py")
+        require("tests/fixtures/runtime_reference_roles.json")
         require("model_evals/cases.yaml")
         require("model_evals/rubric.yaml")
         require("model_evals/README.md")
@@ -310,6 +313,11 @@ def validate_runtime_boundaries() -> None:
                 ERRORS.append(f"non-runtime content inside runtime allowlist: {path.relative_to(ROOT)}")
             if path.is_file() and path.suffix in {".pyc", ".pyo"}:
                 ERRORS.append(f"compiled artifact found: {path.relative_to(ROOT)}")
+
+
+def validate_decision_layer_ownership() -> None:
+    for error in collect_ownership_errors(ROOT):
+        ERRORS.append(f"decision-layer ownership: {error}")
 
 
 def validate_curated_knowledge(runtime_only: bool) -> None:
@@ -615,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     validate_inventory(runtime_only)
     validate_routes_and_invariants()
     validate_runtime_boundaries()
+    validate_decision_layer_ownership()
     validate_curated_knowledge(runtime_only)
     validate_chatgpt_pack(runtime_only)
     validate_markdown_links()

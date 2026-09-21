@@ -58,7 +58,7 @@ E1–E5 只描述当前消息的个人表达、情绪暴露和关系指向强度
 - yellow：持续低投入、反复不延展、回避同一推进方向或轻度不适；
 - red：明确停止、边界、不欢迎、危险或操控。
 
-gray 不自动降级，也不自动乐观。yellow 降低表达或投入；red 停止推进。不要用固定回复小时数、单次表情或 MBTI 直接判断兴趣。
+gray 不自动降级，也不自动乐观。yellow 形成降低表达或投入的 constraint；red 形成禁止对应推进方向的 hard constraint。二者都不直接选择当前 turn action，仍由 Decision Layer 决定具体 Primary Action。不要用固定回复小时数、单次表情或 MBTI 直接判断兴趣。
 
 这些颜色只门控当前互动或行动，不自动升降 Stage，也不能替代 Recent Trend 或 Evidence Strength。信息不足时 Trend 输出“信息不足”，即使内部行动门控同时是 gray。
 

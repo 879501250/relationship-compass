@@ -4,6 +4,7 @@
 
 ### Added
 
+- v1.7-B1 Closure Audit 的 test-time runtime role registry 与 Decision Layer ownership checker；覆盖 canonical、practical、knowledge、curated、ChatGPT instructions 和生成镜像，不引入生产 schema。
 - v1.7 开发中的 Response Decision foundation：新增统一 Conversation State、有限 Primary Action taxonomy、单主动作约束以及 `WAIT / LEAVE_SPACE / CLOSE` 语义边界；这不代表完整 v1.7 已完成。
 - Contract Eval 覆盖连续追问、自然收线、已发送后等待、interview mode、hook 与 ownership、草稿保留及安全可逆动作；Behavioral Stress 新增两个高价值 Decision Layer 场景，未运行真实模型 API。
 - Moonshot/Kimi 国际官方 origin `https://api.moonshot.ai` 纳入 verified-direct registry，保留中国 origin，并增加双 endpoint、relay/伪域名、模型身份及禁止区域切换的离线回归；不代表所有 Kimi capability 已真实 smoke。
@@ -15,6 +16,7 @@
 
 ### Changed
 
+- v1.7-B1 Closure Audit 正式定义 Composition Gating，并将情绪价值、巧妙接话、聊天主动化及其余扫描命中的 practical／knowledge 流水线收敛为 permission-gated components；B1 至此封版，但未进入 B2，也不代表完整 v1.7 已完成。
 - v1.7-B1.1 Selector Leak Closure 清理 Humor repetition、自然流／主动档位、feedback 表格与 practical composition pattern 中的残留 turn-action fallback；失败候选只在同一动作内改 realization，或返回 Decision Layer，未进入 v1.7-B2。
 - v1.7-B1 Selector Consolidation 确立 `回复决策与对话流.md` 为唯一 turn-level Primary Action selector；Humor、Hook、Natural Reply、Expression Upgrader、Investment 与 practical references 分别收敛为 realization、style/growth 或 relationship constraint provider，未进入 v1.7-B2。
 - v1.7-A.1 Decision Layer Stabilization 将 Decision Sufficiency 从动作优先级分离为 gate，明确 relationship-level Current Action 只约束 turn-level Primary Action，并清理 Skill、Natural Reply Core 与 hook 中的重复 selector。

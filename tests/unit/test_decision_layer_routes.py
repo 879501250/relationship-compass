@@ -14,6 +14,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as model_runner  # noqa: E402
+import check_decision_layer_ownership as ownership  # noqa: E402
 
 
 def read(relative_path: str) -> str:
@@ -25,6 +26,44 @@ def section(content: str, heading: str, next_heading: str) -> str:
 
 
 class DecisionLayerOwnershipTests(unittest.TestCase):
+    def test_runtime_role_registry_covers_every_reachable_reference_once(self) -> None:
+        declared = ownership.load_role_registry()
+        discovered = ownership.discover_runtime_references()
+
+        self.assertEqual(set(declared), discovered)
+        self.assertGreater(len(declared), 1)
+        self.assertEqual(
+            [path for path, role in declared.items() if role == "CANONICAL_SELECTOR"],
+            [ownership.CANONICAL_SELECTOR],
+        )
+
+    def test_runtime_roles_keep_material_style_and_practical_downstream(self) -> None:
+        roles = ownership.load_role_registry()
+
+        self.assertEqual(
+            roles["references/personal/幽默与调侃生成器.md"],
+            "REALIZATION_PROVIDER",
+        )
+        self.assertEqual(
+            roles["references/personal/主动话题与conversation-hook.md"],
+            "REALIZATION_PROVIDER",
+        )
+        self.assertEqual(
+            roles["references/personal/投入预算与停止条件.md"],
+            "CONSTRAINT_PROVIDER",
+        )
+        self.assertFalse(
+            [
+                path
+                for path, role in roles.items()
+                if path.startswith("references/practical/")
+                and role == "CANONICAL_SELECTOR"
+            ]
+        )
+
+    def test_closure_checker_has_no_unresolved_ownership_leak(self) -> None:
+        self.assertEqual(ownership.collect_errors(), [])
+
     def test_decision_layer_keeps_the_only_exact_action_taxonomy(self) -> None:
         decision = read("references/personal/回复决策与对话流.md")
         self.assertIn("唯一决策层", decision)
@@ -49,6 +88,23 @@ class DecisionLayerOwnershipTests(unittest.TestCase):
             },
         )
         self.assertIn("Module Ownership Matrix", decision)
+
+    def test_composition_gating_protects_progression_and_stop_actions(self) -> None:
+        decision = read("references/personal/回复决策与对话流.md")
+        composition = section(decision, "## Composition Gating", "## 决策协议")
+
+        self.assertIn("Architecture Marker: COMPOSITION_GATING_V1", composition)
+        self.assertRegex(
+            composition,
+            r"one Primary Action[\s\S]+0\.\.N explicitly permitted supporting functions",
+        )
+        self.assertRegex(composition, r"ASK / TOPIC_SHIFT / INVITE / PLAY[\s\S]+permission")
+        for protected_action in ("WAIT", "LEAVE_SPACE", "CLOSE"):
+            self.assertIn(protected_action, composition)
+        self.assertRegex(
+            composition,
+            r"same-action repair[\s\S]+reject candidate → return Decision Layer",
+        )
 
     def test_realization_modules_cannot_replace_the_selected_action(self) -> None:
         natural = read("references/personal/自然回复生成器.md")
@@ -149,6 +205,38 @@ class DecisionLayerOwnershipTests(unittest.TestCase):
         self.assertIn("不是顺序升级漏斗", public_examples)
         self.assertIn("只有 `Primary Action = INVITE`", public_examples)
         self.assertIn("尴尬类型只能形成 training diagnosis／realization constraint", awkward)
+
+    def test_emotional_value_components_gate_questions_and_fact_safe_sharing(self) -> None:
+        content = read("references/practical/为他人提供情绪价值：温暖且有效的回应指南.md")
+        gating = section(content, "## Component Library 与 Composition Gating", "```mindmap")
+
+        self.assertIn("Architecture Marker: PRACTICAL_COMPOSITION_GATING_V1", gating)
+        self.assertRegex(gating, r"Question component[\s\S]+supporting `ASK`")
+        self.assertRegex(gating, r"Share component[\s\S]+confirmed fact")
+        self.assertGreaterEqual(content.count("Permission："), 10)
+
+    def test_conversation_components_separate_question_share_and_extension(self) -> None:
+        content = read("references/practical/巧妙接话技巧：让沟通更流畅的实用指南.md")
+        library = section(content, "## Component Library", "```mindmap")
+
+        for component in (
+            "Acknowledgment component",
+            "Question component",
+            "Share component",
+            "Topic extension component",
+        ):
+            self.assertIn(component, library)
+        self.assertRegex(library, r"Question component[\s\S]+ASK")
+        self.assertRegex(library, r"Share component[\s\S]+confirmed fact")
+
+    def test_active_chat_library_does_not_turn_share_into_ask_or_invite(self) -> None:
+        content = read("references/practical/聊天化被动为主动：引导互动的实用指南.md")
+        library = section(content, "## Component Library 与 Permission Gate", "```mindmap")
+
+        self.assertRegex(library, r"Share component[\s\S]+share 不自动附问题")
+        self.assertRegex(library, r"Topic material[\s\S]+Primary Action = TOPIC_SHIFT")
+        self.assertRegex(library, r"Invite component[\s\S]+Primary Action = INVITE")
+        self.assertRegex(library, r"WAIT[\s\S]+LEAVE_SPACE / CLOSE")
 
 
 if __name__ == "__main__":
