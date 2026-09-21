@@ -2271,6 +2271,18 @@ def _print_progress(phase: str, record: dict[str, object], completed: int, total
     symbol = f"[{_result_label(phase, record)}]"
     suffix = f" ({record['error_code']})" if record.get("error_code") else ""
     print(f"  {symbol} {_phase_label(phase)} {completed}/{total}: {case_id} - {status}{suffix}")
+    if record.get("error_code") == "NETWORK_ERROR":
+        telemetry = record.get("http_telemetry")
+        retries = (
+            telemetry.get("retry_count", 0)
+            if isinstance(telemetry, dict)
+            else 0
+        )
+        retry_count = retries if isinstance(retries, int) and retries > 0 else 0
+        print("    NETWORK_ERROR：远端连接在响应完成前关闭或中断。")
+        if retry_count:
+            print(f"    已自动重试 {retry_count} 次。")
+        print("    本 Case 已保存，可通过 Resume 重试。")
 
 
 def _print_outcome(outcome: object) -> None:

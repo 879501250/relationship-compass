@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import math
 import os
 import queue
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -86,6 +88,12 @@ REFERENCE_QUALIFICATIONS = {
 }
 COMPARABILITY_LEVELS = {"COMPARABLE", "PARTIALLY_COMPARABLE", "NOT_COMPARABLE"}
 RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0)
+RETRYABLE_TRANSPORT_EXCEPTIONS = (
+    http.client.RemoteDisconnected,
+    ConnectionError,
+    http.client.IncompleteRead,
+    ssl.SSLEOFError,
+)
 MAX_RETRY_AFTER_SECONDS = 30.0
 RESPONSIVE_PROVIDER_POLL_SECONDS = 0.1
 PROVIDER_ROLE_DEFAULTS = {
@@ -1727,6 +1735,51 @@ class HTTPJSONProvider:
             retry_delay_sources.append(source)
             return selected_delay
 
+        def retry_transport_failure(
+            error: BaseException, *, is_timeout: bool
+        ) -> ProviderError | None:
+            """Retry one classified transport failure or return its final error."""
+            nonlocal retry_count
+            if attempt < self.max_retries:
+                retry_count += 1
+                selected_delay = record_selected_retry_delay(
+                    RETRY_DELAYS_SECONDS[attempt], "fallback_backoff"
+                )
+                self._wait_for_retry(selected_delay, rate_limited=False)
+                return None
+            safe_diagnostics = {
+                "http_telemetry": http_attempt_telemetry(
+                    attempts=attempt + 1,
+                    retry_count=retry_count,
+                    rate_limit_count=rate_limit_count,
+                    retry_delays_seconds=retry_delays_seconds,
+                    retry_delay_sources=retry_delay_sources,
+                    retry_after_values=retry_after_values,
+                    final_http_status=None,
+                    recovered_after_retry=False,
+                )
+            }
+            if is_timeout:
+                return ProviderTimeout(safe_diagnostics=safe_diagnostics)
+            message = (
+                "remote connection closed before response completed"
+                if isinstance(
+                    error,
+                    (
+                        http.client.RemoteDisconnected,
+                        http.client.IncompleteRead,
+                        ssl.SSLEOFError,
+                    ),
+                )
+                else "provider network error"
+            )
+            return ProviderError(
+                message,
+                code="NETWORK_ERROR",
+                retryable=True,
+                safe_diagnostics=safe_diagnostics,
+            )
+
         for attempt in range(self.max_retries + 1):
             try:
                 with self._urlopen(request, timeout=self.timeout_seconds) as response:
@@ -1842,70 +1895,21 @@ class HTTPJSONProvider:
                     safe_diagnostics=safe_diagnostics,
                 ) from exc
             except (TimeoutError, socket.timeout) as exc:
-                if attempt < self.max_retries:
-                    delay = RETRY_DELAYS_SECONDS[attempt]
-                    retry_count += 1
-                    selected_delay = record_selected_retry_delay(
-                        delay, "fallback_backoff"
-                    )
-                    self._wait_for_retry(selected_delay, rate_limited=False)
+                error = retry_transport_failure(exc, is_timeout=True)
+                if error is None:
                     continue
-                raise ProviderTimeout(
-                    safe_diagnostics={
-                        "http_telemetry": http_attempt_telemetry(
-                            attempts=attempt + 1,
-                            retry_count=retry_count,
-                            rate_limit_count=rate_limit_count,
-                            retry_delays_seconds=retry_delays_seconds,
-                            retry_delay_sources=retry_delay_sources,
-                            retry_after_values=retry_after_values,
-                            final_http_status=None,
-                            recovered_after_retry=False,
-                        )
-                    }
-                ) from exc
+                raise error from exc
+            except RETRYABLE_TRANSPORT_EXCEPTIONS as exc:
+                error = retry_transport_failure(exc, is_timeout=False)
+                if error is None:
+                    continue
+                raise error from exc
             except urllib.error.URLError as exc:
                 is_timeout = isinstance(exc.reason, (TimeoutError, socket.timeout))
-                if attempt < self.max_retries:
-                    delay = RETRY_DELAYS_SECONDS[attempt]
-                    retry_count += 1
-                    selected_delay = record_selected_retry_delay(
-                        delay, "fallback_backoff"
-                    )
-                    self._wait_for_retry(selected_delay, rate_limited=False)
+                error = retry_transport_failure(exc, is_timeout=is_timeout)
+                if error is None:
                     continue
-                if is_timeout:
-                    raise ProviderTimeout(
-                        safe_diagnostics={
-                            "http_telemetry": http_attempt_telemetry(
-                                attempts=attempt + 1,
-                                retry_count=retry_count,
-                                rate_limit_count=rate_limit_count,
-                                retry_delays_seconds=retry_delays_seconds,
-                                retry_delay_sources=retry_delay_sources,
-                                retry_after_values=retry_after_values,
-                                final_http_status=None,
-                                recovered_after_retry=False,
-                            )
-                        }
-                    ) from exc
-                raise ProviderError(
-                    "provider network error",
-                    code="NETWORK_ERROR",
-                    retryable=True,
-                    safe_diagnostics={
-                        "http_telemetry": http_attempt_telemetry(
-                            attempts=attempt + 1,
-                            retry_count=retry_count,
-                            rate_limit_count=rate_limit_count,
-                            retry_delays_seconds=retry_delays_seconds,
-                            retry_delay_sources=retry_delay_sources,
-                            retry_after_values=retry_after_values,
-                            final_http_status=None,
-                            recovered_after_retry=False,
-                        )
-                    },
-                ) from exc
+                raise error from exc
         raise ProviderError("provider request failed")
 
     def _check_reported_model(self, reported_model: str | None) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 import json
 import io
 import sys
@@ -18,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as runner  # noqa: E402
-from eval_console.cli import _ActivityReporter, _result_label  # noqa: E402
+from eval_console.cli import _ActivityReporter, _print_progress, _result_label  # noqa: E402
 from eval_console.discovery import discover_evals, discover_provider_profiles, discover_runs  # noqa: E402
 from eval_console.models import CURRENT_CONSOLE_SCHEMA_VERSION, EvalRunRequest  # noqa: E402
 from eval_console.selection import CaseSelectionError, parse_case_selection  # noqa: E402
@@ -129,6 +130,25 @@ class CaseSelectionTests(unittest.TestCase):
             with self.subTest(expression=expression):
                 with self.assertRaisesRegex(CaseSelectionError, message):
                     parse_case_selection(expression, self.case_ids)
+
+    def test_network_error_progress_explains_retry_and_resume(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            _print_progress(
+                "TARGET",
+                {
+                    "case_id": "case-1",
+                    "status": "TARGET_ERROR",
+                    "error_code": "NETWORK_ERROR",
+                    "http_telemetry": {"retry_count": 2},
+                },
+                1,
+                1,
+            )
+        rendered = output.getvalue()
+        self.assertIn("NETWORK_ERROR：远端连接在响应完成前关闭或中断。", rendered)
+        self.assertIn("已自动重试 2 次。", rendered)
+        self.assertIn("本 Case 已保存，可通过 Resume 重试。", rendered)
 
 
 class DiscoveryAndExecutionTests(unittest.TestCase):

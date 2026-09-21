@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import os
+import ssl
 import sys
 import tempfile
 import unittest
@@ -689,6 +691,186 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
         )
         self.assertEqual(provider.generate(instructions="s", input_text="i").text, "ok")
         self.assertEqual(sleeps, [1.0, 2.0, 4.0])
+
+    def test_remote_disconnect_retries_and_records_recovery_telemetry(self) -> None:
+        events: list[Any] = [
+            http.client.RemoteDisconnected("closed"),
+            HTTPResponse({"status": "completed", "output_text": "ok"}),
+        ]
+        sleeps: list[float] = []
+
+        def opener(*_args: Any, **_kwargs: Any) -> Any:
+            event = events.pop(0)
+            if isinstance(event, Exception):
+                raise event
+            return event
+
+        provider = runner.OpenAIResponsesProvider(
+            api_key="key",
+            model="m",
+            max_retries=1,
+            urlopen=opener,
+            sleep=sleeps.append,
+        )
+        result = provider.generate(instructions="s", input_text="i")
+        self.assertEqual(result.text, "ok")
+        self.assertEqual(sleeps, [1.0])
+        telemetry = result.http_telemetry
+        self.assertEqual(telemetry["http_attempts"], 2)
+        self.assertEqual(telemetry["retry_count"], 1)
+        self.assertEqual(telemetry["retry_delays_seconds"], [1.0])
+        self.assertEqual(telemetry["final_http_status"], None)
+        self.assertTrue(telemetry["recovered_after_retry"])
+
+    def test_transport_failures_exhaust_as_retryable_network_errors(self) -> None:
+        transport_errors = (
+            http.client.RemoteDisconnected("closed"),
+            ConnectionResetError("reset"),
+            ConnectionAbortedError("aborted"),
+            ConnectionRefusedError("refused"),
+            BrokenPipeError("broken pipe"),
+            http.client.IncompleteRead(b"partial", 8),
+            ssl.SSLEOFError(8, "tls eof"),
+        )
+        for transport_error in transport_errors:
+            with self.subTest(error=type(transport_error).__name__):
+                sleeps: list[float] = []
+                provider = runner.OpenAIResponsesProvider(
+                    api_key="key",
+                    model="m",
+                    max_retries=2,
+                    urlopen=mock.Mock(side_effect=transport_error),
+                    sleep=sleeps.append,
+                )
+                with self.assertRaises(runner.ProviderError) as captured:
+                    provider.generate(instructions="s", input_text="i")
+                self.assertEqual(captured.exception.code, "NETWORK_ERROR")
+                self.assertTrue(captured.exception.retryable)
+                self.assertEqual(sleeps, [1.0, 2.0])
+                self.assertEqual(
+                    captured.exception.safe_diagnostics["http_telemetry"]["http_attempts"],
+                    3,
+                )
+
+    def test_timeout_remains_timeout_after_transport_refactor(self) -> None:
+        provider = runner.OpenAIResponsesProvider(
+            api_key="key",
+            model="m",
+            max_retries=0,
+            urlopen=mock.Mock(side_effect=TimeoutError("slow")),
+        )
+        with self.assertRaises(runner.ProviderError) as captured:
+            provider.generate(instructions="s", input_text="i")
+        self.assertEqual(captured.exception.code, "TIMEOUT")
+        self.assertTrue(captured.exception.retryable)
+
+    def test_transport_errors_persist_then_respect_continue_and_resume(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases(
+            [case for case in cases if case["suite"] == "core"][:2], criteria
+        )
+        events: list[Any] = [
+            http.client.RemoteDisconnected("closed"),
+            HTTPResponse({"status": "completed", "output_text": "second case"}),
+        ]
+
+        def opener(*_args: Any, **_kwargs: Any) -> Any:
+            event = events.pop(0)
+            if isinstance(event, Exception):
+                raise event
+            return event
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = self.run_dir(Path(temp_dir), "transport-continue")
+            provider = runner.OpenAIResponsesProvider(
+                api_key="key", model="m", max_retries=0, urlopen=opener
+            )
+            runner.execute_run(
+                prepared,
+                provider,
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+                continue_on_error=True,
+            )
+            records = runner.load_jsonl(run_dir / "responses.jsonl")
+            self.assertEqual(
+                [record["status"] for record in records],
+                ["TARGET_ERROR", "MODEL_RESPONSE"],
+            )
+            self.assertEqual(records[0]["error_code"], "NETWORK_ERROR")
+            self.assertTrue(records[0]["retryable"])
+            self.assertIsNotNone(records[0]["duration_seconds"])
+            self.assertIsNotNone(records[0]["completed_at"])
+            self.assertEqual(records[0]["http_telemetry"]["http_attempts"], 1)
+            self.assertEqual(records[1]["http_telemetry"]["http_attempts"], 1)
+
+            runner.execute_run(
+                prepared,
+                runner.OpenAIResponsesProvider(
+                    api_key="key",
+                    model="m",
+                    max_retries=0,
+                    urlopen=mock.Mock(
+                        side_effect=http.client.RemoteDisconnected("closed")
+                    ),
+                ),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+                resume=True,
+            )
+            resumed_records = runner.load_jsonl(run_dir / "responses.jsonl")
+            self.assertEqual(len(resumed_records), 3)
+            self.assertEqual(resumed_records[-1]["status"], "TARGET_ERROR")
+            self.assertEqual(resumed_records[-1]["attempt"], 2)
+
+    def test_transport_errors_persist_before_non_continue_stop_and_for_judge(self) -> None:
+        cases, criteria = runner.load_definitions()
+        prepared = runner.prepare_cases(
+            [case for case in cases if case["suite"] == "core"][:2], criteria
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stop_run_dir = self.run_dir(Path(temp_dir), "transport-stop")
+            runner.execute_run(
+                prepared,
+                runner.OpenAIResponsesProvider(
+                    api_key="key",
+                    model="m",
+                    max_retries=0,
+                    urlopen=mock.Mock(side_effect=http.client.RemoteDisconnected("closed")),
+                ),
+                stop_run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+                continue_on_error=False,
+            )
+            stopped_records = runner.load_jsonl(stop_run_dir / "responses.jsonl")
+            self.assertEqual(len(stopped_records), 1)
+            self.assertEqual(stopped_records[0]["status"], "TARGET_ERROR")
+
+            judge_run_dir = self.run_dir(Path(temp_dir), "transport-judge")
+            runner.execute_run(
+                [self.core],
+                RecordingProvider(["answer"]),
+                judge_run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+            )
+            runner.execute_judge(
+                judge_run_dir,
+                runner.OpenAIResponsesProvider(
+                    api_key="key",
+                    model="m",
+                    max_retries=0,
+                    urlopen=mock.Mock(side_effect=http.client.RemoteDisconnected("closed")),
+                ),
+                case_ids=runner.planned_judge_case_ids(judge_run_dir),
+            )
+            judgment = runner.load_jsonl(judge_run_dir / "judgments.jsonl")[0]
+            self.assertEqual(judgment["status"], "JUDGE_ERROR")
+            self.assertEqual(judgment["error_code"], "NETWORK_ERROR")
+            self.assertTrue(judgment["retryable"])
 
     def test_auth_error_is_not_retried(self) -> None:
         calls = 0
