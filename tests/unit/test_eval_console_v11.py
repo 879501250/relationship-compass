@@ -468,10 +468,12 @@ class ValidationRunnerTests(unittest.TestCase):
             runner.return_value.run.return_value = result
             validate_skill.validate_automated_test_suites(False)
         runner.assert_called_once_with(validate_skill.ROOT)
-        runner.return_value.run.assert_called_once_with(TestSuiteRequest())
-        self.assertIn("unit tests: PASS", output.getvalue())
-        self.assertIn("integration tests: PASS", output.getvalue())
-        self.assertIn("contract eval: PASS", output.getvalue())
+        runner.return_value.run.assert_called_once()
+        self.assertEqual(runner.return_value.run.call_args.args, (TestSuiteRequest(),))
+        self.assertIn("on_event", runner.return_value.run.call_args.kwargs)
+        self.assertIn("[PASS] 单元测试", output.getvalue())
+        self.assertIn("[PASS] 集成测试", output.getvalue())
+        self.assertIn("[PASS] Contract Eval", output.getvalue())
         self.assertEqual(validate_skill.ERRORS, [])
 
     def test_automated_test_entrypoints_share_runner_type_and_timeout_defaults(self) -> None:
@@ -495,10 +497,14 @@ class ValidationRunnerTests(unittest.TestCase):
         )
         output = io.StringIO()
         with mock.patch("validate_skill.TestSuiteRunner") as runner, mock.patch("sys.stdout", output):
-            runner.return_value.run.return_value = TestRunResult((timeout,), 1.0)
+            def run_with_event(_request: TestSuiteRequest, *, on_event: object) -> TestRunResult:
+                on_event("complete", timeout, 1, 1)
+                return TestRunResult((timeout,), 1.0)
+
+            runner.return_value.run.side_effect = run_with_event
             validate_skill.validate_automated_test_suites(False)
-        self.assertIn("unit tests: TIMEOUT", output.getvalue())
-        self.assertIn("last active test: tests.unit.test_hang", output.getvalue())
+        self.assertIn("[TIMEOUT] 单元测试", output.getvalue())
+        self.assertIn("测试超时", output.getvalue())
         self.assertTrue(validate_skill.ERRORS)
 
 

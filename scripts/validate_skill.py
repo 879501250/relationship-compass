@@ -9,8 +9,12 @@ import io
 import re
 import json
 import sys
+import threading
+import time
+from collections.abc import Callable
 from math import ceil
 from pathlib import Path
+from typing import TextIO
 
 sys.dont_write_bytecode = True
 
@@ -18,7 +22,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from eval_console.test_runner import TestSuiteRequest, TestSuiteRunner
+from eval_console.test_runner import (
+    TerminalTestReporter,
+    TestRunResult,
+    TestSuiteRequest,
+    TestSuiteRunner,
+)
 from date_utils import normalize_iso8601
 from build_chatgpt_pack import build_knowledge_bodies, pack_metadata
 from check_decision_layer_ownership import collect_errors as collect_ownership_errors
@@ -76,6 +85,111 @@ REQUIRED_CURATED = (
 REQUIRED_EVALS = (
     "contract_cases.yaml",
 )
+
+
+class ValidationReporter:
+    """Render bounded validation phases without changing their validation outcome."""
+
+    def __init__(
+        self,
+        stream: TextIO | None = None,
+        *,
+        clock: Callable[[], float] = time.perf_counter,
+        spinner_threshold_seconds: float = 0.25,
+    ) -> None:
+        self.stream = stream or sys.stdout
+        self.clock = clock
+        self.spinner_threshold_seconds = spinner_threshold_seconds
+        self.tty = bool(getattr(self.stream, "isatty", lambda: False)())
+        self._active: tuple[int, int, str, float] | None = None
+        self._lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def run(self, index: int, total: int, name: str, action: Callable[[], object]) -> object:
+        started = self.clock()
+        print(f"[{index}/{total}] [开始] {name}", file=self.stream, flush=True)
+        if self.tty:
+            with self._lock:
+                self._active = (index, total, name, started)
+            self._start_spinner()
+        errors_before = len(ERRORS)
+        try:
+            result = action()
+        except BaseException:
+            self._finish_phase()
+            print(f"[{index}/{total}] [FAIL] {name} - {self.clock() - started:.1f} 秒", file=self.stream, flush=True)
+            raise
+        self._finish_phase()
+        added_errors = len(ERRORS) - errors_before
+        status = "PASS" if added_errors == 0 else "FAIL"
+        suffix = f"；新增问题：{added_errors}" if added_errors else ""
+        print(
+            f"[{index}/{total}] [{status}] {name} - {self.clock() - started:.1f} 秒{suffix}",
+            file=self.stream,
+            flush=True,
+        )
+        return result
+
+    def summary(
+        self,
+        *,
+        mode: str,
+        completed: int,
+        total: int,
+        started: float,
+        exit_status: int,
+        suites: TestRunResult | None,
+    ) -> None:
+        self.close()
+        state = "PASS" if exit_status == 0 else "FAIL" if exit_status == 1 else "CANCELLED"
+        suite_state = suites.status if suites is not None else "未运行"
+        print("\n验证汇总", file=self.stream, flush=True)
+        print(f"模式：{mode}", file=self.stream, flush=True)
+        print(f"完成阶段：{completed}/{total}", file=self.stream, flush=True)
+        print(f"验证结果：{state}", file=self.stream, flush=True)
+        print(f"Errors：{len(ERRORS)}", file=self.stream, flush=True)
+        print(f"自动化测试：{suite_state}", file=self.stream, flush=True)
+        print(f"总耗时：{self.clock() - started:.1f} 秒", file=self.stream, flush=True)
+        print(f"最终退出状态：{exit_status}", file=self.stream, flush=True)
+
+    def close(self) -> None:
+        self._stopped.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+            self._thread = None
+        if self.tty:
+            print("\r" + " " * 100 + "\r", end="", file=self.stream, flush=True)
+
+    def _start_spinner(self) -> None:
+        if self._thread is None:
+            self._stopped.clear()
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+
+    def _finish_phase(self) -> None:
+        with self._lock:
+            self._active = None
+        self.close()
+
+    def _spin(self) -> None:
+        if self._stopped.wait(self.spinner_threshold_seconds):
+            return
+        frames = "|/-\\"
+        frame = 0
+        while not self._stopped.wait(0.12):
+            with self._lock:
+                active = self._active
+            if active is None:
+                continue
+            index, total, name, started = active
+            print(
+                f"\r{frames[frame % len(frames)]} [{index}/{total}] 正在检查：{name}；已用时：{self.clock() - started:.1f} 秒",
+                end="",
+                file=self.stream,
+                flush=True,
+            )
+            frame += 1
 
 
 def require(path: str) -> Path:
@@ -543,29 +657,32 @@ def validate_model_eval_artifacts(runtime_only: bool) -> None:
     return
 
 
-def validate_automated_test_suites(runtime_only: bool) -> None:
+def validate_automated_test_suites(
+    runtime_only: bool, *, stream: TextIO | None = None
+) -> TestRunResult | None:
     """Run all formal suites through the repository's single bounded supervisor."""
     if runtime_only:
-        return
+        return None
     labels = {
         "unit": "unit tests",
         "integration": "integration tests",
         "contract": "contract eval",
     }
-    result = TestSuiteRunner(ROOT).run(TestSuiteRequest())
+    reporter = TerminalTestReporter(stream=stream or sys.stdout)
+    try:
+        result = TestSuiteRunner(ROOT).run(TestSuiteRequest(), on_event=reporter.event)
+    except BaseException:
+        reporter.close()
+        raise
+    reporter.summary(result)
     for suite in result.suites:
         label = labels[suite.key]
         if suite.passed:
-            print(f"{label}: PASS ({suite.tests_run})")
             continue
-        print(f"{label}: {suite.status}")
-        if suite.last_active_test:
-            print(f"last active test: {suite.last_active_test}")
-        for detail in suite.details:
-            print(f"  {detail}")
         ERRORS.append(
             f"{label} {suite.status}: " + "; ".join(suite.details or ("no detail returned",))
         )
+    return result
 
 
 def validate_policy_parity(runtime_only: bool) -> None:
@@ -598,47 +715,95 @@ def validate_policy_parity(runtime_only: bool) -> None:
                     ERRORS.append(f"checkpoint missing structure: {heading}")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, stream: TextIO | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    output = stream or sys.stdout
     supported = {"--runtime", "--convergence-only"}
     unexpected = [arg for arg in arguments if arg not in supported]
     if unexpected:
-        print(f"ERROR: unsupported arguments: {' '.join(unexpected)}")
+        print(f"ERROR: unsupported arguments: {' '.join(unexpected)}", file=output)
         return 2
     if "--runtime" in arguments and "--convergence-only" in arguments:
-        print("ERROR: --runtime and --convergence-only are mutually exclusive")
+        print("ERROR: --runtime and --convergence-only are mutually exclusive", file=output)
         return 2
     runtime_only = "--runtime" in arguments
     convergence_only = "--convergence-only" in arguments
-    validate_frontmatter()
-    validate_repository_convergence(runtime_only)
+    mode = "convergence-only" if convergence_only else "runtime" if runtime_only else "full"
+    reporter = ValidationReporter(output)
+    started = reporter.clock()
+    suites: TestRunResult | None = None
     if convergence_only:
-        if ERRORS:
-            for error in ERRORS:
-                print(f"ERROR: {error}")
-            return 1
-        print("relationship-compass repository convergence validation passed")
-        return 0
-    validate_skill_budget()
-    validate_inventory(runtime_only)
-    validate_routes_and_invariants()
-    validate_runtime_boundaries()
-    validate_decision_layer_ownership()
-    validate_curated_knowledge(runtime_only)
-    validate_chatgpt_pack(runtime_only)
-    validate_markdown_links()
-    validate_placeholders()
-    validate_upstream_lock(runtime_only)
-    validate_policy_parity(runtime_only)
-    validate_model_eval_definitions(runtime_only)
-    validate_model_eval_artifacts(runtime_only)
-    validate_automated_test_suites(runtime_only)
-    if ERRORS:
-        for error in ERRORS:
-            print(f"ERROR: {error}")
-        return 1
-    print("relationship-compass validation passed")
-    return 0
+        phases: list[tuple[str, Callable[[], object]]] = [
+            ("Frontmatter / Skill metadata", validate_frontmatter),
+            ("Repository convergence", lambda: validate_repository_convergence(False)),
+        ]
+    elif runtime_only:
+        phases = [
+            ("Frontmatter / Skill metadata", validate_frontmatter),
+            ("Repository convergence", lambda: validate_repository_convergence(True)),
+            ("Skill budget", validate_skill_budget),
+            ("Required inventory", lambda: validate_inventory(True)),
+            ("Routes and invariants", validate_routes_and_invariants),
+            ("Runtime boundaries", validate_runtime_boundaries),
+            ("Decision-layer ownership", validate_decision_layer_ownership),
+            ("Curated knowledge", lambda: validate_curated_knowledge(True)),
+            ("Markdown links", validate_markdown_links),
+            ("Placeholders", validate_placeholders),
+            ("Policy parity", lambda: validate_policy_parity(True)),
+        ]
+    else:
+        def run_automated_suites() -> TestRunResult | None:
+            nonlocal suites
+            suites = validate_automated_test_suites(False, stream=output)
+            return suites
+
+        phases = [
+            ("Frontmatter / Skill metadata", validate_frontmatter),
+            ("Repository convergence", lambda: validate_repository_convergence(False)),
+            ("Skill budget", validate_skill_budget),
+            ("Required inventory", lambda: validate_inventory(False)),
+            ("Routes and invariants", validate_routes_and_invariants),
+            ("Runtime boundaries", validate_runtime_boundaries),
+            ("Decision-layer ownership", validate_decision_layer_ownership),
+            ("Curated knowledge", lambda: validate_curated_knowledge(False)),
+            ("ChatGPT knowledge pack", lambda: validate_chatgpt_pack(False)),
+            ("Markdown links", validate_markdown_links),
+            ("Placeholders", validate_placeholders),
+            ("Upstream lock", lambda: validate_upstream_lock(False)),
+            ("Policy parity", lambda: validate_policy_parity(False)),
+            ("Model Eval definitions", lambda: (validate_model_eval_definitions(False), validate_model_eval_artifacts(False))),
+            ("Automated test suites", run_automated_suites),
+        ]
+    completed = 0
+    try:
+        for index, (name, action) in enumerate(phases, start=1):
+            reporter.run(index, len(phases), name, action)
+            completed = index
+    except KeyboardInterrupt:
+        reporter.close()
+        print("验证已取消。", file=output, flush=True)
+        reporter.summary(
+            mode=mode, completed=completed, total=len(phases), started=started,
+            exit_status=130, suites=suites,
+        )
+        return 130
+    except BaseException:
+        reporter.close()
+        raise
+    status = 1 if ERRORS else 0
+    for error in ERRORS:
+        print(f"ERROR: {error}", file=output)
+    if status == 0:
+        print(
+            "relationship-compass repository convergence validation passed"
+            if convergence_only else "relationship-compass validation passed",
+            file=output,
+        )
+    reporter.summary(
+        mode=mode, completed=completed, total=len(phases), started=started,
+        exit_status=status, suites=suites,
+    )
+    return status
 
 
 if __name__ == "__main__":
