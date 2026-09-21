@@ -20,6 +20,10 @@ def read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def section(content: str, heading: str, next_heading: str) -> str:
+    return content.split(heading, 1)[1].split(next_heading, 1)[0]
+
+
 class DecisionLayerOwnershipTests(unittest.TestCase):
     def test_decision_layer_keeps_the_only_exact_action_taxonomy(self) -> None:
         decision = read("references/personal/回复决策与对话流.md")
@@ -96,6 +100,55 @@ class DecisionLayerOwnershipTests(unittest.TestCase):
         self.assertFalse(
             [ref for refs in routes.values() for ref in refs if ref.startswith(practical_prefix)]
         )
+
+    def test_humor_repetition_stays_inside_play_or_returns_to_decision(self) -> None:
+        humor = read("references/personal/幽默与调侃生成器.md")
+        repetition = section(humor, "## 重复检测", "## Continuation cases")
+
+        self.assertRegex(repetition, r"same `PLAY` realization[\s\S]+return Decision Layer")
+        for leaked_fallback in (
+            "callback → 换真实新分享或观点",
+            "playful framing → 回到现实内容",
+            "轻度调侃 → 换具体欣赏或普通交流",
+        ):
+            self.assertNotIn(leaked_fallback, repetition)
+
+    def test_natural_flow_internal_sections_only_provide_constraints_or_realization(self) -> None:
+        natural_flow = read("references/practical/自然流、内在状态与结构化互动：伦理能力转译.md")
+        diagnosis = section(natural_flow, "## 一、先诊断一个主问题", "## 二、内在状态")
+        pattern = section(natural_flow, "### 观察—表达—可选接点", "### 线程选择")
+        feedback = section(natural_flow, "## 七、反馈形成约束", "## 八、输出模板")
+
+        self.assertIn("relationship-level hypothesis", diagnosis)
+        self.assertIn("不在本表选 turn action", diagnosis)
+        self.assertIn("gated by Primary Action", pattern)
+        self.assertIn("不会自动授权 `ASK` 或 `INVITE`", pattern)
+        self.assertIn("提供给 Decision Layer 的约束", feedback)
+        self.assertIn("当前 turn action 仍由 Decision Layer 决定", feedback)
+        self.assertNotIn("降低张力、结束本轮", feedback)
+
+    def test_active_expression_tiers_calibrate_realization_not_permission(self) -> None:
+        active = read("references/practical/主动表达、第一次见面与自然接触.md")
+        tiers = section(active, "## 一、已获许可后的主动表达档位", "## 二、让喜欢变得明显")
+        physical = section(active, "## 四、自然、低强度、可退出的肢体接触", "## 五、含糊回应后的再次主动")
+
+        self.assertIn("只做 realization calibration", tiers)
+        self.assertIn("不得决定是否联系、邀约、表白、推进或发生身体接触", tiers)
+        self.assertNotIn("| 档位 | 适合动作 |", tiers)
+        self.assertIn("不由主动档位、绿灯或约会顺利自动授权", physical)
+        self.assertIn("不自动授权升级", physical)
+        self.assertNotIn("| 反馈 | 可观察表现 | 下一步 |", physical)
+
+    def test_additional_practical_feedback_and_composition_do_not_select_actions(self) -> None:
+        scene = read("references/practical/场景感、松弛感与社交校准：从接话到关系推进.md")
+        public_examples = read("references/practical/公开表达案例的伦理转译.md")
+        awkward = read("references/practical/化解尴尬：轻松救场的实用指南.md")
+
+        self.assertIn("反馈形成 constraint，不选择 turn action", scene)
+        self.assertIn("不在本表选择当前 turn action", scene)
+        self.assertIn("不是顺序升级漏斗", public_examples)
+        self.assertIn("只有 `Primary Action = INVITE`", public_examples)
+        self.assertIn("尴尬类型只能形成 training diagnosis／realization constraint", awkward)
 
 
 if __name__ == "__main__":

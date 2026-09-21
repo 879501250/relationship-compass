@@ -297,7 +297,7 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 - 是否只是为了显得会聊而加技巧？
 - 对方积极接住后，用户能自然继续吗？
 - 换到语音或线下，用户仍能承担核心意思吗？
-- 对方不接时，是否有自然降级或收线方式？
+- 对方不接时，本候选能否自然停住而不追击？任何后续 turn action 仍交回 Decision Layer。
 
 ## 来源：`references/personal/幽默与调侃生成器.md`
 
@@ -347,10 +347,12 @@ Conversation Ownership 与 interview-risk 已由 Decision Layer 用于动作选�
 
 按 `subject_id` 维护近期技巧摘要，而不是全局轮换表。只有用户确认实际发送后，才运行 `record-technique --subject-id <id> --technique <name> --confirm-sent`；AI 建议但未发送不能写入。脚本只保留最近 8 次主技巧，不保存完整聊天。若同一机制连续出现或在最近代表性互动中过密：
 
-- callback → 换真实新分享或观点；
-- 假装严肃/一本正经胡说 → 换观察式幽默或无技巧；
-- playful framing → 回到现实内容，避免长期角色扮演；
-- 轻度调侃 → 换具体欣赏或普通交流。
+- callback → 改用观察式幽默、轻度夸张或 technique-free `PLAY`；
+- 假装严肃/一本正经胡说 → 改用低技巧反差、观察式幽默或 technique-free `PLAY`；
+- playful framing → 改用基于当下真实内容的轻松 framing，不延续角色设定；
+- 轻度调侃 → 改用不针对对方的观察式幽默、自嘲或低张力 `PLAY`。
+
+重复检测只能切换 same `PLAY` realization，不能转成分享、追问、欣赏、邀约或收线。若所有 `PLAY` 实现都与约束冲突，reject candidate → return Decision Layer。
 
 不同对象的接受度和技巧历史不能迁移。用户通用技巧熟练度可以跨对象共享，但每个对象都从自己的反馈重新校准。
 
