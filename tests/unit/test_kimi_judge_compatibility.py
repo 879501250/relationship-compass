@@ -86,6 +86,15 @@ class ConsoleProvider:
 
 
 class KimiJudgeCompatibilityTests(unittest.TestCase):
+    def assert_http_telemetry_fields(
+        self, telemetry: dict[str, Any], expected: dict[str, Any]
+    ) -> None:
+        """Keep compatibility assertions exact for known fields, extensible for new ones."""
+        for key, value in expected.items():
+            with self.subTest(telemetry_field=key):
+                self.assertIn(key, telemetry)
+                self.assertEqual(telemetry[key], value)
+
     @staticmethod
     def kimi_capabilities() -> dict[str, Any]:
         return {
@@ -287,7 +296,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             record = runner.load_jsonl(run_dir / "judgments.jsonl")[0]
             self.assertEqual(counts["judge_error"], 1)
             self.assertEqual(record["error_code"], "INVALID_STRUCTURED_OUTPUT")
-            self.assertEqual(
+            self.assert_http_telemetry_fields(
                 record["http_telemetry"],
                 {
                     "http_attempts": 1,
@@ -326,7 +335,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                 )
                 result = provider.generate(instructions="system", input_text="input")
                 self.assertEqual(result.text, "ok")
-                self.assertEqual(
+                self.assert_http_telemetry_fields(
                     result.http_telemetry,
                     {
                         "http_attempts": 2,
@@ -442,7 +451,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             self.assertEqual(record["diagnostics"]["retry_attempt"], 3)
             self.assertEqual(record["diagnostics"]["max_retries"], 2)
             self.assertEqual(record["diagnostics"]["provider_http_attempts"], 3)
-            self.assertEqual(
+            self.assert_http_telemetry_fields(
                 record["http_telemetry"],
                 {
                     "http_attempts": 3,
@@ -515,7 +524,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             self.assertEqual(
                 record["structured_output_normalization"], "markdown_json_fence"
             )
-            self.assertEqual(
+            self.assert_http_telemetry_fields(
                 record["http_telemetry"],
                 {
                     "http_attempts": 2,
