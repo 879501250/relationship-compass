@@ -254,6 +254,7 @@ def execute_request(
         target_plan = _provider_plan(target_provider, "target", request) if needs_target else {"enabled": False, "api_calls": 0}
         judge_plan = _provider_plan(judge_provider, "judge", request) if needs_judge else {"enabled": False, "api_calls": 0}
     credential_usage_scope = _CredentialUsageScope()
+    execution_id: str | None = None
     try:
         execution_started_at = runner.utc_now()
         if request.mode is EvalExecutionMode.JUDGE_ONLY:
@@ -272,6 +273,9 @@ def execute_request(
             credential_usage_scope = _credential_usage_scope(run_dir)
             _persist_console_provider_models(run_dir, None, judge_provider)
             before_calls = _api_call_counts(run_dir)
+            execution_id = _begin_execution_metadata(
+                run_dir, request, stage_plan, execution_started_at
+            )
             current_stage = "JUDGE"
             current_stage_total = len(stage_plan.judge_cases)
             current_stage_before_calls = before_calls
@@ -289,6 +293,9 @@ def execute_request(
             if request.dry_run:
                 return RunOutcome(run_dir, True, None, None, target_plan, judge_plan, {"target": len(stage_plan.target_cases), "judge": len(stage_plan.judge_cases)})
             before_calls = _api_call_counts(run_dir)
+            execution_id = _begin_execution_metadata(
+                run_dir, request, stage_plan, execution_started_at
+            )
             if stage_plan.target_cases:
                 if target_provider is None:
                     raise EvalConsoleError("继续运行仍有 Target Case，需提供 Target Provider。")
@@ -325,6 +332,9 @@ def execute_request(
             if target_provider is None:
                 raise EvalConsoleError("Target 运行缺少 Target Provider。")
             before_calls = {"target": 0, "judge": 0}
+            execution_id, initial_execution_entry = _new_execution_metadata(
+                request, stage_plan, execution_started_at
+            )
             current_stage = "TARGET"
             current_stage_total = len(stage_plan.target_cases)
             current_stage_before_calls = before_calls
@@ -338,6 +348,7 @@ def execute_request(
                     target_provider=target_provider,
                     judge_provider=judge_provider,
                 ),
+                initial_execution_history_entry=initial_execution_entry,
             )
             if request.mode is EvalExecutionMode.FULL and not _stop_requested(should_stop):
                 judge_case_ids = _successful_target_case_ids(run_dir, stage_plan.judge_cases)
@@ -365,8 +376,12 @@ def execute_request(
                 target_provider,
                 judge_provider,
             )
-        _record_execution_metadata(
-            run_dir, request, stage_plan, api_calls, interrupted, execution_started_at
+        _complete_execution_metadata(
+            run_dir,
+            execution_id,
+            api_calls,
+            interrupted=interrupted,
+            final_stage=locals().get("current_stage"),
         )
         summary = runner.build_report(run_dir)
         _append_log(
@@ -394,14 +409,13 @@ def execute_request(
                 locals().get("before_calls", {"target": 0, "judge": 0}),
                 _api_call_counts(run_dir),
             )
-            if "stage_plan" in locals() and "execution_started_at" in locals():
-                _record_execution_metadata(
+            if execution_id is not None:
+                _complete_execution_metadata(
                     run_dir,
-                    request,
-                    stage_plan,
+                    execution_id,
                     api_calls,
-                    True,
-                    execution_started_at,
+                    interrupted=True,
+                    final_stage=locals().get("current_stage"),
                 )
             stage = locals().get("current_stage", "TARGET")
             stage_total = int(locals().get("current_stage_total", 0))
@@ -411,8 +425,27 @@ def execute_request(
             )
             raise EvaluationInterrupted(run_dir, stage, completed, stage_total) from exc
         raise
-    except (OSError, ValueError, runner.ModelEvalError) as exc:
-        raise EvalConsoleError(friendly_error(exc)) from exc
+    except Exception as exc:
+        if (
+            execution_id is not None
+            and "run_dir" in locals()
+            and run_dir.exists()
+        ):
+            api_calls = _api_call_delta(
+                locals().get("before_calls", {"target": 0, "judge": 0}),
+                _api_call_counts(run_dir),
+            )
+            _complete_execution_metadata(
+                run_dir,
+                execution_id,
+                api_calls,
+                interrupted=False,
+                final_stage=locals().get("current_stage"),
+                error=exc,
+            )
+        if isinstance(exc, (OSError, ValueError, runner.ModelEvalError)):
+            raise EvalConsoleError(friendly_error(exc)) from exc
+        raise
 
 
 def plan_stage_execution(
@@ -672,6 +705,7 @@ def _execute_target_stage(
     *,
     resume: bool,
     metadata_extra: dict[str, Any] | None = None,
+    initial_execution_history_entry: dict[str, Any] | None = None,
 ) -> None:
     runner.execute_run(
         prepared,
@@ -682,7 +716,10 @@ def _execute_target_stage(
         target_concurrency=request.target_concurrency,
         continue_on_error=request.continue_on_error,
         metadata_extra=metadata_extra,
-        on_case_start=lambda record, started, total: _emit_activity(activity, "TARGET", record, started, total),
+        initial_execution_history_entry=initial_execution_history_entry,
+        on_case_start=lambda record, started, total: _emit_activity(
+            activity, "TARGET", record, started, total
+        ),
         on_case_complete=lambda record, completed, total: _emit_progress(run_dir, request, progress, "TARGET", record, completed, total),
         should_stop=should_stop,
         on_rate_limit=lambda delay, extended: _emit_rate_limit(
@@ -967,14 +1004,13 @@ def _mark_interrupted(run_dir: Path) -> None:
     runner.write_json(run_dir / "run.json", metadata)
 
 
-def _record_execution_metadata(
+def _begin_execution_metadata(
     run_dir: Path,
     request: EvalRunRequest,
     stage_plan: StagePlan,
-    api_calls: dict[str, int],
-    interrupted: bool,
     started_at: str,
-) -> None:
+) -> str:
+    """Persist an execution ledger entry before any stage provider call starts."""
     metadata = runner.load_json_object(run_dir / "run.json")
     _validate_current_run_schema(metadata)
     console = metadata["console"]
@@ -984,24 +1020,109 @@ def _record_execution_metadata(
     if not isinstance(history, list):
         history = []
         metadata["execution_history"] = history
+    execution_id, entry = _new_execution_metadata(
+        request, stage_plan, started_at, execution_id=f"execution-{len(history) + 1:04d}"
+    )
+    history.append(entry)
+    runner.invalidate_report(run_dir, metadata)
+    runner.write_json(run_dir / "run.json", metadata)
+    return execution_id
+
+
+def _new_execution_metadata(
+    request: EvalRunRequest,
+    stage_plan: StagePlan,
+    started_at: str,
+    *,
+    execution_id: str = "execution-0001",
+) -> tuple[str, dict[str, Any]]:
+    """Build the durable start entry used before a new Runner creates run.json."""
     planned_api_calls = {
         "target": len(stage_plan.target_cases),
         "judge": len(stage_plan.judge_cases),
     }
-    history.append(
+    return (
+        execution_id,
         {
-            "execution_id": f"execution-{len(history) + 1:04d}",
+            "execution_id": execution_id,
             "mode": request.mode.value,
             "started_at": started_at,
-            "completed_at": runner.utc_now(),
+            "completed_at": None,
+            "completion_status": "RUNNING",
+            "final_stage": None,
+            "error_category": None,
             "requested_case_ids": list(request.case_ids),
             "stage_case_ids": [item.case_id for item in stage_plan.cases],
             "planned_api_calls": planned_api_calls,
-            "actual_api_calls": dict(api_calls),
-            "api_call_plan_match": api_calls == planned_api_calls,
-            "interrupted": interrupted,
+            "actual_api_calls": {"target": 0, "judge": 0},
+            "completed_target_cases": 0,
+            "completed_judge_cases": 0,
+            "api_call_plan_match": False,
+            "interrupted": False,
             "target_concurrency": request.target_concurrency,
             "judge_concurrency": request.judge_concurrency,
+            "target_peak_in_flight": None,
+            "judge_peak_in_flight": None,
+            "provider_telemetry": {"target": None, "judge": None},
+        },
+    )
+
+
+def _complete_execution_metadata(
+    run_dir: Path,
+    execution_id: str | None,
+    api_calls: dict[str, int],
+    *,
+    interrupted: bool,
+    final_stage: object,
+    error: BaseException | None = None,
+) -> None:
+    """Finalize a previously persisted execution ledger entry without hiding errors."""
+    if execution_id is None:
+        return
+    metadata = runner.load_json_object(run_dir / "run.json")
+    _validate_current_run_schema(metadata)
+    history = metadata.get("execution_history")
+    if not isinstance(history, list):
+        raise EvalConsoleError("运行历史缺失，无法完成本次执行记录。")
+    entry = next(
+        (
+            item
+            for item in reversed(history)
+            if isinstance(item, dict) and item.get("execution_id") == execution_id
+        ),
+        None,
+    )
+    if not isinstance(entry, dict):
+        raise EvalConsoleError("运行历史缺失本次执行记录。")
+    console = metadata.get("console")
+    if isinstance(console, dict):
+        console["target_model"] = _requested_model(metadata.get("target"))
+        console["judge_model"] = _requested_model(metadata.get("judge"))
+    normalized_calls = {
+        role: max(0, int(api_calls.get(role, 0)))
+        for role in ("target", "judge")
+    }
+    error_category = _execution_error_category(run_dir, normalized_calls, error)
+    entry.update(
+        {
+            "completed_at": runner.utc_now(),
+            "completion_status": (
+                "INTERRUPTED"
+                if interrupted
+                else ("ERROR" if error_category is not None else "COMPLETED")
+            ),
+            "final_stage": (
+                final_stage
+                if isinstance(final_stage, str) and final_stage in {"TARGET", "JUDGE"}
+                else None
+            ),
+            "error_category": error_category,
+            "actual_api_calls": normalized_calls,
+            "completed_target_cases": normalized_calls["target"],
+            "completed_judge_cases": normalized_calls["judge"],
+            "api_call_plan_match": normalized_calls == entry.get("planned_api_calls"),
+            "interrupted": interrupted,
             "target_peak_in_flight": (
                 metadata.get("parallel_metrics", {}).get("target_peak_in_flight")
                 if isinstance(metadata.get("parallel_metrics"), dict)
@@ -1012,10 +1133,33 @@ def _record_execution_metadata(
                 if isinstance(metadata.get("parallel_metrics"), dict)
                 else None
             ),
-            "provider_telemetry": _execution_provider_telemetry(run_dir, api_calls),
+            "provider_telemetry": _execution_provider_telemetry(
+                run_dir, normalized_calls
+            ),
         }
     )
     runner.write_json(run_dir / "run.json", metadata)
+
+
+def _execution_error_category(
+    run_dir: Path, api_calls: dict[str, int], error: BaseException | None
+) -> str | None:
+    if isinstance(error, runner.ProviderError):
+        return error.code
+    if error is not None:
+        return type(error).__name__
+    for path, role in (
+        (run_dir / "judgments.jsonl", "judge"),
+        (run_dir / "responses.jsonl", "target"),
+    ):
+        count = api_calls[role]
+        if not count or not path.is_file():
+            continue
+        for record in reversed(runner.load_jsonl(path)[-count:]):
+            error_code = record.get("error_code") if isinstance(record, dict) else None
+            if isinstance(error_code, str) and error_code:
+                return error_code
+    return None
 
 
 def _execution_provider_telemetry(

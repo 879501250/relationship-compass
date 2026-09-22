@@ -1112,6 +1112,67 @@ class StageDecouplingTests(unittest.TestCase):
             self.assertEqual(judge.judge_calls, 13)
             self.assertEqual(outcome.api_calls, {"target": 0, "judge": 13})
 
+    def test_network_error_execution_history_is_preserved_across_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(3)
+            first = execute_request(
+                self.request(root, case_ids, mode=EvalExecutionMode.TARGET_ONLY, run_id="history-network"),
+                target_provider=StageProvider(
+                    [
+                        "first response",
+                        runner.ProviderError(
+                            "network", code="NETWORK_ERROR", retryable=True
+                        ),
+                        "third response",
+                    ]
+                ),
+            )
+            first_metadata = runner.load_json_object(first.run_dir / "run.json")
+            first_execution = first_metadata["execution_history"][-1]
+            self.assertEqual(first_execution["completion_status"], "ERROR")
+            self.assertEqual(first_execution["error_category"], "NETWORK_ERROR")
+            self.assertEqual(first_execution["actual_api_calls"], {"target": 3, "judge": 0})
+            self.assertEqual(first_execution["completed_target_cases"], 3)
+            self.assertIsNotNone(first_execution["started_at"])
+            self.assertIsNotNone(first_execution["completed_at"])
+
+            resumed_target = StageProvider(["recovered response"])
+            resumed = execute_request(
+                self.request(root, case_ids, mode=EvalExecutionMode.RESUME, source=first.run_dir),
+                target_provider=resumed_target,
+            )
+            self.assertEqual(resumed_target.target_calls, 1)
+            attempts = [
+                item for item in runner.load_jsonl(resumed.run_dir / "responses.jsonl")
+                if item["case_id"] == case_ids[1]
+            ]
+            self.assertEqual([(item["attempt"], item["status"]) for item in attempts], [(1, "TARGET_ERROR"), (2, "MODEL_RESPONSE")])
+            history = runner.load_json_object(resumed.run_dir / "run.json")["execution_history"]
+            self.assertEqual(len(history), 2)
+            self.assertEqual(history[-1]["completion_status"], "COMPLETED")
+            self.assertEqual(history[-1]["actual_api_calls"], {"target": 1, "judge": 0})
+
+    def test_unexpected_execution_error_still_finalizes_history_then_reraises(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            case_ids = self.case_ids(2)
+            with self.assertRaisesRegex(EvalConsoleError, "unexpected provider failure") as captured:
+                execute_request(
+                    self.request(root, case_ids, mode=EvalExecutionMode.TARGET_ONLY, run_id="history-unexpected"),
+                    target_provider=StageProvider(
+                        ["first response", ValueError("unexpected provider failure")]
+                    ),
+                )
+            self.assertIsInstance(captured.exception.__cause__, ValueError)
+            run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "history-unexpected"
+            history = runner.load_json_object(run_dir / "run.json")["execution_history"]
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["completion_status"], "ERROR")
+            self.assertEqual(history[0]["error_category"], "ValueError")
+            self.assertEqual(history[0]["actual_api_calls"], {"target": 1, "judge": 0})
+            self.assertIsNotNone(history[0]["completed_at"])
+
     def test_cli_maps_registry_stage_mode_source_and_selector(self) -> None:
         definition = discover_evals()[0]
         args = build_parser().parse_args(

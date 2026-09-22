@@ -2273,6 +2273,7 @@ def _print_progress(phase: str, record: dict[str, object], completed: int, total
     print(f"  {symbol} {_phase_label(phase)} {completed}/{total}: {case_id} - {status}{suffix}")
     if record.get("error_code") == "NETWORK_ERROR":
         telemetry = record.get("http_telemetry")
+        transport_type = record.get("transport_error_type")
         retries = (
             telemetry.get("retry_count", 0)
             if isinstance(telemetry, dict)
@@ -2280,6 +2281,8 @@ def _print_progress(phase: str, record: dict[str, object], completed: int, total
         )
         retry_count = retries if isinstance(retries, int) and retries > 0 else 0
         print("    NETWORK_ERROR：远端连接在响应完成前关闭或中断。")
+        if isinstance(transport_type, str) and transport_type:
+            print(f"    底层类型：{transport_type}")
         if retry_count:
             print(f"    已自动重试 {retry_count} 次。")
         print("    本 Case 已保存，可通过 Resume 重试。")

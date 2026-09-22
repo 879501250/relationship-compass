@@ -389,6 +389,7 @@ class ProviderError(RuntimeError):
             "max_retries",
             "provider_http_attempts",
             "http_telemetry",
+            "transport_error_type",
             "candidate_count",
             "content_block_count",
             "text_block_count",
@@ -1302,6 +1303,7 @@ def provider_error_artifact_fields(error: ProviderError) -> dict[str, Any]:
         else None,
         "reported_model": error.reported_model or diagnostics.get("reported_model"),
         "finish_reason": diagnostics.get("finish_reason"),
+        "transport_error_type": diagnostics.get("transport_error_type"),
     }
 
 
@@ -1748,6 +1750,7 @@ class HTTPJSONProvider:
                 self._wait_for_retry(selected_delay, rate_limited=False)
                 return None
             safe_diagnostics = {
+                "transport_error_type": type(error).__name__,
                 "http_telemetry": http_attempt_telemetry(
                     attempts=attempt + 1,
                     retry_count=retry_count,
@@ -3484,6 +3487,7 @@ def target_attempt_record(
         "provider_metadata": None,
         "usage": None,
         "http_telemetry": None,
+        "transport_error_type": None,
         "error_code": None,
         "retryable": None,
         "error": None,
@@ -3560,6 +3564,7 @@ def execute_run(
     target_concurrency: int = 1,
     continue_on_error: bool = False,
     metadata_extra: dict[str, Any] | None = None,
+    initial_execution_history_entry: dict[str, Any] | None = None,
     on_case_start: Callable[[dict[str, Any], int, int], None] | None = None,
     on_case_complete: Callable[[dict[str, Any], int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
@@ -3645,6 +3650,10 @@ def execute_run(
             repository_dirty=selected_dirty,
             origin_mode=origin_mode,
         )
+        if initial_execution_history_entry is not None:
+            if not isinstance(initial_execution_history_entry, dict):
+                raise ModelEvalError("initial execution history entry must be an object")
+            metadata["execution_history"] = [dict(initial_execution_history_entry)]
         if metadata_extra is not None:
             if not isinstance(metadata_extra, dict):
                 raise ModelEvalError("run metadata extension must be an object")
@@ -4044,6 +4053,7 @@ def judge_attempt_record(
         "request_envelope_hash": None,
         "usage": None,
         "http_telemetry": None,
+        "transport_error_type": None,
         "evaluated_at": started_at or utc_now(),
         "completed_at": None,
         "duration_seconds": None,

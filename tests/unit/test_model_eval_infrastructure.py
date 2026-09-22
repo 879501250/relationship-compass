@@ -19,6 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import run_model_evals as runner  # noqa: E402
+import build_chatgpt_pack as pack_builder  # noqa: E402
 
 
 class FakeProvider:
@@ -280,6 +281,40 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             info.write_text('{"pack_version":"v1.7.0"}\n', encoding="utf-8")
             self.assertEqual(runner.pack_version(root), "1.7.0")
             self.assertEqual(runner.results_root("1.7.0", root).name, "v1.7.0")
+
+    def test_canonical_pack_version_propagates_to_run_summary_and_reference_artifacts(self) -> None:
+        version = runner.pack_version()
+        self.assertEqual(pack_builder.PACK_VERSION, version)
+        self.assertEqual({record["pack_version"] for record in self.all_prepared}, {version})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = (
+                runner.results_root(version, Path(temp_dir), runner.API_RUNTIME_PROFILE)
+                / "version-consistency"
+            )
+            runner.execute_run(
+                self.prepared[:1],
+                FakeProvider(["versioned target"]),
+                run_dir,
+                repository_sha="a" * 40,
+                repository_dirty=False,
+                knowledge_pack_version=version,
+            )
+            runner.execute_judge(
+                run_dir,
+                FakeProvider([judgment_for(self.prepared[0])]),
+                case_ids=runner.planned_judge_case_ids(run_dir),
+            )
+            metadata = runner.load_json_object(run_dir / "run.json")
+            summary = runner.build_report(run_dir)
+            acceptance = runner.accept_reference(run_dir, notes="version consistency")
+            self.assertEqual(metadata["product_version"], version)
+            self.assertEqual(metadata["pack_version"], version)
+            self.assertEqual(metadata["version_directory"], runner.version_directory(version))
+            self.assertEqual(run_dir.parent.parent.name, runner.version_directory(version))
+            self.assertEqual(summary["product_version"], version)
+            self.assertEqual(acceptance["run_id"], run_dir.name)
+            self.assertEqual(runner.effective_reference_status(run_dir)["run_id"], run_dir.name)
+            runner.validate_result_artifacts(run_dir)
 
     def test_runtime_profiles_have_distinct_bundle_identity_and_paths(self) -> None:
         api_runtime = runner.runtime_snapshot(

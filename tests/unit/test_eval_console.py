@@ -140,6 +140,7 @@ class CaseSelectionTests(unittest.TestCase):
                     "case_id": "case-1",
                     "status": "TARGET_ERROR",
                     "error_code": "NETWORK_ERROR",
+                    "transport_error_type": "RemoteDisconnected",
                     "http_telemetry": {"retry_count": 2},
                 },
                 1,
@@ -147,6 +148,7 @@ class CaseSelectionTests(unittest.TestCase):
             )
         rendered = output.getvalue()
         self.assertIn("NETWORK_ERROR：远端连接在响应完成前关闭或中断。", rendered)
+        self.assertIn("底层类型：RemoteDisconnected", rendered)
         self.assertIn("已自动重试 2 次。", rendered)
         self.assertIn("本 Case 已保存，可通过 Resume 重试。", rendered)
 

@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import socket
 import ssl
 import sys
 import tempfile
@@ -26,8 +27,9 @@ import run_model_evals as runner  # noqa: E402
 
 
 class HTTPResponse:
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], *, status: int = 200) -> None:
         self.body = json.dumps(payload).encode("utf-8")
+        self.status = status
 
     def __enter__(self) -> "HTTPResponse":
         return self
@@ -719,7 +721,7 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
         self.assertEqual(telemetry["http_attempts"], 2)
         self.assertEqual(telemetry["retry_count"], 1)
         self.assertEqual(telemetry["retry_delays_seconds"], [1.0])
-        self.assertEqual(telemetry["final_http_status"], None)
+        self.assertEqual(telemetry["final_http_status"], 200)
         self.assertTrue(telemetry["recovered_after_retry"])
 
     def test_transport_failures_exhaust_as_retryable_network_errors(self) -> None:
@@ -746,6 +748,11 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
                     provider.generate(instructions="s", input_text="i")
                 self.assertEqual(captured.exception.code, "NETWORK_ERROR")
                 self.assertTrue(captured.exception.retryable)
+                self.assertIsInstance(captured.exception.__cause__, type(transport_error))
+                self.assertEqual(
+                    captured.exception.safe_diagnostics["transport_error_type"],
+                    type(transport_error).__name__,
+                )
                 self.assertEqual(sleeps, [1.0, 2.0])
                 self.assertEqual(
                     captured.exception.safe_diagnostics["http_telemetry"]["http_attempts"],
@@ -764,14 +771,27 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
         self.assertEqual(captured.exception.code, "TIMEOUT")
         self.assertTrue(captured.exception.retryable)
 
+    def test_socket_timeout_remains_timeout_after_transport_refactor(self) -> None:
+        provider = runner.OpenAIResponsesProvider(
+            api_key="key",
+            model="m",
+            max_retries=0,
+            urlopen=mock.Mock(side_effect=socket.timeout("slow")),
+        )
+        with self.assertRaises(runner.ProviderError) as captured:
+            provider.generate(instructions="s", input_text="i")
+        self.assertEqual(captured.exception.code, "TIMEOUT")
+        self.assertTrue(captured.exception.retryable)
+
     def test_transport_errors_persist_then_respect_continue_and_resume(self) -> None:
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases(
-            [case for case in cases if case["suite"] == "core"][:2], criteria
+            [case for case in cases if case["suite"] == "core"][:3], criteria
         )
         events: list[Any] = [
+            HTTPResponse({"status": "completed", "output_text": "first case"}),
             http.client.RemoteDisconnected("closed"),
-            HTTPResponse({"status": "completed", "output_text": "second case"}),
+            HTTPResponse({"status": "completed", "output_text": "third case"}),
         ]
 
         def opener(*_args: Any, **_kwargs: Any) -> Any:
@@ -796,24 +816,27 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
             records = runner.load_jsonl(run_dir / "responses.jsonl")
             self.assertEqual(
                 [record["status"] for record in records],
-                ["TARGET_ERROR", "MODEL_RESPONSE"],
+                ["MODEL_RESPONSE", "TARGET_ERROR", "MODEL_RESPONSE"],
             )
-            self.assertEqual(records[0]["error_code"], "NETWORK_ERROR")
-            self.assertTrue(records[0]["retryable"])
-            self.assertIsNotNone(records[0]["duration_seconds"])
-            self.assertIsNotNone(records[0]["completed_at"])
-            self.assertEqual(records[0]["http_telemetry"]["http_attempts"], 1)
+            self.assertEqual(records[1]["error_code"], "NETWORK_ERROR")
+            self.assertTrue(records[1]["retryable"])
+            self.assertEqual(records[1]["transport_error_type"], "RemoteDisconnected")
+            self.assertIsNotNone(records[1]["duration_seconds"])
+            self.assertIsNotNone(records[1]["completed_at"])
             self.assertEqual(records[1]["http_telemetry"]["http_attempts"], 1)
+            self.assertEqual(records[0]["http_telemetry"]["http_attempts"], 1)
+            self.assertEqual(records[2]["http_telemetry"]["http_attempts"], 1)
 
+            resume_opener = mock.Mock(
+                side_effect=http.client.RemoteDisconnected("closed")
+            )
             runner.execute_run(
                 prepared,
                 runner.OpenAIResponsesProvider(
                     api_key="key",
                     model="m",
                     max_retries=0,
-                    urlopen=mock.Mock(
-                        side_effect=http.client.RemoteDisconnected("closed")
-                    ),
+                    urlopen=resume_opener,
                 ),
                 run_dir,
                 repository_sha="a" * 40,
@@ -821,9 +844,10 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
                 resume=True,
             )
             resumed_records = runner.load_jsonl(run_dir / "responses.jsonl")
-            self.assertEqual(len(resumed_records), 3)
+            self.assertEqual(len(resumed_records), 4)
             self.assertEqual(resumed_records[-1]["status"], "TARGET_ERROR")
             self.assertEqual(resumed_records[-1]["attempt"], 2)
+            self.assertEqual(resume_opener.call_count, 1)
 
     def test_transport_errors_persist_before_non_continue_stop_and_for_judge(self) -> None:
         cases, criteria = runner.load_definitions()
@@ -871,6 +895,7 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
             self.assertEqual(judgment["status"], "JUDGE_ERROR")
             self.assertEqual(judgment["error_code"], "NETWORK_ERROR")
             self.assertTrue(judgment["retryable"])
+            self.assertEqual(judgment["transport_error_type"], "RemoteDisconnected")
 
     def test_auth_error_is_not_retried(self) -> None:
         calls = 0
