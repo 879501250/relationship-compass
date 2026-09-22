@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import tempfile
@@ -26,6 +27,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class RegistryRuntimeResolverTests(unittest.TestCase):
+    @staticmethod
+    def _resolver(root: Path, *, environ: dict[str, str]) -> RegistryRuntimeResolver:
+        return RegistryRuntimeResolver(
+            ModelRegistry(root),
+            LocalFileCredentialSecretStore(root.parent / "credentials.json"),
+            environ=environ,
+        )
+
     def test_env_credential_builds_provider_without_exposing_token(self) -> None:
         resolver = RegistryRuntimeResolver(
             ModelRegistry(), LocalFileCredentialSecretStore(Path(tempfile.gettempdir()) / "unused-registry-secret.json"),
@@ -38,6 +47,58 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
         self.assertEqual(provider.max_output_tokens_parameter, "max_completion_tokens")
         self.assertNotIn("token-for-test-only", repr(binding))
         self.assertNotIn("token-for-test-only", str(binding.snapshot))
+
+    def test_kimi_disabled_thinking_is_ready_on_compatible_chat_protocol(self) -> None:
+        resolver = RegistryRuntimeResolver(
+            ModelRegistry(),
+            LocalFileCredentialSecretStore(
+                Path(tempfile.gettempdir()) / "unused-registry-secret.json"
+            ),
+            environ={"MOONSHOT_API_KEY": "token-for-test-only"},
+        )
+        readiness = resolver.assess_preset_readiness("kimi-official", context="judge")
+        self.assertTrue(readiness.runnable)
+
+    def test_disabled_thinking_fails_when_capability_does_not_declare_it(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "registry"
+            shutil.copytree(ROOT / "model_registry", root)
+            family_path = root / "model_families" / "kimi.yaml"
+            family = json.loads(family_path.read_text(encoding="utf-8"))
+            family["defaults"]["capabilities"]["thinking"]["allowed_values"] = ["enabled"]
+            family_path.write_text(json.dumps(family), encoding="utf-8")
+            for preset_path in (root / "presets").glob("*.yaml"):
+                preset = json.loads(preset_path.read_text(encoding="utf-8"))
+                preset.get("parameters", {}).pop("thinking", None)
+                preset_path.write_text(json.dumps(preset), encoding="utf-8")
+            resolver = self._resolver(root, environ={"MOONSHOT_API_KEY": "token-for-test-only"})
+            resolver.registry.presets = dict(resolver.registry.presets) | {
+                "kimi-official": replace(
+                    resolver.registry.presets["kimi-official"],
+                    parameters={"thinking": "disabled"},
+                )
+            }
+            readiness = resolver.assess_preset_readiness("kimi-official", context="judge")
+        self.assertFalse(readiness.runnable)
+        self.assertIn("thinking", "\n".join(readiness.blocking_errors))
+
+    def test_disabled_thinking_fails_on_protocol_without_thinking_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "registry"
+            shutil.copytree(ROOT / "model_registry", root)
+            vendor_path = root / "vendors" / "moonshot.yaml"
+            vendor = json.loads(vendor_path.read_text(encoding="utf-8"))
+            vendor["protocol"] = "openai_responses"
+            vendor["parameter_mapping"] = {"max_output_tokens": "max_output_tokens"}
+            vendor_path.write_text(json.dumps(vendor), encoding="utf-8")
+            readiness = self._resolver(
+                root, environ={"MOONSHOT_API_KEY": "token-for-test-only"}
+            ).assess_preset_readiness("kimi-official", context="judge")
+        self.assertFalse(readiness.runnable)
+        self.assertIn(
+            "thinking 'disabled' is configured but not declared supported",
+            "\n".join(readiness.blocking_errors),
+        )
 
     def test_runtime_context_keeps_preset_role_neutral_and_selects_output_mode(self) -> None:
         resolver = RegistryRuntimeResolver(
