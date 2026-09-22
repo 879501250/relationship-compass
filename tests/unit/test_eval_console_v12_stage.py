@@ -363,7 +363,7 @@ class StageDecouplingTests(unittest.TestCase):
             root = Path(temp_dir)
             case_ids = self.case_ids(6)
             prepared = [record for record in runner.prepare_cases(*runner.load_definitions()) if record["case_id"] in set(case_ids)]
-            run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "resume-matrix"
+            run_dir = root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "resume-matrix"
             target = StageProvider(
                 ["a", "b", "c", "d", runner.ProviderError("target", code="NETWORK_ERROR", retryable=False)]
             )
@@ -444,7 +444,7 @@ class StageDecouplingTests(unittest.TestCase):
                 if record["case_id"] in set(case_ids)
             ]
             source_run_dir = (
-                root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "interrupted-judge"
+                root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "interrupted-judge"
             )
             target = StageProvider(["one", "two", "three"])
             runner.execute_run(
@@ -556,7 +556,7 @@ class StageDecouplingTests(unittest.TestCase):
                 if record["case_id"] in set(case_ids)
             ]
             run_dir = (
-                root / "v1.6.0" / runner.API_RUNTIME_PROFILE / "mixed-target"
+                root / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "mixed-target"
             )
             with mock.patch.object(
                 runner, "git_fingerprint", return_value={"git_sha": "a" * 40, "git_dirty": False}
@@ -649,7 +649,7 @@ class StageDecouplingTests(unittest.TestCase):
                 if record["case_id"] in set(case_ids)
             ]
             source_run_dir = (
-                root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "blocking-judge"
+                root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "blocking-judge"
             )
             runner.execute_run(
                 prepared,
@@ -751,7 +751,7 @@ class StageDecouplingTests(unittest.TestCase):
                 self.assertTrue(target.started.wait(3))
                 stop.handle_interrupt()
                 self.assertIn("已收到停止请求", stop_output.getvalue())
-                run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "blocking-target"
+                run_dir = root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "blocking-target"
                 self.assertEqual(runner.load_jsonl(run_dir / "responses.jsonl"), [])
             finally:
                 target.release.set()
@@ -1058,7 +1058,7 @@ class StageDecouplingTests(unittest.TestCase):
                 record for record in runner.prepare_cases(*runner.load_definitions())
                 if record["case_id"] in set(case_ids)
             ]
-            run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "scope-mixed"
+            run_dir = root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "scope-mixed"
             runner.execute_run(
                 prepared,
                 StageProvider(["a", runner.ProviderError("target", code="NETWORK_ERROR", retryable=False), "c", "d"]),
@@ -1165,7 +1165,7 @@ class StageDecouplingTests(unittest.TestCase):
                     ),
                 )
             self.assertIsInstance(captured.exception.__cause__, ValueError)
-            run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / "history-unexpected"
+            run_dir = root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "history-unexpected"
             history = runner.load_json_object(run_dir / "run.json")["execution_history"]
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["completion_status"], "ERROR")

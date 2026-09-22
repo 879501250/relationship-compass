@@ -308,7 +308,7 @@ class ModelEvalPipelineTests(unittest.TestCase):
                 worker.start()
                 try:
                     self.assertTrue(provider.started.wait(3))
-                    run_dir = root / "results" / "v1.6.0" / runner.API_RUNTIME_PROFILE / request.run_id
+                    run_dir = root / "results" / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / request.run_id
                     self.assertEqual(runner.load_jsonl(run_dir / "responses.jsonl"), [])
                     stop_requested["value"] = True
                 finally:
@@ -708,7 +708,7 @@ class ModelEvalPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = (
                 Path(temp_dir)
-                / "v1.6.0"
+                / runner.version_directory(runner.pack_version())
                 / runner.API_RUNTIME_PROFILE
                 / "fake-e2e-run"
             )
@@ -719,7 +719,7 @@ class ModelEvalPipelineTests(unittest.TestCase):
                 run_dir,
                 repository_sha="b" * 40,
                 repository_dirty=False,
-                knowledge_pack_version="1.6.0",
+                knowledge_pack_version=runner.pack_version(),
             )
             judge = RecordingFakeProvider([all_pass(prepared[0]), all_pass(prepared[1])])
             runner.execute_judge(

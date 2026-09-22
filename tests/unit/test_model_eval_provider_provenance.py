@@ -263,7 +263,7 @@ class ProviderProvenanceTests(unittest.TestCase):
                 provider = self.chat_provider(
                     base_url=f"https://api.moonshot.{region}/v1", **config
                 )
-                run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "region"
+                run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "region"
                 runner.execute_run(
                     self.prepared, provider, run_dir,
                     repository_sha="a" * 40, repository_dirty=False,
@@ -371,7 +371,7 @@ class ProviderProvenanceTests(unittest.TestCase):
     def test_official_google_model_mismatch_keeps_verified_endpoint_and_fails_run(self) -> None:
         provider = self.chat_provider(urlopen=self.chat_response("different-model"))
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "mismatch"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "mismatch"
             runner.execute_run(
                 self.prepared,
                 provider,
@@ -617,7 +617,7 @@ class ProviderProvenanceTests(unittest.TestCase):
             }
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "historical-google"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "historical-google"
             with mock.patch.object(runner, "VERIFIED_PROVIDER_ORIGINS", legacy_registry):
                 target = self.chat_provider(urlopen=self.chat_response("model-a"))
                 judge = self.chat_provider(

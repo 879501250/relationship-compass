@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.7.0
+
 ### Added
 
 - v1.7-B2 Flow Integration 的 `DECISION_REALIZATION_FLOW_V1`：正式定义六字段 Decision Handoff、按动作加载的 realization routing、八项候选验证与四类入口统一主链。
@@ -37,6 +39,7 @@
 - 新 provider 配置统一按 transport、canonical vendor 与精确 origin 判定官方接入路径；保留 OpenAI / Moonshot 支持、模型身份独立性及历史 artifact 原始 provenance，不调用真实 API。
 - Target 输入不再泄漏 case id、reply/analysis mode 或 rubric criterion。
 - 重新生成过期的 ChatGPT Knowledge pack，并将 `.work/` 排除出版本控制。
+- Eval Console 在不改变评测结论的前提下，基于 append-only case artifact 汇总 Target/Judge 的 Provider Reliability；Resume 成功保留历史 transport/retry 证据，不自动切换 Provider。
 
 ## 1.6.0
 

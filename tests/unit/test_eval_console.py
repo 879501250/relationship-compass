@@ -253,7 +253,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
         )
         callbacks: list[tuple[str, int, int]] = []
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "continue-errors"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "continue-errors"
             metadata = runner.execute_run(
                 prepared,
                 provider,
@@ -369,7 +369,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
         prepared = runner.prepare_cases(cases[:2], criteria)
         with tempfile.TemporaryDirectory() as temp_dir:
             results_root = Path(temp_dir) / "results"
-            run_dir = results_root / "v1.6.0" / runner.API_RUNTIME_PROFILE / "unfinished-judge"
+            run_dir = results_root / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "unfinished-judge"
             runner.execute_run(
                 prepared,
                 RecordingProvider(["first answer", "second answer"]),
@@ -457,7 +457,7 @@ class DiscoveryAndExecutionTests(unittest.TestCase):
         cases, criteria = runner.load_definitions()
         prepared = runner.prepare_cases(cases[:2], criteria)
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "judge-errors"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "judge-errors"
             runner.execute_run(
                 prepared,
                 RecordingProvider(["answer one", "answer two"]),

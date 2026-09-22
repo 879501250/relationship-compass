@@ -235,7 +235,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
                 with self.subTest(normalization=expected_normalization):
                     run_dir = (
                         Path(temp_dir)
-                        / "v1.6.0"
+                        / runner.version_directory(runner.pack_version())
                         / runner.API_RUNTIME_PROFILE
                         / run_id
                     )
@@ -268,7 +268,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = (
                 Path(temp_dir)
-                / "v1.6.0"
+                / runner.version_directory(runner.pack_version())
                 / runner.API_RUNTIME_PROFILE
                 / "invalid-structured-output"
             )
@@ -416,7 +416,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             max_retries=2,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "rate-limit"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "rate-limit"
             runner.execute_run(
                 prepared,
                 ConsoleProvider(model="target", thinking="provider-default"),
@@ -490,7 +490,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             wait=wait,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "retry-success"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "retry-success"
             runner.execute_run(
                 prepared,
                 ConsoleProvider(model="target", thinking="provider-default"),
@@ -628,7 +628,7 @@ class KimiJudgeCompatibilityTests(unittest.TestCase):
             }
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            run_dir = Path(temp_dir) / "v1.6.0" / runner.API_RUNTIME_PROFILE / "kimi-empty"
+            run_dir = Path(temp_dir) / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / "kimi-empty"
             runner.execute_run(
                 prepared,
                 target,

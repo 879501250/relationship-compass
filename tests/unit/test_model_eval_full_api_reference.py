@@ -95,7 +95,7 @@ class FullAPIReferenceTests(unittest.TestCase):
 
     @staticmethod
     def run_dir(root: Path, name: str) -> Path:
-        return root / "v1.6.0" / runner.API_RUNTIME_PROFILE / name
+        return root / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / name
 
     def test_target_resume_is_append_only_and_skips_success(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -81,14 +81,14 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
         name: str = "run",
         repository_dirty: bool | None = False,
     ) -> Path:
-        run_dir = parent / "v1.6.0" / runner.API_RUNTIME_PROFILE / name
+        run_dir = parent / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / name
         runner.execute_run(
             self.prepared[:count],
             provider,
             run_dir,
             repository_sha="a" * 40,
             repository_dirty=repository_dirty,
-            knowledge_pack_version="1.6.0",
+            knowledge_pack_version=runner.pack_version(),
             allow_dirty_debug=repository_dirty is True,
         )
         return run_dir
@@ -284,7 +284,14 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
 
     def test_canonical_pack_version_propagates_to_run_summary_and_reference_artifacts(self) -> None:
         version = runner.pack_version()
+        self.assertEqual(version, "1.7.0")
         self.assertEqual(pack_builder.PACK_VERSION, version)
+        generated = json.loads(
+            (ROOT / "chatgpt-project" / "generated-knowledge" / "KNOWLEDGE_PACK_INFO.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(generated["pack_version"], version)
         self.assertEqual({record["pack_version"] for record in self.all_prepared}, {version})
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = (
@@ -312,6 +319,13 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             self.assertEqual(metadata["version_directory"], runner.version_directory(version))
             self.assertEqual(run_dir.parent.parent.name, runner.version_directory(version))
             self.assertEqual(summary["product_version"], version)
+            persisted = runner.load_json_object(run_dir / "run.json")
+            self.assertEqual(
+                persisted["provider_reliability"], summary["provider_reliability"]
+            )
+            self.assertIn(
+                "## Provider Reliability", (run_dir / "summary.md").read_text(encoding="utf-8")
+            )
             self.assertEqual(acceptance["run_id"], run_dir.name)
             self.assertEqual(runner.effective_reference_status(run_dir)["run_id"], run_dir.name)
             runner.validate_result_artifacts(run_dir)
@@ -330,12 +344,12 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             self.assertEqual(
-                runner.results_root("1.6.0", base, runner.API_RUNTIME_PROFILE).name,
+                runner.results_root(runner.pack_version(), base, runner.API_RUNTIME_PROFILE).name,
                 runner.API_RUNTIME_PROFILE,
             )
             self.assertEqual(
                 runner.results_root(
-                    "1.6.0", base, runner.CHATGPT_RUNTIME_PROFILE
+                    runner.pack_version(), base, runner.CHATGPT_RUNTIME_PROFILE
                 ).name,
                 runner.CHATGPT_RUNTIME_PROFILE,
             )
@@ -510,7 +524,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             run_dir = (
                 Path(temp_dir)
-                / "v1.6.0"
+                / runner.version_directory(runner.pack_version())
                 / runner.API_RUNTIME_PROFILE
                 / "prepared-only"
             )
@@ -611,7 +625,7 @@ class ModelEvalInfrastructureTests(unittest.TestCase):
             summary = runner.build_report(run_dir)
             self.assertEqual(summary["completion_status"], "TARGET_PARTIAL")
             self.assertEqual(run_dir.parent.name, runner.CHATGPT_RUNTIME_PROFILE)
-            self.assertEqual(run_dir.parent.parent.name, "v1.6.0")
+            self.assertEqual(run_dir.parent.parent.name, runner.version_directory(runner.pack_version()))
             with self.assertRaisesRegex(runner.ModelEvalError, "overwrite existing cases"):
                 runner.import_manual_responses(manual_dir, response_file, root / "results")
 

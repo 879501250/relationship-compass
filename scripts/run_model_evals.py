@@ -1328,6 +1328,7 @@ def provider_http_telemetry(
         "retry_delay_source",
         "retry_delays_seconds",
         "retry_delay_sources",
+        "transport_error_types",
     }
     return {key: candidate.get(key) for key in allowed if key in candidate}
 
@@ -1377,6 +1378,7 @@ def http_attempt_telemetry(
     retry_after_values: list[float],
     final_http_status: int | None,
     recovered_after_retry: bool,
+    transport_error_types: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build safe HTTP retry evidence from selected delays, never elapsed cooldowns."""
     return {
@@ -1390,6 +1392,7 @@ def http_attempt_telemetry(
         "retry_delay_source": retry_delay_sources[-1] if retry_delay_sources else None,
         "retry_delays_seconds": list(retry_delays_seconds),
         "retry_delay_sources": list(retry_delay_sources),
+        "transport_error_types": list(transport_error_types or []),
     }
 
 
@@ -1729,6 +1732,7 @@ class HTTPJSONProvider:
         retry_after_values: list[float] = []
         retry_count = 0
         rate_limit_count = 0
+        transport_error_types: list[str] = []
 
         def record_selected_retry_delay(delay_seconds: float, source: str) -> float:
             """Persist the normalized provider/policy decision before runtime waiting."""
@@ -1742,6 +1746,9 @@ class HTTPJSONProvider:
         ) -> ProviderError | None:
             """Retry one classified transport failure or return its final error."""
             nonlocal retry_count
+            if not is_timeout:
+                reason = error.reason if isinstance(error, urllib.error.URLError) else error
+                transport_error_types.append(type(reason).__name__)
             if attempt < self.max_retries:
                 retry_count += 1
                 selected_delay = record_selected_retry_delay(
@@ -1760,6 +1767,7 @@ class HTTPJSONProvider:
                     retry_after_values=retry_after_values,
                     final_http_status=None,
                     recovered_after_retry=False,
+                    transport_error_types=transport_error_types,
                 )
             }
             if is_timeout:
@@ -1807,6 +1815,7 @@ class HTTPJSONProvider:
                                 retry_after_values=retry_after_values,
                                 final_http_status=status if isinstance(status, int) else None,
                                 recovered_after_retry=False,
+                                transport_error_types=transport_error_types,
                             ),
                         },
                     ) from exc
@@ -1824,6 +1833,7 @@ class HTTPJSONProvider:
                                 retry_after_values=retry_after_values,
                                 final_http_status=status if isinstance(status, int) else None,
                                 recovered_after_retry=False,
+                                transport_error_types=transport_error_types,
                             ),
                         },
                     )
@@ -1839,6 +1849,7 @@ class HTTPJSONProvider:
                         retry_after_values=retry_after_values,
                         final_http_status=status if isinstance(status, int) else None,
                         recovered_after_retry=retry_count > 0,
+                        transport_error_types=transport_error_types,
                     ),
                 )
             except urllib.error.HTTPError as exc:
@@ -1885,6 +1896,7 @@ class HTTPJSONProvider:
                     retry_after_values=retry_after_values,
                     final_http_status=exc.code,
                     recovered_after_retry=False,
+                    transport_error_types=transport_error_types,
                 )
                 if code == "TIMEOUT":
                     raise ProviderTimeout(
@@ -4484,6 +4496,190 @@ def reference_qualification(
     return "REFERENCE_PROVISIONAL"
 
 
+def _finite_duration(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    duration = float(value)
+    return duration if math.isfinite(duration) and duration >= 0 else None
+
+
+def _latency_percentile(values: list[float], percentile: float) -> float | None:
+    """Return a deterministic linear-interpolated percentile for artifact durations."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return round(ordered[0], 6)
+    position = (len(ordered) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return round(ordered[lower], 6)
+    fraction = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction, 6)
+
+
+def _record_case_id(record: dict[str, Any], fallback_index: int) -> str:
+    value = record.get("case_id")
+    return value if isinstance(value, str) and value else f"<unknown:{fallback_index}>"
+
+
+def _role_provider_reliability(
+    records: list[dict[str, Any]],
+    *,
+    successful_status: str,
+    provenance_type: str | None,
+) -> dict[str, Any]:
+    """Summarize append-only role evidence without turning it into a score.
+
+    The latest record per case is the effective logical outcome.  All records
+    remain evidence for retries, transport faults, and latency so a resumed
+    success never erases a prior provider failure.
+    """
+    latest_by_case: dict[str, dict[str, Any]] = {}
+    case_ids_by_error: dict[str, set[str]] = {
+        "NETWORK_ERROR": set(),
+        "TIMEOUT": set(),
+        "RATE_LIMIT": set(),
+        "PROVIDER_5XX": set(),
+    }
+    http_attempts = 0
+    calls_with_retry = 0
+    total_retries = 0
+    recovered_after_retry = 0
+    retry_exhausted = 0
+    rate_limit_responses = 0
+    transport_errors_by_type: dict[str, int] = {}
+    durations: list[float] = []
+
+    for index, record in enumerate(records):
+        case_id = _record_case_id(record, index)
+        latest_by_case[case_id] = record
+        duration = _finite_duration(record.get("duration_seconds"))
+        if duration is not None:
+            durations.append(duration)
+        error_code = record.get("error_code")
+        if error_code in case_ids_by_error:
+            case_ids_by_error[error_code].add(case_id)
+        telemetry = record.get("http_telemetry")
+        if not isinstance(telemetry, dict):
+            telemetry = {}
+        attempts = telemetry.get("http_attempts")
+        if isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 0:
+            http_attempts += attempts
+        retries = telemetry.get("retry_count")
+        if isinstance(retries, int) and not isinstance(retries, bool) and retries >= 0:
+            total_retries += retries
+            if retries > 0:
+                calls_with_retry += 1
+        if telemetry.get("recovered_after_retry") is True:
+            recovered_after_retry += 1
+        rate_limits = telemetry.get("rate_limit_count")
+        if (
+            isinstance(rate_limits, int)
+            and not isinstance(rate_limits, bool)
+            and rate_limits >= 0
+        ):
+            rate_limit_responses += rate_limits
+            if rate_limits:
+                case_ids_by_error["RATE_LIMIT"].add(case_id)
+        if record.get("retryable") is True and error_code in {
+            "NETWORK_ERROR",
+            "TIMEOUT",
+            "RATE_LIMIT",
+            "PROVIDER_5XX",
+        }:
+            retry_exhausted += 1
+        transport_types = telemetry.get("transport_error_types")
+        if not isinstance(transport_types, list):
+            transport_types = []
+        if not transport_types and isinstance(record.get("transport_error_type"), str):
+            transport_types = [record["transport_error_type"]]
+        for transport_type in transport_types:
+            if isinstance(transport_type, str) and transport_type:
+                case_ids_by_error["NETWORK_ERROR"].add(case_id)
+                transport_errors_by_type[transport_type] = (
+                    transport_errors_by_type.get(transport_type, 0) + 1
+                )
+
+    successful_calls = sum(
+        record.get("status") == successful_status for record in latest_by_case.values()
+    )
+    logical_calls = len(latest_by_case)
+    health_warnings: list[str] = []
+    if provenance_type == "declared_relay":
+        health_warnings.append(
+            "DECLARED_RELAY_RELIABILITY_WARNING: this provider is a declared relay; "
+            "review the recorded retry and transport evidence before using this run as reference evidence."
+        )
+    if case_ids_by_error["NETWORK_ERROR"]:
+        health_warnings.append("NETWORK_ERROR_OBSERVED: provider transport errors occurred.")
+    if calls_with_retry:
+        health_warnings.append("RETRY_RECOVERY_OBSERVED: some requests required retry.")
+    if retry_exhausted:
+        health_warnings.append("RETRY_EXHAUSTED: one or more logical executions ended retryable.")
+    if case_ids_by_error["RATE_LIMIT"]:
+        health_warnings.append(
+            "RATE_LIMIT_OBSERVED: provider throttling affected this execution history; "
+            "consider profile capacity or concurrency before a new run."
+        )
+    return {
+        "historical_evidence_records": len(records),
+        "logical_calls": logical_calls,
+        "successful_calls": successful_calls,
+        "failed_calls": logical_calls - successful_calls,
+        "http_attempts": http_attempts,
+        "calls_with_retry": calls_with_retry,
+        "total_retries": total_retries,
+        "recovered_after_retry": recovered_after_retry,
+        "retry_exhausted": retry_exhausted,
+        "retry_recovery_rate": (
+            round(recovered_after_retry / calls_with_retry, 6)
+            if calls_with_retry
+            else None
+        ),
+        "network_error_cases": len(case_ids_by_error["NETWORK_ERROR"]),
+        "transport_error_count": sum(transport_errors_by_type.values()),
+        "transport_errors_by_type": dict(sorted(transport_errors_by_type.items())),
+        "timeout_cases": len(case_ids_by_error["TIMEOUT"]),
+        "rate_limit_responses": rate_limit_responses,
+        "rate_limit_cases": len(case_ids_by_error["RATE_LIMIT"]),
+        "provider_5xx_cases": len(case_ids_by_error["PROVIDER_5XX"]),
+        "latency_seconds": {
+            "samples": len(durations),
+            "min": round(min(durations), 6) if durations else None,
+            "mean": round(sum(durations) / len(durations), 6) if durations else None,
+            "p50": _latency_percentile(durations, 0.5),
+            "p95": _latency_percentile(durations, 0.95),
+            "max": round(max(durations), 6) if durations else None,
+        },
+        "health_warnings": health_warnings,
+    }
+
+
+def aggregate_provider_reliability(
+    metadata: dict[str, Any],
+    response_records: list[dict[str, Any]],
+    judgment_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate safe provider reliability evidence for the whole run history."""
+    target = metadata.get("target") if isinstance(metadata.get("target"), dict) else {}
+    judge = metadata.get("judge") if isinstance(metadata.get("judge"), dict) else {}
+    return {
+        "schema_version": 1,
+        "target": _role_provider_reliability(
+            response_records,
+            successful_status="MODEL_RESPONSE",
+            provenance_type=target.get("provenance_type"),
+        ),
+        "judge": _role_provider_reliability(
+            judgment_records,
+            successful_status="JUDGMENT",
+            provenance_type=judge.get("provenance_type"),
+        ),
+    }
+
+
 def aggregate_results(
     metadata: dict[str, Any],
     response_records: list[dict[str, Any]],
@@ -4746,6 +4942,9 @@ def aggregate_results(
             "reference_qualification": reference_qualification(
                 metadata, actual_status, acceptance
             ),
+            "provider_reliability": aggregate_provider_reliability(
+                metadata, response_records, judgment_records
+            ),
         }
     )
     return summary
@@ -4826,6 +5025,43 @@ def render_summary_markdown(summary: dict[str, Any]) -> str:
         markdown[3:3] = [
             f"- Warnings: `{', '.join(summary['warnings'])}`",
         ]
+    reliability = summary.get("provider_reliability")
+    if isinstance(reliability, dict):
+        markdown.extend(["## Provider Reliability", ""])
+        markdown.extend(
+            [
+                "| Role | Logical calls | Success / failed | HTTP attempts | Retried calls | Total retries | Recovered | Retry exhausted | Network / timeout / 429 responses,cases / 5xx | Latency (min / mean / p50 / p95 / max s) |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for role in ("target", "judge"):
+            values = reliability.get(role)
+            if not isinstance(values, dict):
+                continue
+            latency = values.get("latency_seconds")
+            latency = latency if isinstance(latency, dict) else {}
+            markdown.append(
+                f"| {role.title()} | {values.get('logical_calls', 0)} | "
+                f"{values.get('successful_calls', 0)} / {values.get('failed_calls', 0)} | "
+                f"{values.get('http_attempts', 0)} | {values.get('calls_with_retry', 0)} | "
+                f"{values.get('total_retries', 0)} | {values.get('recovered_after_retry', 0)} | "
+                f"{values.get('retry_exhausted', 0)} | {values.get('network_error_cases', 0)} / "
+                f"{values.get('timeout_cases', 0)} / {values.get('rate_limit_responses', 0)},"
+                f"{values.get('rate_limit_cases', 0)} / "
+                f"{values.get('provider_5xx_cases', 0)} | {latency.get('min')} / "
+                f"{latency.get('mean')} / {latency.get('p50')} / {latency.get('p95')} / "
+                f"{latency.get('max')} |"
+            )
+            transport = values.get("transport_errors_by_type")
+            if isinstance(transport, dict) and transport:
+                details = ", ".join(
+                    f"{name}={count}" for name, count in sorted(transport.items())
+                )
+                markdown.append(f"  - {role.title()} transport errors: `{details}`")
+            for warning in values.get("health_warnings", []):
+                if isinstance(warning, str):
+                    markdown.append(f"  - {role.title()} warning: `{warning}`")
+        markdown.append("")
     markdown.extend(
         [
             "## Suite Results",
@@ -4969,6 +5205,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     )
     refresh_run_metadata(metadata, responses, judgments)
     summary = aggregate_results(metadata, responses, judgments, acceptance)
+    metadata["provider_reliability"] = summary["provider_reliability"]
     summary["generated_at"] = utc_now()
     summary["artifacts"] = {
         "run": "run.json",
@@ -5750,6 +5987,10 @@ def validate_result_artifacts(run_dir: Path) -> None:
         summary = load_json_object(summary_path)
         expected_summary = aggregate_results(metadata, responses, judgments)
         for key, expected in expected_summary.items():
+            if key == "provider_reliability" and key not in summary:
+                # Historical summaries remain readable without a migration. New
+                # reports carry this derived field and are checked normally.
+                continue
             if summary.get(key) != expected:
                 raise ModelEvalError(f"{run_dir}: summary field {key} does not match artifacts")
         counts = summary.get("counts", {})

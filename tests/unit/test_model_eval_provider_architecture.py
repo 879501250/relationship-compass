@@ -102,7 +102,7 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
 
     @staticmethod
     def run_dir(root: Path, name: str) -> Path:
-        return root / "v1.6.0" / runner.API_RUNTIME_PROFILE / name
+        return root / runner.version_directory(runner.pack_version()) / runner.API_RUNTIME_PROFILE / name
 
     def test_openai_responses_protocol_records_safe_response_evidence(self) -> None:
         captured: list[Any] = []
@@ -723,6 +723,7 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
         self.assertEqual(telemetry["retry_delays_seconds"], [1.0])
         self.assertEqual(telemetry["final_http_status"], 200)
         self.assertTrue(telemetry["recovered_after_retry"])
+        self.assertEqual(telemetry["transport_error_types"], ["RemoteDisconnected"])
 
     def test_transport_failures_exhaust_as_retryable_network_errors(self) -> None:
         transport_errors = (
@@ -896,6 +897,149 @@ class ModelEvalProviderArchitectureTests(unittest.TestCase):
             self.assertEqual(judgment["error_code"], "NETWORK_ERROR")
             self.assertTrue(judgment["retryable"])
             self.assertEqual(judgment["transport_error_type"], "RemoteDisconnected")
+
+    def test_provider_reliability_aggregates_history_and_effective_outcomes(self) -> None:
+        metadata = {
+            "target": {"provenance_type": "declared_relay"},
+            "judge": {"provenance_type": "verified_direct"},
+        }
+        responses = [
+            {
+                "case_id": "A",
+                "status": "MODEL_RESPONSE",
+                "duration_seconds": 1,
+                "http_telemetry": {"http_attempts": 1, "retry_count": 0},
+            },
+            {
+                "case_id": "B",
+                "status": "TARGET_ERROR",
+                "error_code": "NETWORK_ERROR",
+                "retryable": True,
+                "transport_error_type": "RemoteDisconnected",
+                "duration_seconds": 2,
+                "http_telemetry": {
+                    "http_attempts": 2,
+                    "retry_count": 1,
+                    "transport_error_types": ["RemoteDisconnected", "ConnectionResetError"],
+                },
+            },
+            {
+                "case_id": "C",
+                "status": "MODEL_RESPONSE",
+                "duration_seconds": 3,
+                "http_telemetry": {"http_attempts": 3, "retry_count": 2, "recovered_after_retry": True},
+            },
+            {
+                # Resume success keeps B's historical failure but changes its effective outcome.
+                "case_id": "B",
+                "status": "MODEL_RESPONSE",
+                "duration_seconds": 4,
+                "http_telemetry": {"http_attempts": 1, "retry_count": 0},
+            },
+            {
+                "case_id": "D",
+                "status": "TARGET_ERROR",
+                "error_code": "TIMEOUT",
+                "retryable": True,
+                "duration_seconds": 100,
+                "http_telemetry": {"http_attempts": 1, "retry_count": 0},
+            },
+        ]
+        reliability = runner.aggregate_provider_reliability(metadata, responses, [])
+        target = reliability["target"]
+        self.assertEqual(target["logical_calls"], 4)
+        self.assertEqual(target["successful_calls"], 3)
+        self.assertEqual(target["failed_calls"], 1)
+        self.assertEqual(target["http_attempts"], 8)
+        self.assertEqual(target["calls_with_retry"], 2)
+        self.assertEqual(target["total_retries"], 3)
+        self.assertEqual(target["recovered_after_retry"], 1)
+        self.assertEqual(target["retry_exhausted"], 2)
+        self.assertEqual(target["network_error_cases"], 1)
+        self.assertEqual(target["timeout_cases"], 1)
+        self.assertEqual(target["transport_error_count"], 2)
+        self.assertEqual(
+            target["transport_errors_by_type"],
+            {"ConnectionResetError": 1, "RemoteDisconnected": 1},
+        )
+        self.assertEqual(
+            target["latency_seconds"],
+            {"samples": 5, "min": 1.0, "mean": 22.0, "p50": 3.0, "p95": 80.8, "max": 100.0},
+        )
+        self.assertEqual(target["retry_recovery_rate"], 0.5)
+        self.assertTrue(any("DECLARED_RELAY" in value for value in target["health_warnings"]))
+
+    def test_provider_reliability_keeps_target_and_judge_separate(self) -> None:
+        metadata = {
+            "target": {"provenance_type": "verified_direct"},
+            "judge": {"provenance_type": "declared_relay"},
+        }
+        judgments = [
+            {
+                "case_id": "A",
+                "status": "JUDGE_ERROR",
+                "error_code": "RATE_LIMIT",
+                "retryable": True,
+                "duration_seconds": 2,
+                "http_telemetry": {
+                    "http_attempts": 2,
+                    "retry_count": 1,
+                    "rate_limit_count": 1,
+                },
+            },
+            {
+                "case_id": "A",
+                "status": "JUDGMENT",
+                "duration_seconds": 1,
+                "http_telemetry": {"http_attempts": 1, "retry_count": 0},
+            },
+        ]
+        reliability = runner.aggregate_provider_reliability(metadata, [], judgments)
+        self.assertEqual(reliability["target"]["logical_calls"], 0)
+        self.assertEqual(reliability["judge"]["logical_calls"], 1)
+        self.assertEqual(reliability["judge"]["successful_calls"], 1)
+        self.assertEqual(reliability["judge"]["rate_limit_cases"], 1)
+        self.assertEqual(reliability["judge"]["rate_limit_responses"], 1)
+        self.assertEqual(reliability["judge"]["retry_exhausted"], 1)
+        self.assertTrue(any("DECLARED_RELAY" in value for value in reliability["judge"]["health_warnings"]))
+
+    def test_provider_reliability_counts_successful_http_attempts_and_old_records(self) -> None:
+        records = [
+            {
+                "case_id": "A",
+                "status": "MODEL_RESPONSE",
+                "http_telemetry": {"http_attempts": 1, "retry_count": 0},
+            },
+            {
+                "case_id": "B",
+                "status": "MODEL_RESPONSE",
+                "http_telemetry": {
+                    "http_attempts": 2,
+                    "retry_count": 1,
+                    "recovered_after_retry": True,
+                },
+            },
+            {
+                "case_id": "C",
+                "status": "MODEL_RESPONSE",
+                "http_telemetry": {
+                    "http_attempts": 3,
+                    "retry_count": 2,
+                    "recovered_after_retry": True,
+                },
+            },
+            # A pre-telemetry artifact stays readable and contributes no invented HTTP data.
+            {"case_id": "D", "status": "MODEL_RESPONSE"},
+        ]
+        target = runner.aggregate_provider_reliability({"target": {}, "judge": {}}, records, [])[
+            "target"
+        ]
+        self.assertEqual(target["logical_calls"], 4)
+        self.assertEqual(target["successful_calls"], 4)
+        self.assertEqual(target["http_attempts"], 6)
+        self.assertEqual(target["calls_with_retry"], 2)
+        self.assertEqual(target["total_retries"], 3)
+        self.assertEqual(target["recovered_after_retry"], 2)
 
     def test_auth_error_is_not_retried(self) -> None:
         calls = 0
