@@ -59,14 +59,14 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
         readiness = resolver.assess_preset_readiness("kimi-official", context="judge")
         self.assertTrue(readiness.runnable)
 
-    def test_disabled_thinking_fails_when_capability_does_not_declare_it(self) -> None:
+    def test_disabled_thinking_fails_when_endpoint_capability_does_not_declare_it(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "registry"
             shutil.copytree(ROOT / "model_registry", root)
-            family_path = root / "model_families" / "kimi.yaml"
-            family = json.loads(family_path.read_text(encoding="utf-8"))
-            family["defaults"]["capabilities"]["thinking"]["allowed_values"] = ["enabled"]
-            family_path.write_text(json.dumps(family), encoding="utf-8")
+            vendor_path = root / "vendors" / "moonshot.yaml"
+            vendor = json.loads(vendor_path.read_text(encoding="utf-8"))
+            vendor["base_urls"][0]["capabilities"] = {"thinking": {"supported": False}}
+            vendor_path.write_text(json.dumps(vendor), encoding="utf-8")
             for preset_path in (root / "presets").glob("*.yaml"):
                 preset = json.loads(preset_path.read_text(encoding="utf-8"))
                 preset.get("parameters", {}).pop("thinking", None)
@@ -79,8 +79,17 @@ class RegistryRuntimeResolverTests(unittest.TestCase):
                 )
             }
             readiness = resolver.assess_preset_readiness("kimi-official", context="judge")
+            global_runtime = resolver.registry.resolve(
+                vendor_id="moonshot",
+                credential_id="moonshot-main",
+                model_family_id="kimi",
+                model_id="kimi-k3",
+                base_url_id="official-global",
+                semantic_parameters={"thinking": "disabled"},
+            )
         self.assertFalse(readiness.runnable)
         self.assertIn("thinking", "\n".join(readiness.blocking_errors))
+        self.assertTrue(global_runtime.resolved_capabilities["thinking"]["supported"])
 
     def test_disabled_thinking_fails_on_protocol_without_thinking_contract(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
